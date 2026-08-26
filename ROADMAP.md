@@ -2,39 +2,29 @@
 
 Recommended enhancements for future development, roughly ordered by priority within each section. Grouped by theme rather than a strict backlog — pick based on what matters most to whoever picks this up next.
 
-## Performance (do these first)
+**Status:** the "Content & UX", "Playback" partial items, and "Quality" sections below were implemented in the 0.2.0 release (favorites, series progress, quick profile switching, parental controls, keyboard shortcuts for the player, DVR/catch-up, auto-reconnect, real Picture-in-Picture, a settings page, virtualized lists, debounced search, an app icon, `electron-updater` wiring, and a first pass of automated tests). What's below is what's left, plus a few things the 0.2.0 build surfaced as worth doing next.
 
-- **Virtualize the channel list.** Large providers can return tens of thousands of live channels (a real account tested during development had 24,251), and `ChannelList` currently renders every item as a DOM node. This will visibly jank on scroll for big catalogs. Switch to a windowed list (e.g. `react-window` / `react-virtuoso`) so only visible rows are mounted.
-- **Debounce search input.** `setSearchTerm` re-filters on every keystroke against the full in-memory list; fine today, but worth debouncing once virtualization is in place and lists get even larger.
+## Quick wins
+
+- **Surface recently-watched in the UI.** The data already flows end-to-end (`useAppStore.play()` persists every play to `recentlyWatched` via `lib/storage.ts`), but nothing renders it yet — it's tracked and immediately forgotten. Wiring up a "Continue watching" section (e.g. in the Favorites tab, or a new one) is most of the way done already.
+- **Channel-list keyboard navigation.** The player has keyboard shortcuts (Escape/M/arrows) but the channel list itself doesn't — arrow keys to move focus between channels/tiles and Enter to open, useful for anyone driving this without a mouse (remote, couch setup). Needs a focused-index concept that plays well with the virtualized list's `scrollToRow`/`scrollToCell` imperative API (already exposed by `react-window`, just not used yet).
+- **Fix the cross-section locked-category edge case.** Parental-lock category IDs are stored as a flat list shared across Live/Movies/Series (`settings.lockedCategoryIds`). Xtream doesn't guarantee `category_id` is globally unique across those three sections, so in a rare case a provider could reuse the same ID in two sections and locking one would also lock the other. Namespacing the stored ID by section (e.g. `"live:12"` vs `"movies:12"`) closes this.
 
 ## Playback quality
 
-- **Transcode AC-3/E-AC-3 audio.** Chromium has no built-in decoder for Dolby Digital audio, which a meaningful share of real IPTV/broadcast-origin channels use — video plays fine, audio doesn't (the app now detects and reports this, see `Player.tsx`, but doesn't fix it). Bundling `ffmpeg-static` and remuxing/transcoding the audio track to AAC in the local proxy (`src/main/index.ts`) would fix this properly instead of just surfacing the error.
-- **DVR / catch-up (timeshift).** Xtream's `get_live_streams` response includes `tv_archive` and `tv_archive_duration` per channel — channels with archive support can serve past programming via a `/timeshift/...` URL pattern. Add a way to browse a channel's recent EPG and play back a past slot, not just live.
-- **Picture-in-picture / mini-player.** The player is currently a hard fullscreen overlay (`Player.tsx`); a floating mini-player would let people keep browsing while watching.
-- **Auto-reconnect on network loss.** No detection today for "the whole connection dropped" vs. "this one stream failed" — worth distinguishing and retrying the session-level connection (not just the current fragment) after sustained network loss.
+- **Transcode AC-3/E-AC-3 audio.** Still the biggest real gap. Chromium has no built-in decoder for Dolby Digital audio, which a meaningful share of real IPTV/broadcast-origin channels use — video plays fine, audio doesn't. The app detects and reports this now (`Player.tsx`'s `bufferAddCodecError`/`bufferAppendError` handling) but doesn't fix it. Bundling `ffmpeg-static` and remuxing/transcoding the audio track to AAC in the local proxy (`src/main/index.ts`) would fix it properly.
+- **Full grid EPG guide for providers that support it.** The per-channel preview (`ChannelPreview.tsx`, via `get_short_epg`) works everywhere, but some providers do serve a working `xmltv.php` (this project's test account 403s on it — see `useAppStore.loadEpg`). For those, a proper multi-channel timeline grid (rows = channels, columns = time) — `react-window`'s `Grid` is already a dependency and would fit well here — would be a much richer guide than the current single-channel preview. Pair with EPG-based search ("what's on now across all channels", search programme titles).
 
-## EPG
+## Compatibility
 
-- **Full grid guide for providers that support it.** The per-channel preview (`ChannelPreview.tsx`, via `get_short_epg`) works everywhere, but some providers do serve a working `xmltv.php` (this one 403s — see `useAppStore.loadEpg`). For those, a proper multi-channel timeline grid (rows = channels, columns = time) would be a much richer guide experience than the current single-channel preview.
-- **EPG-based search/browse** ("what's on now across all channels", "search programme titles") once a full guide is available for a given provider.
-
-## Content & UX
-
-- **Favorites and recently-watched.** Persist via the existing `electron-store`-backed storage layer (`lib/storage.ts`); surface as a pinned section or dedicated tab.
-- **Series watch progress.** Track per-episode position/completion so `SeriesModal` can show progress and offer "resume" instead of always starting from the top.
-- **Quick profile switching.** Today, switching providers means disconnecting and re-picking from `LoginScreen`; a lightweight dropdown in `TopBar` would be more convenient for anyone juggling multiple Xtream accounts.
-- **Parental controls.** Category-based filtering or a PIN lock on adult categories — a fairly standard expectation for IPTV apps.
-- **Keyboard/remote navigation.** Arrow-key channel browsing and media-key play/pause/volume support, for anyone driving this from a couch/remote setup rather than mouse + keyboard.
-- **Raw M3U + separate EPG XML URL support.** Some providers hand out an M3U playlist URL and an EPG XML URL instead of full Xtream Codes API credentials — supporting that as an alternate connection type would widen compatibility beyond Xtream-specific panels.
+- **Raw M3U + separate EPG XML URL support.** Some providers hand out an M3U playlist URL and an EPG XML URL instead of full Xtream Codes API credentials. Supporting that as an alternate connection type (a second tab on `LoginScreen`, a simple M3U parser alongside `lib/xtream.ts`) would widen compatibility beyond Xtream-specific panels. Not attempted yet — no M3U source was available to test against during this pass, and it's a meaningfully different data model (no `player_api.php` categories/actions) that deserves its own real-provider validation rather than a guess.
 
 ## Packaging & distribution
 
-- **App icon.** Currently ships with Electron's default icon (`electron-builder` logs "default Electron icon is used" during every build) — add real `build/icon.{icns,ico,png}` assets.
-- **Code signing & notarization.** Unsigned installers trigger Gatekeeper warnings on macOS and SmartScreen warnings on Windows. Worth adding once a signing certificate is available — plug into the existing `.github/workflows/release.yml`.
-- **Auto-update.** Since CI already publishes builds to GitHub Releases, wiring up `electron-updater` to check those releases and update in the background is a natural, low-effort next step.
-- **Settings page.** Surface things that are currently hardcoded: HLS buffer size/quality preferences, EPG timezone override, light/dark theme.
+- **Code signing & notarization.** Unsigned installers trigger Gatekeeper warnings on macOS and SmartScreen warnings on Windows — and macOS's Squirrel-based auto-updater specifically **won't apply updates at all** to an unsigned/unnotarized app, so this is now a hard blocker for auto-update actually working on Mac, not just a polish item. Needs a paid Apple Developer certificate and (for Windows) a code-signing certificate; plug into `.github/workflows/release.yml` once available.
+- **Reconsider the parental PIN's threat model.** It's stored in plaintext in `electron-store`'s JSON file (consistent with how Xtream credentials are already stored there) — fine as a soft "don't let a kid stumble into the wrong category" lock, not fine if anyone expects it to resist a technically curious household member reading the config file. Worth a one-line disclaimer in the settings UI if nothing else; a real fix would mean OS keychain storage instead.
+- **Windows on ARM installer.** CI currently builds Windows x64 only (matching `windows-latest`'s native runner arch). Niche, but electron-builder can cross-build an ARM64 NSIS installer in the same job if it's ever worth the extra CI minutes.
 
 ## Quality
 
-- **Automated tests.** There are none today. Given how many subtle, provider-specific issues surfaced only through manual testing against a real account (CORS, TLS trust, header forwarding, content-encoding, EPG endpoint availability — see commit history), unit tests for `lib/xtream.ts` and `lib/epg.ts`, plus a basic smoke test for the Electron main process, would catch regressions early.
+- **Expand test coverage.** The 0.2.0 pass added vitest unit tests for `lib/xtream.ts` and `lib/epg.ts` — the two riskiest pieces of pure logic — plus a CI job that runs typecheck/test/build on every push. Still untested: the Zustand store's actions (`useAppStore.ts`), the parental-lock flow, and the main-process proxy (`src/main/index.ts`) itself. The proxy in particular is where most of the real-world bugs turned up during development (CORS, TLS trust, header forwarding, content-encoding) and would benefit most from a regression suite — e.g. spin up a local mock HTTP server (as was done ad hoc during manual testing) and assert on proxied responses.
