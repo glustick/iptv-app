@@ -42,6 +42,11 @@
     "files": [
       "out/**/*"
     ],
+    "publish": {
+      "provider": "github",
+      "owner": "glustick",
+      "repo": "iptv-app"
+    },
     "mac": {
       "category": "public.app-category.video"
     },
