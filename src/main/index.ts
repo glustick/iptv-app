@@ -1,8 +1,6 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, net } from 'electron'
 import { join } from 'path'
-import { createServer } from 'http'
-import { request as httpRequest } from 'http'
-import { request as httpsRequest } from 'https'
+import { createServer, IncomingMessage, ServerResponse } from 'http'
 import { URL } from 'url'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import Store from 'electron-store'
@@ -21,6 +19,16 @@ let proxyTargetBase: string | null = null
 function startLocalProxy(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createServer((req, res) => {
+      try {
+        handleProxyRequest(req, res)
+      } catch (err) {
+        console.error('[proxy] unhandled error:', err)
+        if (!res.headersSent) res.writeHead(502)
+        res.end(`Proxy error: ${err instanceof Error ? err.stack || err.message : String(err)}`)
+      }
+    })
+
+    function handleProxyRequest(req: IncomingMessage, res: ServerResponse): void {
       if (req.method === 'OPTIONS') {
         res.writeHead(204, {
           'access-control-allow-origin': '*',
@@ -37,34 +45,64 @@ function startLocalProxy(): Promise<number> {
         return
       }
 
-      const target = new URL(req.url ?? '/', proxyTargetBase)
-      const isHttps = target.protocol === 'https:'
-      const requestFn = isHttps ? httpsRequest : httpRequest
-      const { host: _clientHost, ...forwardedHeaders } = req.headers
+      // `new URL()` throws synchronously on a malformed base (e.g. a server address typed
+      // without "http://", such as "myprovider.com:8080") — left uncaught, that exception
+      // would propagate out of this request handler and crash the whole main process.
+      let target: URL
+      try {
+        target = new URL(req.url ?? '/', proxyTargetBase)
+      } catch {
+        res.writeHead(502)
+        res.end(`Invalid Xtream server address: ${proxyTargetBase}`)
+        return
+      }
 
-      const upstreamReq = requestFn(
-        {
-          hostname: target.hostname,
-          port: target.port || (isHttps ? 443 : 80),
-          path: `${target.pathname}${target.search}`,
+      // Use Electron's net module (Chromium's network stack) rather than Node's http/https —
+      // Node ships its own bundled CA list, separate from the OS trust store, so on networks
+      // with a TLS-inspecting corporate proxy (which install their root CA into the system
+      // keychain), a plain Node https.request fails with SELF_SIGNED_CERT_IN_CHAIN even though
+      // curl and the browser itself trust the connection fine.
+      let upstreamReq
+      try {
+        upstreamReq = net.request({
           method: req.method,
-          headers: { ...forwardedHeaders, host: target.host }
-        },
-        (upstreamRes) => {
-          const headers = { ...upstreamRes.headers }
-          headers['access-control-allow-origin'] = '*'
-          headers['access-control-allow-headers'] = '*'
-          delete headers['content-security-policy']
-          res.writeHead(upstreamRes.statusCode ?? 200, headers)
-          upstreamRes.pipe(res)
-        }
-      )
-      upstreamReq.on('error', () => {
-        if (!res.headersSent) res.writeHead(502)
-        res.end('Upstream request failed')
+          url: target.href,
+          redirect: 'follow'
+        })
+      } catch (err) {
+        res.writeHead(502)
+        res.end(`Could not reach upstream server: ${err instanceof Error ? err.message : String(err)}`)
+        return
+      }
+      // Xtream auth is entirely via query-string params, not headers, so there's no need to
+      // forward the browser's request headers — most of them (connection, content-length, a
+      // Chromium-managed sec-fetch-* set, etc.) are hop-by-hop or forbidden and make Electron's
+      // net.request throw ERR_INVALID_ARGUMENT. Only Range matters, for video-seek support.
+      const range = req.headers.range
+      if (range) upstreamReq.setHeader('range', Array.isArray(range) ? range.join(', ') : range)
+      upstreamReq.on('response', (upstreamRes) => {
+        const headers = { ...upstreamRes.headers }
+        headers['access-control-allow-origin'] = '*'
+        headers['access-control-allow-headers'] = '*'
+        delete headers['content-security-policy']
+        // Electron's net module (Chromium's network stack) transparently decompresses
+        // gzip/br/zstd bodies before we ever see the bytes, but the upstream response
+        // headers still advertise the original encoding/length. Forwarding those stale
+        // headers alongside the now-plain body makes the renderer try to re-decompress
+        // already-decoded data, which fails with net::ERR_CONTENT_DECODING_FAILED.
+        delete headers['content-encoding']
+        delete headers['content-length']
+        res.writeHead(upstreamRes.statusCode, headers)
+        upstreamRes.pipe(res)
       })
+      upstreamReq.on('error', (err) => {
+        console.error('[proxy] upstream request error:', err)
+        if (!res.headersSent) res.writeHead(502)
+        res.end(`Upstream request failed: ${err.message}`)
+      })
+      req.on('error', (err) => console.error('[proxy] client request error:', err))
       req.pipe(upstreamReq)
-    })
+    }
 
     server.on('error', reject)
     server.listen(0, '127.0.0.1', () => {

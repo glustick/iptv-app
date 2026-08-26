@@ -101,6 +101,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   addProfile: async (profile) => {
+    // Retrying "Connect" after a failed attempt re-submits the same form — reuse the
+    // matching saved profile instead of stacking up duplicates on every retry.
+    const existing = get().profiles.find(
+      (p) => p.server === profile.server && p.username === profile.username && p.password === profile.password
+    )
+    if (existing) {
+      await get().connect(existing.id)
+      return
+    }
     const id = crypto.randomUUID()
     const newProfile: XtreamProfile = { ...profile, id }
     const profiles = [...get().profiles, newProfile]
