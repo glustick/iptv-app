@@ -123,7 +123,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!profile) return
     set({ status: 'connecting', error: null, activeProfile: profile })
     try {
-      const client = new XtreamClient(profile.server, profile.username, profile.password)
+      if (!window.api?.proxy) {
+        throw new Error('This app must run inside Electron to reach Xtream servers.')
+      }
+      // Route every request through the local CORS-proxy (see src/main/index.ts) instead
+      // of the real server, since Xtream panels don't send CORS headers for browsers.
+      await window.api.proxy.setTarget(profile.server)
+      const proxyBase = await window.api.proxy.getBaseUrl()
+      const client = new XtreamClient(proxyBase, profile.username, profile.password)
       await client.authenticate()
       set({ client, status: 'ready' })
       await saveActiveProfileId(profileId)

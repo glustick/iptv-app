@@ -6,6 +6,10 @@ const api = {
     get: (key: string) => ipcRenderer.invoke('store:get', key),
     set: (key: string, value: unknown) => ipcRenderer.invoke('store:set', key, value),
     delete: (key: string) => ipcRenderer.invoke('store:delete', key)
+  },
+  proxy: {
+    getBaseUrl: () => ipcRenderer.invoke('proxy:getBaseUrl') as Promise<string>,
+    setTarget: (baseUrl: string) => ipcRenderer.invoke('proxy:setTarget', baseUrl) as Promise<void>
   }
 }
 
