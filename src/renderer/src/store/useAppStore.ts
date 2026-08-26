@@ -48,6 +48,8 @@ interface AppState {
   seriesInfo: SeriesInfo | null
   seriesInfoLoading: boolean
 
+  previewChannel: LiveStream | null
+
   init: () => Promise<void>
   addProfile: (profile: Omit<XtreamProfile, 'id'>) => Promise<void>
   removeProfile: (id: string) => Promise<void>
@@ -63,6 +65,9 @@ interface AppState {
 
   openSeriesDetail: (item: SeriesItem) => Promise<void>
   closeSeriesDetail: () => void
+
+  openChannelPreview: (channel: LiveStream) => void
+  closeChannelPreview: () => void
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -89,6 +94,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   openSeries: null,
   seriesInfo: null,
   seriesInfoLoading: false,
+
+  previewChannel: null,
 
   init: async () => {
     const profiles = await loadProfiles()
@@ -214,8 +221,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const xml = await client.getFullEpgXml()
       set({ epg: parseXmltv(xml), epgLoading: false })
-    } catch (err) {
-      set({ epgLoading: false, error: err instanceof Error ? err.message : 'Failed to load EPG' })
+    } catch {
+      // Many Xtream resellers restrict or disable xmltv.php entirely (this is only an
+      // enrichment for the inline "now playing" label) — per-channel previews rely on
+      // get_short_epg instead, so a failure here shouldn't surface as a user-facing error.
+      set({ epgLoading: false })
     }
   },
 
@@ -223,7 +233,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { client, shortEpgByStream } = get()
     if (!client || shortEpgByStream[streamId]) return
     try {
-      const listings = await client.getShortEpg(streamId, 4)
+      const listings = await client.getShortEpg(streamId, 8)
       set({ shortEpgByStream: { ...get().shortEpgByStream, [streamId]: listings } })
     } catch {
       // EPG is best-effort; a missing short guide shouldn't block playback.
@@ -250,5 +260,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  closeSeriesDetail: () => set({ openSeries: null, seriesInfo: null })
+  closeSeriesDetail: () => set({ openSeries: null, seriesInfo: null }),
+
+  openChannelPreview: (channel) => {
+    set({ previewChannel: channel })
+    get().loadShortEpg(channel.stream_id)
+  },
+
+  closeChannelPreview: () => set({ previewChannel: null })
 }))

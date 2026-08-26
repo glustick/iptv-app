@@ -21,6 +21,7 @@ export function ChannelList(): JSX.Element {
   const play = useAppStore((s) => s.play)
   const nowPlaying = useAppStore((s) => s.nowPlaying)
   const openSeriesDetail = useAppStore((s) => s.openSeriesDetail)
+  const openChannelPreview = useAppStore((s) => s.openChannelPreview)
 
   useEffect(() => {
     if (viewMode === 'live') {
@@ -45,7 +46,7 @@ export function ChannelList(): JSX.Element {
             <li
               key={channel.stream_id}
               className={isActive ? 'channel-item active' : 'channel-item'}
-              onClick={() => play('live', channel.stream_id, channel.name, 'm3u8')}
+              onClick={() => openChannelPreview(channel)}
             >
               {channel.stream_icon ? (
                 <img className="channel-icon" src={channel.stream_icon} alt="" loading="lazy" />

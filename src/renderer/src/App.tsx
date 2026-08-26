@@ -6,6 +6,7 @@ import { Sidebar } from './components/Sidebar'
 import { ChannelList } from './components/ChannelList'
 import { Player } from './components/Player'
 import { SeriesModal } from './components/SeriesModal'
+import { ChannelPreview } from './components/ChannelPreview'
 
 function App(): JSX.Element {
   const init = useAppStore((s) => s.init)
@@ -32,6 +33,7 @@ function App(): JSX.Element {
       </div>
       <Player />
       <SeriesModal />
+      <ChannelPreview />
     </div>
   )
 }
