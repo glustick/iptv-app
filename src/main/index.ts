@@ -4,6 +4,7 @@ import { createServer, IncomingMessage, ServerResponse } from 'http'
 import { URL } from 'url'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import Store from 'electron-store'
+import { autoUpdater } from 'electron-updater'
 
 const store = new Store()
 
@@ -165,6 +166,16 @@ app.whenReady().then(async () => {
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+
+  // Checks the GitHub Releases this app's CI publishes to (see .github/workflows/release.yml
+  // and the "publish" field in package.json) — a no-op until the app is actually packaged
+  // and code-signed, since autoUpdater has nothing to check against in dev and unsigned
+  // installs can download but not silently apply an update.
+  if (!is.dev) {
+    autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+      console.error('[auto-update] check failed:', err)
+    })
+  }
 })
 
 app.on('window-all-closed', () => {

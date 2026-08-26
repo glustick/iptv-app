@@ -106,3 +106,50 @@ export interface ShortEpgProgram {
 }
 
 export type MediaKind = 'live' | 'movie' | 'series'
+
+// Favorites keep the original rich object per kind, since clicking a favorited item
+// should behave exactly like clicking it from its normal list (open the live preview,
+// play the movie, or open the series modal) — not just replay a flat stream URL.
+export type FavoriteEntry =
+  | { kind: 'live'; stream: LiveStream }
+  | { kind: 'movie'; stream: VodStream }
+  | { kind: 'series'; item: SeriesItem }
+
+export function favoriteKey(entry: FavoriteEntry): string {
+  const id = entry.kind === 'series' ? entry.item.series_id : entry.stream.stream_id
+  return `${entry.kind}:${id}`
+}
+
+// Recently-watched tracks whatever was actually handed to play() — a flat, directly
+// replayable reference (for series this is the episode that was played, not the series).
+export interface RecentlyWatchedEntry {
+  kind: MediaKind
+  streamId: number
+  name: string
+  icon: string
+  extension: string
+  watchedAt: number
+}
+
+export interface EpisodeProgress {
+  positionSeconds: number
+  durationSeconds: number
+  updatedAt: number
+}
+
+export type BufferProfile = 'smooth' | 'lowLatency'
+export type ClockFormat = '12h' | '24h'
+
+export interface AppSettings {
+  bufferProfile: BufferProfile
+  clockFormat: ClockFormat
+  parentalPin: string | null
+  lockedCategoryIds: string[]
+}
+
+export const DEFAULT_SETTINGS: AppSettings = {
+  bufferProfile: 'smooth',
+  clockFormat: '12h',
+  parentalPin: null,
+  lockedCategoryIds: []
+}

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
-import type { ShortEpgProgram } from '../lib/types'
+import type { ShortEpgProgram, ClockFormat } from '../lib/types'
 
 function toDate(epochSeconds: string): Date {
   return new Date(Number(epochSeconds) * 1000)
@@ -8,8 +8,8 @@ function toDate(epochSeconds: string): Date {
 
 // start/stop_timestamp are Unix epoch seconds, so this always renders in the viewer's
 // own local timezone regardless of what timezone the Xtream server itself runs in.
-function formatTime(epochSeconds: string): string {
-  return toDate(epochSeconds).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+function formatTime(epochSeconds: string, clockFormat: ClockFormat): string {
+  return toDate(epochSeconds).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: clockFormat === '12h' })
 }
 
 function progressPercent(program: ShortEpgProgram, now: number): number {
@@ -24,6 +24,10 @@ export function ChannelPreview(): JSX.Element | null {
   const shortEpgByStream = useAppStore((s) => s.shortEpgByStream)
   const closeChannelPreview = useAppStore((s) => s.closeChannelPreview)
   const play = useAppStore((s) => s.play)
+  const playTimeshift = useAppStore((s) => s.playTimeshift)
+  const clockFormat = useAppStore((s) => s.settings.clockFormat)
+  const isFavorited = useAppStore((s) => s.isFavorited)
+  const toggleFavorite = useAppStore((s) => s.toggleFavorite)
 
   const [now, setNow] = useState(() => Date.now())
 
@@ -38,10 +42,19 @@ export function ChannelPreview(): JSX.Element | null {
   const listings = shortEpgByStream[previewChannel.stream_id]
   const current = listings?.find((p) => Number(p.start_timestamp) * 1000 <= now && now < Number(p.stop_timestamp) * 1000)
   const upcoming = listings?.filter((p) => Number(p.start_timestamp) * 1000 > now) ?? []
+  const past = listings?.filter((p) => Number(p.stop_timestamp) * 1000 <= now) ?? []
+  const canCatchUp = previewChannel.tv_archive === 1 && past.length > 0
+  const favorited = isFavorited('live', previewChannel.stream_id)
 
   function watchNow(): void {
     if (!previewChannel) return
-    play('live', previewChannel.stream_id, previewChannel.name, 'm3u8')
+    play('live', previewChannel.stream_id, previewChannel.name, 'm3u8', previewChannel.stream_icon)
+    closeChannelPreview()
+  }
+
+  function watchFromStart(program: ShortEpgProgram): void {
+    if (!previewChannel) return
+    playTimeshift(previewChannel, program)
     closeChannelPreview()
   }
 
@@ -57,9 +70,18 @@ export function ChannelPreview(): JSX.Element | null {
             )}
             <h2>{previewChannel.name}</h2>
           </div>
-          <button className="modal-close" onClick={closeChannelPreview}>
-            ✕
-          </button>
+          <div className="preview-header-actions">
+            <button
+              className={favorited ? 'favorite-toggle active' : 'favorite-toggle'}
+              onClick={() => toggleFavorite({ kind: 'live', stream: previewChannel })}
+              title={favorited ? 'Remove from favorites' : 'Add to favorites'}
+            >
+              {favorited ? '★' : '☆'}
+            </button>
+            <button className="modal-close" onClick={closeChannelPreview}>
+              ✕
+            </button>
+          </div>
         </div>
 
         {listings === undefined && <p className="modal-loading">Loading programme guide…</p>}
@@ -73,7 +95,7 @@ export function ChannelPreview(): JSX.Element | null {
             <span className="epg-badge">On now</span>
             <h3>{current.title}</h3>
             <p className="epg-time">
-              {formatTime(current.start_timestamp)} – {formatTime(current.stop_timestamp)}
+              {formatTime(current.start_timestamp, clockFormat)} – {formatTime(current.stop_timestamp, clockFormat)}
             </p>
             {current.description && <p className="epg-description">{current.description}</p>}
             <div className="epg-progress">
@@ -88,8 +110,25 @@ export function ChannelPreview(): JSX.Element | null {
             <ul>
               {upcoming.map((program, index) => (
                 <li key={`${program.id}-${index}`}>
-                  <span className="epg-time">{formatTime(program.start_timestamp)}</span>
+                  <span className="epg-time">{formatTime(program.start_timestamp, clockFormat)}</span>
                   <span className="epg-upcoming-name">{program.title}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {canCatchUp && (
+          <div className="epg-upcoming">
+            <h3 className="epg-upcoming-title">Catch up</h3>
+            <ul>
+              {past.map((program, index) => (
+                <li key={`${program.id}-past-${index}`}>
+                  <span className="epg-time">{formatTime(program.start_timestamp, clockFormat)}</span>
+                  <span className="epg-upcoming-name">{program.title}</span>
+                  <button className="catch-up-button" onClick={() => watchFromStart(program)}>
+                    ▶ Watch
+                  </button>
                 </li>
               ))}
             </ul>

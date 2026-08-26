@@ -6,20 +6,33 @@ export function SeriesModal(): JSX.Element | null {
   const seriesInfoLoading = useAppStore((s) => s.seriesInfoLoading)
   const closeSeriesDetail = useAppStore((s) => s.closeSeriesDetail)
   const play = useAppStore((s) => s.play)
+  const episodeProgress = useAppStore((s) => s.episodeProgress)
+  const isFavorited = useAppStore((s) => s.isFavorited)
+  const toggleFavorite = useAppStore((s) => s.toggleFavorite)
 
   if (!openSeries) return null
 
   const seasons = seriesInfo?.seasons ?? []
   const episodesBySeason = seriesInfo?.episodes ?? {}
+  const favorited = isFavorited('series', openSeries.series_id)
 
   return (
     <div className="modal-overlay" onClick={closeSeriesDetail}>
       <div className="modal-card" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h2>{openSeries.name}</h2>
-          <button className="modal-close" onClick={closeSeriesDetail}>
-            ✕
-          </button>
+          <div className="preview-header-actions">
+            <button
+              className={favorited ? 'favorite-toggle active' : 'favorite-toggle'}
+              onClick={() => toggleFavorite({ kind: 'series', item: openSeries })}
+              title={favorited ? 'Remove from favorites' : 'Add to favorites'}
+            >
+              {favorited ? '★' : '☆'}
+            </button>
+            <button className="modal-close" onClick={closeSeriesDetail}>
+              ✕
+            </button>
+          </div>
         </div>
 
         {openSeries.plot && <p className="modal-plot">{openSeries.plot}</p>}
@@ -39,23 +52,38 @@ export function SeriesModal(): JSX.Element | null {
                 {episodes
                   .slice()
                   .sort((a, b) => a.episode_num - b.episode_num)
-                  .map((episode) => (
-                    <li key={episode.id}>
-                      <button
-                        onClick={() => {
-                          play(
-                            'series',
-                            Number(episode.id),
-                            `${openSeries.name} — ${episode.title}`,
-                            episode.container_extension || 'mp4'
-                          )
-                          closeSeriesDetail()
-                        }}
-                      >
-                        E{episode.episode_num} · {episode.title}
-                      </button>
-                    </li>
-                  ))}
+                  .map((episode) => {
+                    const progress = episodeProgress[episode.id]
+                    const percent =
+                      progress && progress.durationSeconds > 0
+                        ? Math.min(100, (progress.positionSeconds / progress.durationSeconds) * 100)
+                        : 0
+                    return (
+                      <li key={episode.id}>
+                        <button
+                          onClick={() => {
+                            play(
+                              'series',
+                              Number(episode.id),
+                              `${openSeries.name} — ${episode.title}`,
+                              episode.container_extension || 'mp4'
+                            )
+                            closeSeriesDetail()
+                          }}
+                        >
+                          <span className="episode-label">
+                            E{episode.episode_num} · {episode.title}
+                            {percent >= 95 && <span className="episode-watched"> ✓ Watched</span>}
+                          </span>
+                          {percent > 0 && percent < 95 && (
+                            <span className="episode-progress">
+                              <span className="episode-progress-fill" style={{ width: `${percent}%` }} />
+                            </span>
+                          )}
+                        </button>
+                      </li>
+                    )
+                  })}
               </ul>
             </div>
           )

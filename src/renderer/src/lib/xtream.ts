@@ -120,4 +120,14 @@ export class XtreamClient {
     const path = kind === 'live' ? 'live' : kind === 'movie' ? 'movie' : 'series'
     return `${this.baseUrl}/${path}/${this.username}/${this.password}/${streamId}.${extension}`
   }
+
+  /**
+   * Catch-up/DVR playback for channels with `tv_archive` enabled, per the Xtream Codes
+   * timeshift convention: /timeshift/{user}/{pass}/{duration in minutes}/{start "YYYY-MM-DD:HH-MM"}/{stream_id}.{ext}
+   */
+  getTimeshiftUrl(streamId: number, start: Date, durationMinutes: number, extension = 'm3u8'): string {
+    const pad = (n: number): string => String(n).padStart(2, '0')
+    const startToken = `${start.getFullYear()}-${pad(start.getMonth() + 1)}-${pad(start.getDate())}:${pad(start.getHours())}-${pad(start.getMinutes())}`
+    return `${this.baseUrl}/timeshift/${this.username}/${this.password}/${Math.max(1, Math.round(durationMinutes))}/${startToken}/${streamId}.${extension}`
+  }
 }
