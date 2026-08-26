@@ -173,6 +173,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             ? await client.getVodCategories()
             : await client.getSeriesCategories()
       set({ categories })
+      await get().selectCategory(null)
     } catch (err) {
       set({ error: err instanceof Error ? err.message : 'Failed to load categories' })
     }
