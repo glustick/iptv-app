@@ -319,7 +319,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { client, shortEpgByStream } = get()
     if (!client || shortEpgByStream[streamId]) return
     try {
-      const listings = await client.getShortEpg(streamId, 8)
+      const listings = await client.getShortEpg(streamId, 16)
       set({ shortEpgByStream: { ...get().shortEpgByStream, [streamId]: listings } })
     } catch {
       // EPG is best-effort; a missing short guide shouldn't block playback.

@@ -155,5 +155,5 @@ export const DEFAULT_SETTINGS: AppSettings = {
   parentalPin: null,
   lockedCategoryIds: [],
   sidebarWidth: 220,
-  detailPanelWidth: 380
+  detailPanelWidth: 560
 }

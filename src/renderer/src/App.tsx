@@ -6,7 +6,7 @@ import { Sidebar } from './components/Sidebar'
 import { ChannelList } from './components/ChannelList'
 import { Player } from './components/Player'
 import { SeriesModal } from './components/SeriesModal'
-import { ChannelPreview } from './components/ChannelPreview'
+import { EpgGridPanel } from './components/EpgGridPanel'
 import { PinPrompt } from './components/PinPrompt'
 import { SettingsPage } from './components/SettingsPage'
 
@@ -48,7 +48,7 @@ function App(): JSX.Element {
           {error && <div className="banner-error">{error}</div>}
           <ChannelList />
         </main>
-        <ChannelPreview />
+        <EpgGridPanel />
       </div>
       <Player />
       <SeriesModal />
