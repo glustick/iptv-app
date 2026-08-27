@@ -10,6 +10,11 @@ const api = {
   proxy: {
     getBaseUrl: () => ipcRenderer.invoke('proxy:getBaseUrl') as Promise<string>,
     setTarget: (baseUrl: string) => ipcRenderer.invoke('proxy:setTarget', baseUrl) as Promise<void>
+  },
+  transcode: {
+    start: (sourceUrl: string) =>
+      ipcRenderer.invoke('transcode:start', sourceUrl) as Promise<{ sessionId: string; url: string }>,
+    stop: (sessionId: string) => ipcRenderer.invoke('transcode:stop', sessionId) as Promise<void>
   }
 }
 

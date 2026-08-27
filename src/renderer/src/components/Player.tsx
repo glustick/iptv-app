@@ -21,11 +21,41 @@ export function Player(): JSX.Element | null {
   const hlsRef = useRef<Hls | null>(null)
   const [playbackError, setPlaybackError] = useState<string | null>(null)
   const [buffering, setBuffering] = useState(false)
+  const [transcoding, setTranscoding] = useState(false)
   const [pipActive, setPipActive] = useState(false)
   const [reloadTick, setReloadTick] = useState(0)
   const [showChannelBar, setShowChannelBar] = useState(false)
   const wasOffline = useRef(false)
   const autoHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Some channels carry an audio codec (EC-3/E-AC-3) that hls.js's demuxer can't parse at
+  // all — every fragment fails identically, forever, rather than as a rare blip. The only
+  // real fix is remuxing that channel's audio to AAC via a local ffmpeg process (see
+  // src/main/index.ts's transcode: IPC handlers) and falling back to that output instead.
+  // These are refs, not state: they need to survive a same-channel effect re-run (triggered
+  // by the fallback itself) without resetting, unlike genuine per-channel state.
+  const transcodedUrlRef = useRef<string | null>(null)
+  const triedTranscodeRef = useRef(false)
+  const awaitingTranscodeRef = useRef(false)
+  const transcodeSessionIdRef = useRef<string | null>(null)
+  const lastStreamKeyRef = useRef<string | null>(null)
+
+  // Channel identity changing (including to nothing, i.e. the player closing) is the only
+  // thing that should reset the transcode-fallback state or tear down a session — a fresh
+  // hls reload of the SAME channel (network reconnect, the fallback's own reload) must not.
+  // Deliberately its own effect, decoupled from the main playback effect's other triggers
+  // (bufferProfile, reloadTick), so those don't also reset this.
+  useEffect(() => {
+    const streamKey = nowPlaying ? `${nowPlaying.kind}:${nowPlaying.streamId}` : null
+    if (streamKey === lastStreamKeyRef.current) return
+    lastStreamKeyRef.current = streamKey
+    triedTranscodeRef.current = false
+    awaitingTranscodeRef.current = false
+    transcodedUrlRef.current = null
+    const staleSessionId = transcodeSessionIdRef.current
+    transcodeSessionIdRef.current = null
+    if (staleSessionId) window.api.transcode.stop(staleSessionId)
+  }, [nowPlaying])
 
   // Auto-reconnect: if the whole network dropped (not just this fragment), hls.js's own
   // retry budget may already be exhausted by the time connectivity returns. Force a fresh
@@ -45,6 +75,10 @@ export function Player(): JSX.Element | null {
 
     setPlaybackError(null)
     setBuffering(true)
+    // Every fresh attempt — whether this is the very first try or the reload after a
+    // successful transcode fallback — starts with no fallback already in flight; it only
+    // becomes true again if this run's own error handler kicks one off.
+    awaitingTranscodeRef.current = false
     let networkRetryCount = 0
     let mediaErrorRecoveryCount = 0
     let mediaErrorResetTimer: ReturnType<typeof setTimeout> | null = null
@@ -97,7 +131,11 @@ export function Player(): JSX.Element | null {
       }, PROGRESS_SAVE_INTERVAL_MS)
     }
 
-    const isM3u8 = nowPlaying.url.endsWith('.m3u8')
+    // Falls back to the ffmpeg-transcoded output for this exact channel once one exists —
+    // set by the ERROR handler below the first time it detects an unsupported audio codec,
+    // and persisted across this same-channel reload via a ref (see the effect above).
+    const sourceUrl = transcodedUrlRef.current ?? nowPlaying.url
+    const isM3u8 = sourceUrl.endsWith('.m3u8')
 
     if (isM3u8 && Hls.isSupported()) {
       const smooth = bufferProfile === 'smooth'
@@ -116,9 +154,50 @@ export function Player(): JSX.Element | null {
         manifestLoadingMaxRetry: 6
       })
       hlsRef.current = hls
-      hls.loadSource(nowPlaying.url)
+      hls.loadSource(sourceUrl)
       hls.attachMedia(video)
       hls.on(Hls.Events.ERROR, (_event, data) => {
+        // Spinning up ffmpeg takes a few real seconds, during which this same (still-attached,
+        // still-broken) hls instance keeps hitting the identical error repeatedly. Once a fix
+        // is already in flight there's nothing new to react to — ignore the noise rather than
+        // running the normal escalation logic (and possibly flashing a "gave up" message) for
+        // a stream we're already replacing.
+        if (awaitingTranscodeRef.current) return
+
+        // Two distinct hls.js failure modes share the same real cause — a Dolby Digital
+        // (AC-3/E-AC-3) audio track this app's playback engine can't handle: hls.js's own
+        // demuxer refusing to parse EC-3 inside MPEG-TS at all (fatal fragParsingError), or
+        // Chromium's SourceBuffer rejecting the codec once handed valid AAC-shaped data
+        // (non-fatal bufferAddCodecError/bufferAppendError). Try transcoding once before
+        // falling through to either path's normal (terminal) error handling.
+        const isUnsupportedAudioCodec =
+          (data.details === 'fragParsingError' && typeof data.reason === 'string' && /ec-?3|ac-?3/i.test(data.reason)) ||
+          ((data.details === 'bufferAddCodecError' || data.details === 'bufferAppendError') &&
+            typeof data.mimeType === 'string' &&
+            data.mimeType.toLowerCase().includes('audio'))
+
+        if (isUnsupportedAudioCodec && !triedTranscodeRef.current) {
+          triedTranscodeRef.current = true
+          awaitingTranscodeRef.current = true
+          setPlaybackError(null)
+          setTranscoding(true)
+          window.api.transcode
+            .start(nowPlaying.url)
+            .then(({ sessionId, url }) => {
+              transcodeSessionIdRef.current = sessionId
+              transcodedUrlRef.current = url
+              setReloadTick((t) => t + 1)
+            })
+            .catch((err) => {
+              awaitingTranscodeRef.current = false
+              setPlaybackError(
+                `Audio codec not supported by this player, and automatic transcoding failed: ${err instanceof Error ? err.message : String(err)}`
+              )
+            })
+            .finally(() => setTranscoding(false))
+          return
+        }
+
         if (!data.fatal) {
           // A codec/append error scoped to a single SourceBuffer (very often the audio
           // track — e.g. an AC-3/E-AC-3 feed, which Chromium has no decoder for) can
@@ -132,6 +211,17 @@ export function Player(): JSX.Element | null {
           }
           return
         }
+        console.error(
+          '[player] fatal hls error',
+          JSON.stringify({
+            type: data.type,
+            details: data.details,
+            reason: data.reason,
+            err: data.error?.message,
+            levelIndex: data.level,
+            frag: data.frag ? { sn: data.frag.sn, url: data.frag.url, level: data.frag.level } : undefined
+          })
+        )
         switch (data.type) {
           case Hls.ErrorTypes.NETWORK_ERROR:
             networkRetryCount += 1
@@ -281,7 +371,13 @@ export function Player(): JSX.Element | null {
           <div className="player-error">No network connection — will resume automatically once you're back online.</div>
         )}
         {playbackError && isOnline && <div className="player-error">{playbackError}</div>}
-        {buffering && !playbackError && (
+        {transcoding && !playbackError && (
+          <div className="player-buffering">
+            <div className="spinner" />
+            <span>Fixing audio for this channel…</span>
+          </div>
+        )}
+        {buffering && !playbackError && !transcoding && (
           <div className="player-buffering">
             <div className="spinner" />
             <span>Buffering…</span>

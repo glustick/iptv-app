@@ -1,7 +1,7 @@
 {
   "name": "iptv-app",
   "productName": "AllisonIPTV",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "description": "Desktop IPTV client for Xtream Codes providers with live TV, VOD, series and EPG guide support",
   "main": "./out/main/index.js",
   "author": "",
@@ -24,6 +24,7 @@
     "electron-store": "^8.2.0",
     "electron-updater": "^6.8.9",
     "fast-xml-parser": "^4.4.1",
+    "ffmpeg-static": "^5.3.0",
     "hls.js": "^1.5.15",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -46,7 +47,11 @@
     "appId": "com.iptv.app",
     "productName": "AllisonIPTV",
     "files": [
-      "out/**/*"
+      "out/**/*",
+      "node_modules/ffmpeg-static/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**/*"
     ],
     "publish": {
       "provider": "github",

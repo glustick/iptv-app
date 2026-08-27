@@ -11,12 +11,18 @@ interface ProxyAPI {
   setTarget: (baseUrl: string) => Promise<void>
 }
 
+interface TranscodeAPI {
+  start: (sourceUrl: string) => Promise<{ sessionId: string; url: string }>
+  stop: (sessionId: string) => Promise<void>
+}
+
 declare global {
   interface Window {
     electron: ElectronAPI
     api: {
       store: StoreAPI
       proxy: ProxyAPI
+      transcode: TranscodeAPI
     }
   }
 }

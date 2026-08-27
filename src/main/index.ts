@@ -1,10 +1,16 @@
 import { app, shell, BrowserWindow, ipcMain, net, nativeImage } from 'electron'
-import { join } from 'path'
+import { join, extname } from 'path'
 import { createServer, IncomingMessage, ServerResponse } from 'http'
 import { URL } from 'url'
+import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
+import { mkdtemp, rm, readFile } from 'fs/promises'
+import { existsSync } from 'fs'
+import { tmpdir } from 'os'
+import { randomUUID } from 'crypto'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import Store from 'electron-store'
 import { autoUpdater } from 'electron-updater'
+import ffmpegPathRaw from 'ffmpeg-static'
 
 // Electron resolves the app's name from package.json's "productName" (falling back to
 // "name") before any of this module's own code runs — by the time a line here calls
@@ -19,6 +25,153 @@ app.setName('AllisonIPTV')
 app.setPath('userData', legacyUserDataPath)
 
 const store = new Store()
+
+/**
+ * ffmpeg-static's exported path always points inside app.asar, even once packaged — the
+ * actual binary lives in app.asar.unpacked (see build.asarUnpack in package.json), since a
+ * native executable can't be run from inside a virtual asar archive. This substitution is
+ * only meaningful once packaged; in dev the path already resolves directly on disk.
+ */
+const ffmpegPath = app.isPackaged
+  ? ffmpegPathRaw?.replace('app.asar', 'app.asar.unpacked')
+  : ffmpegPathRaw
+
+/**
+ * Some providers' live channels carry EC-3/E-AC-3 (Dolby Digital Plus) audio inside their
+ * MPEG-TS segments, which hls.js's built-in demuxer cannot parse at all — every fragment
+ * fails identically, forever (see Player.tsx's MEDIA_ERROR handling). The only real fix is
+ * remuxing the audio to AAC before hls.js ever sees it. This spawns ffmpeg per affected
+ * channel on demand (not for every stream — most don't need it) reading from this app's own
+ * local proxy (already TLS-solved and CORS-free) and writes a fresh local HLS output that the
+ * player falls back to.
+ */
+interface TranscodeSession {
+  proc: ChildProcessWithoutNullStreams
+  dir: string
+  stderrTail: string[]
+}
+const transcodeSessions = new Map<string, TranscodeSession>()
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function stopTranscode(sessionId: string): Promise<void> {
+  const session = transcodeSessions.get(sessionId)
+  if (!session) return
+  transcodeSessions.delete(sessionId)
+
+  if (session.proc.exitCode === null) {
+    session.proc.kill('SIGTERM')
+    // Give ffmpeg a moment to actually stop writing before removing its directory — its own
+    // 'exit' handler also cleans up, but only once the process has genuinely terminated;
+    // this covers the case where something else (e.g. app quit) needs the directory gone now.
+    await Promise.race([
+      new Promise<void>((resolve) => session.proc.once('exit', () => resolve())),
+      sleep(2000)
+    ])
+    if (session.proc.exitCode === null) session.proc.kill('SIGKILL')
+  }
+  await rm(session.dir, { recursive: true, force: true }).catch(() => {})
+}
+
+async function startTranscode(sourceUrl: string): Promise<{ sessionId: string; playlistPath: string }> {
+  if (!ffmpegPath) {
+    throw new Error('ffmpeg binary not available on this platform')
+  }
+  const sessionId = randomUUID()
+  const dir = await mkdtemp(join(tmpdir(), 'allisoniptv-transcode-'))
+  const playlistFile = join(dir, 'playlist.m3u8')
+
+  const proc = spawn(ffmpegPath, [
+    '-y',
+    '-i',
+    sourceUrl,
+    '-c:v',
+    'copy',
+    '-c:a',
+    'aac',
+    '-b:a',
+    '192k',
+    '-ac',
+    '2',
+    '-f',
+    'hls',
+    '-hls_time',
+    '4',
+    '-hls_list_size',
+    '6',
+    '-hls_flags',
+    'delete_segments+omit_endlist',
+    '-hls_segment_filename',
+    join(dir, 'seg_%05d.ts'),
+    playlistFile
+  ])
+
+  const session: TranscodeSession = { proc, dir, stderrTail: [] }
+  transcodeSessions.set(sessionId, session)
+
+  proc.stderr.on('data', (chunk: Buffer) => {
+    // Keep only a rolling tail — ffmpeg is chatty, but the last few lines are what actually
+    // explain a failure to start (bad input, unsupported option, etc).
+    session.stderrTail.push(...chunk.toString('utf8').split('\n').filter(Boolean))
+    if (session.stderrTail.length > 40) session.stderrTail.splice(0, session.stderrTail.length - 40)
+  })
+  proc.on('error', (err) => {
+    console.error('[transcode] failed to spawn ffmpeg:', err.message)
+  })
+  proc.on('exit', (code, signal) => {
+    if (code !== 0 && code !== null) {
+      console.error(`[transcode] ffmpeg exited with code ${code}:`, session.stderrTail.join('\n'))
+    }
+    transcodeSessions.delete(sessionId)
+    rm(dir, { recursive: true, force: true }).catch(() => {})
+    void signal
+  })
+
+  // ffmpeg only writes the playlist once it's produced enough of the first segment, so poll
+  // for it rather than assuming it exists immediately — and give up if the process has
+  // already died, rather than polling for the full timeout on a lost cause.
+  const deadline = Date.now() + 20000
+  while (Date.now() < deadline) {
+    if (existsSync(playlistFile)) return { sessionId, playlistPath: playlistFile }
+    if (proc.exitCode !== null) {
+      throw new Error(`ffmpeg exited before producing output: ${session.stderrTail.slice(-10).join('\n')}`)
+    }
+    await sleep(300)
+  }
+  await stopTranscode(sessionId)
+  throw new Error('Timed out waiting for ffmpeg to produce transcoded output')
+}
+
+const TRANSCODE_MIME_TYPES: Record<string, string> = {
+  '.m3u8': 'application/vnd.apple.mpegurl',
+  '.ts': 'video/mp2t'
+}
+
+async function serveTranscodeFile(url: string, res: ServerResponse): Promise<void> {
+  const match = /^\/__transcode\/([^/]+)\/([^/]+)$/.exec(url)
+  const session = match ? transcodeSessions.get(match[1]) : undefined
+  const filename = match?.[2]
+  const mime = filename ? TRANSCODE_MIME_TYPES[extname(filename)] : undefined
+  if (!session || !filename || !mime) {
+    res.writeHead(404)
+    res.end('Not found')
+    return
+  }
+  try {
+    const data = await readFile(join(session.dir, filename))
+    res.writeHead(200, {
+      'content-type': mime,
+      'access-control-allow-origin': '*',
+      'cache-control': 'no-cache'
+    })
+    res.end(data)
+  } catch {
+    res.writeHead(404)
+    res.end('Segment not available')
+  }
+}
 
 /**
  * Xtream Codes panels are built for native players (VLC, set-top boxes) and never send
@@ -49,6 +202,13 @@ function startLocalProxy(): Promise<number> {
           'access-control-allow-headers': '*'
         })
         res.end()
+        return
+      }
+
+      // Transcoded HLS output lives on local disk, not upstream — serve it directly instead
+      // of treating it as something to proxy to the Xtream server.
+      if (req.url?.startsWith('/__transcode/')) {
+        void serveTranscodeFile(req.url, res)
         return
       }
 
@@ -186,6 +346,12 @@ app.whenReady().then(async () => {
     proxyTargetBase = baseUrl
   })
 
+  ipcMain.handle('transcode:start', async (_event, sourceUrl: string) => {
+    const { sessionId } = await startTranscode(sourceUrl)
+    return { sessionId, url: `http://127.0.0.1:${proxyPort}/__transcode/${sessionId}/playlist.m3u8` }
+  })
+  ipcMain.handle('transcode:stop', (_event, sessionId: string) => stopTranscode(sessionId))
+
   createWindow()
 
   app.on('activate', function () {
@@ -206,5 +372,14 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
+  }
+})
+
+// Without this, quitting the app while a transcode is active would leave its ffmpeg child
+// process (and temp directory) running/on-disk indefinitely — Electron doesn't kill child
+// processes it didn't spawn via its own process-management APIs on quit.
+app.on('before-quit', () => {
+  for (const sessionId of transcodeSessions.keys()) {
+    void stopTranscode(sessionId)
   }
 })
