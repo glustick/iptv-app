@@ -1,12 +1,13 @@
 {
   "name": "iptv-app",
   "productName": "AllisonIPTV",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "Desktop IPTV client for Xtream Codes providers with live TV, VOD, series and EPG guide support",
   "main": "./out/main/index.js",
   "author": "",
   "private": true,
   "scripts": {
+    "postinstall": "node scripts/rename-dev-electron.mjs",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
