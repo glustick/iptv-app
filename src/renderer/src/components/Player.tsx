@@ -4,6 +4,8 @@ import { useAppStore } from '../store/useAppStore'
 import { PlayerChannelBar } from './PlayerChannelBar'
 
 const MAX_NETWORK_RETRIES = 4
+const MAX_MEDIA_ERROR_RECOVERIES = 3
+const MEDIA_ERROR_RESET_AFTER_MS = 15000
 const PROGRESS_SAVE_INTERVAL_MS = 5000
 const CHANNEL_BAR_AUTO_HIDE_MS = 6000
 
@@ -44,6 +46,8 @@ export function Player(): JSX.Element | null {
     setPlaybackError(null)
     setBuffering(true)
     let networkRetryCount = 0
+    let mediaErrorRecoveryCount = 0
+    let mediaErrorResetTimer: ReturnType<typeof setTimeout> | null = null
     let progressInterval: ReturnType<typeof setInterval> | null = null
 
     if (hlsRef.current) {
@@ -51,8 +55,26 @@ export function Player(): JSX.Element | null {
       hlsRef.current = null
     }
 
-    const handleWaiting = (): void => setBuffering(true)
-    const handlePlaying = (): void => setBuffering(false)
+    const handleWaiting = (): void => {
+      setBuffering(true)
+      // Still recovering — don't let a stretch of genuinely uninterrupted playback earlier
+      // in the session forgive a media error that's actively recurring right now.
+      if (mediaErrorResetTimer) {
+        clearTimeout(mediaErrorResetTimer)
+        mediaErrorResetTimer = null
+      }
+    }
+    const handlePlaying = (): void => {
+      setBuffering(false)
+      // A stretch of real, uninterrupted playback means whatever caused an earlier media
+      // error is very likely no longer happening — reset the recovery count so a later,
+      // unrelated blip gets its own full set of attempts instead of inheriting exhausted
+      // ones from a problem that already resolved itself.
+      if (mediaErrorResetTimer) clearTimeout(mediaErrorResetTimer)
+      mediaErrorResetTimer = setTimeout(() => {
+        mediaErrorRecoveryCount = 0
+      }, MEDIA_ERROR_RESET_AFTER_MS)
+    }
     const handleCanPlay = (): void => setBuffering(false)
     video.addEventListener('waiting', handleWaiting)
     video.addEventListener('playing', handlePlaying)
@@ -121,7 +143,24 @@ export function Player(): JSX.Element | null {
             }
             break
           case Hls.ErrorTypes.MEDIA_ERROR:
-            hls.recoverMediaError()
+            // recoverMediaError() alone has no retry cap, so a persistent (non-transient)
+            // media error — some channels hit one consistently, not just as a rare blip —
+            // recovers, immediately re-fails, and recovers again in a tight loop: every
+            // cycle briefly resets and re-seeks the video, which is what actually produces
+            // the visible flicker, not the buffering itself. Escalate instead of looping
+            // forever, matching hls.js's own recommended recovery pattern.
+            mediaErrorRecoveryCount += 1
+            if (mediaErrorRecoveryCount > MAX_MEDIA_ERROR_RECOVERIES) {
+              setPlaybackError(
+                `Playback error: ${data.details} (gave up after ${MAX_MEDIA_ERROR_RECOVERIES} recovery attempts)`
+              )
+              hls.destroy()
+            } else if (mediaErrorRecoveryCount === 2) {
+              hls.swapAudioCodec()
+              hls.recoverMediaError()
+            } else {
+              hls.recoverMediaError()
+            }
             break
           default:
             setPlaybackError(`Playback error: ${data.details}`)
@@ -138,6 +177,7 @@ export function Player(): JSX.Element | null {
       video.removeEventListener('waiting', handleWaiting)
       video.removeEventListener('playing', handlePlaying)
       video.removeEventListener('canplay', handleCanPlay)
+      if (mediaErrorResetTimer) clearTimeout(mediaErrorResetTimer)
       if (progressInterval) clearInterval(progressInterval)
       if (nowPlaying.kind === 'series' && video.duration > 0 && !Number.isNaN(video.duration)) {
         updateEpisodeProgress(String(nowPlaying.streamId), video.currentTime, video.duration)
