@@ -582,10 +582,16 @@ body.resizing-col {
 
 .player-body {
   flex: 1;
+  /* Flex items default to min-height: auto, which sizes them to their content's intrinsic
+     height — here, the video's own aspect ratio applied to the full available width. On a
+     video wider/taller than the actual remaining space, that pushes this box (and anything
+     anchored to its bottom, like the channel bar) below the visible window entirely. */
+  min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   position: relative;
+  overflow: hidden;
 }
 
 .player-video {

@@ -250,7 +250,13 @@ export function Player(): JSX.Element | null {
         <video
           ref={videoRef}
           className="player-video"
-          controls
+          // Native controls fight the channel bar on live: clicking the bottom strip (where
+          // native controls render) gets consumed by their shadow DOM and never reaches this
+          // onClick, and clicking anywhere else still double-fires the browser's own
+          // click-to-pause behavior alongside our toggle, freezing the stream. Seeking/pausing
+          // isn't meaningful on a live feed anyway, so controls stay off for live and on for
+          // VOD/series, which still need them to scrub.
+          controls={nowPlaying.kind !== 'live'}
           autoPlay
           onClick={() => {
             if (nowPlaying.kind === 'live') setShowChannelBar((v) => !v)

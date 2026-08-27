@@ -7,8 +7,9 @@ Recommended enhancements for future development, roughly ordered by priority wit
 - **0.3.0** replaced the single-channel modal preview with a docked, resizable panel containing a small live video preview and a full multi-channel Gantt-style EPG grid (channels down the vertical axis, time across the horizontal axis, programmes as positioned blocks) — this also closes out the "full grid EPG guide" item that used to be listed below. The sidebar and the panel are both drag-resizable now, with widths persisted.
 - **0.3.1** dropped the separate channel list on the Live TV tab entirely — the EPG grid's own channel column already lists every channel, so Live TV is now just Sidebar + a full-width grid.
 - **0.4.0** added double-click-a-channel-for-fullscreen, a semi-transparent channel-swap bar overlaid on the fullscreen player (click the video to toggle it), and continuous horizontal scroll on the EPG grid's time axis (trackpad swipe / shift+wheel, in addition to the ◀ Now ▶ buttons).
+- **0.4.1** fixed the channel bar being invisible in practice: `.player-body` (a flex child) had no `min-height: 0`, so flexbox's default `min-height: auto` let the video's own aspect ratio push the box taller than the actual space available — on this test stream, 112px taller than the window. That pushed everything anchored to its bottom, including the whole channel bar, off the visible window entirely, even though it existed in the DOM. Also removed the native HTML5 `controls` attribute for live channels specifically (VOD/series keep it, for scrubbing) — with it on, clicking the video both toggled play/pause *and* the bar at once (freezing the live feed), and clicking near the bottom of the video — exactly where the bar renders, and where a real user's click would land — got swallowed by the native control strip's shadow DOM before it ever reached the click handler.
 
-What's below is what's left, plus fresh findings from building 0.4.0.
+What's below is what's left, plus fresh findings from building 0.4.1.
 
 ## Quick wins
 
