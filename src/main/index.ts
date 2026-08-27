@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, net } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, net, nativeImage } from 'electron'
 import { join } from 'path'
 import { createServer, IncomingMessage, ServerResponse } from 'http'
 import { URL } from 'url'
@@ -113,6 +113,11 @@ function startLocalProxy(): Promise<number> {
   })
 }
 
+// Packaged builds get their icon baked in by electron-builder (from build/icon.png) at the OS
+// level — an .icns/.ico embedded in the app bundle/exe — so this path only needs to resolve
+// for the unpackaged dev app, which otherwise falls back to Electron's own default icon.
+const devIconPath = join(__dirname, '../../build/icon.png')
+
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
     width: 1320,
@@ -122,6 +127,7 @@ function createWindow(): void {
     show: false,
     autoHideMenuBar: true,
     backgroundColor: '#0b0d12',
+    ...(is.dev ? { icon: devIconPath } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
@@ -146,6 +152,12 @@ function createWindow(): void {
 
 app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.iptv.app')
+
+  // BrowserWindow's `icon` option only affects Windows/Linux — macOS Dock icon has to be set
+  // separately, and only matters in dev, since the packaged .app bundle carries its own icns.
+  if (is.dev && process.platform === 'darwin') {
+    app.dock?.setIcon(nativeImage.createFromPath(devIconPath))
+  }
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
