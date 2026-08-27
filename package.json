@@ -1,6 +1,6 @@
 {
   "name": "iptv-app",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Desktop IPTV client for Xtream Codes providers with live TV, VOD, series and EPG guide support",
   "main": "./out/main/index.js",
   "author": "",
