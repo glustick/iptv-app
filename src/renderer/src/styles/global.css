@@ -593,6 +593,73 @@ body.resizing-col {
   height: 100%;
 }
 
+/* Channel bar: small transparent channel-swap overlay on the fullscreen player */
+
+.player-channel-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 92px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.85), rgba(0, 0, 0, 0.55));
+  backdrop-filter: blur(6px);
+  z-index: 2;
+}
+
+.channel-bar-item {
+  width: 100%;
+  height: 100%;
+  padding: 10px 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  text-align: center;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.channel-bar-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.channel-bar-item.active {
+  border-color: var(--accent);
+  background: rgba(79, 124, 255, 0.15);
+}
+
+.channel-bar-item img,
+.channel-bar-icon {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+
+.channel-bar-name {
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.channel-bar-now {
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
 .player-error {
   position: absolute;
   top: 16px;

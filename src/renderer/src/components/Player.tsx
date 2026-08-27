@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import Hls from 'hls.js'
 import { useAppStore } from '../store/useAppStore'
+import { PlayerChannelBar } from './PlayerChannelBar'
 
 const MAX_NETWORK_RETRIES = 4
 const PROGRESS_SAVE_INTERVAL_MS = 5000
+const CHANNEL_BAR_AUTO_HIDE_MS = 6000
 
 export function Player(): JSX.Element | null {
   const nowPlaying = useAppStore((s) => s.nowPlaying)
@@ -19,7 +21,9 @@ export function Player(): JSX.Element | null {
   const [buffering, setBuffering] = useState(false)
   const [pipActive, setPipActive] = useState(false)
   const [reloadTick, setReloadTick] = useState(0)
+  const [showChannelBar, setShowChannelBar] = useState(false)
   const wasOffline = useRef(false)
+  const autoHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Auto-reconnect: if the whole network dropped (not just this fragment), hls.js's own
   // retry budget may already be exhausted by the time connectivity returns. Force a fresh
@@ -146,6 +150,23 @@ export function Player(): JSX.Element | null {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nowPlaying, bufferProfile, reloadTick])
 
+  // The channel bar auto-hides after a few seconds of inactivity, like a real set-top
+  // box's channel banner. Re-armed whenever it's shown or a channel is picked from it.
+  useEffect(() => {
+    if (autoHideTimer.current) clearTimeout(autoHideTimer.current)
+    if (!showChannelBar) return
+    autoHideTimer.current = setTimeout(() => setShowChannelBar(false), CHANNEL_BAR_AUTO_HIDE_MS)
+    return () => {
+      if (autoHideTimer.current) clearTimeout(autoHideTimer.current)
+    }
+  }, [showChannelBar, nowPlaying])
+
+  // The channel bar only makes sense for live TV — hide it if playback switches to
+  // something else (e.g. a series episode played from elsewhere while it was open).
+  useEffect(() => {
+    if (nowPlaying?.kind !== 'live') setShowChannelBar(false)
+  }, [nowPlaying])
+
   // Keyboard shortcuts while the player is open: Escape to close, M to mute, arrows for volume.
   useEffect(() => {
     if (!nowPlaying) return
@@ -153,7 +174,11 @@ export function Player(): JSX.Element | null {
       const video = videoRef.current
       if (!video) return
       if (e.key === 'Escape') {
-        stop()
+        // Close the channel bar first if it's open, matching the layered-overlay pattern
+        // used elsewhere in the app (App.tsx's Escape handler) — only close the whole
+        // player once there's nothing else open on top of it.
+        if (showChannelBar) setShowChannelBar(false)
+        else stop()
       } else if (e.key === 'm' || e.key === 'M') {
         video.muted = !video.muted
       } else if (e.key === 'ArrowUp') {
@@ -166,7 +191,7 @@ export function Player(): JSX.Element | null {
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [nowPlaying, stop])
+  }, [nowPlaying, stop, showChannelBar])
 
   useEffect(() => {
     const video = videoRef.current
@@ -222,7 +247,16 @@ export function Player(): JSX.Element | null {
             <span>Buffering…</span>
           </div>
         )}
-        <video ref={videoRef} className="player-video" controls autoPlay />
+        <video
+          ref={videoRef}
+          className="player-video"
+          controls
+          autoPlay
+          onClick={() => {
+            if (nowPlaying.kind === 'live') setShowChannelBar((v) => !v)
+          }}
+        />
+        {showChannelBar && <PlayerChannelBar />}
       </div>
     </div>
   )

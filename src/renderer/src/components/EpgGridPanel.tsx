@@ -9,6 +9,8 @@ import type { LiveStream, ShortEpgProgram, ClockFormat } from '../lib/types'
 const ROW_HEIGHT = 40
 const WINDOW_HOURS = 3
 const HOUR_MS = 3_600_000
+const MS_PER_SCROLL_UNIT = 30_000 // 30 seconds of time-shift per wheel delta unit
+const MAX_WINDOW_OFFSET_MS = 24 * HOUR_MS // soft clamp — get_short_epg's own window is far narrower than this anyway
 
 function pct(t: number, start: number, end: number): number {
   if (end <= start) return 0
@@ -35,6 +37,7 @@ interface RowProps {
   activeStreamId?: number
   clockFormat: ClockFormat
   onSelectChannel: (channel: LiveStream) => void
+  onWatchFullscreen: (channel: LiveStream) => void
   onWatchTimeshift: (channel: LiveStream, program: ShortEpgProgram) => void
 }
 
@@ -48,6 +51,7 @@ function EpgRow({
   activeStreamId,
   clockFormat,
   onSelectChannel,
+  onWatchFullscreen,
   onWatchTimeshift
 }: { index: number; style: CSSProperties } & RowProps): JSX.Element {
   const channel = channels[index]
@@ -72,7 +76,12 @@ function EpgRow({
 
   return (
     <div style={style} className={isActive ? 'epg-row active' : 'epg-row'}>
-      <button className="epg-row-channel" onClick={() => onSelectChannel(channel)} title={channel.name}>
+      <button
+        className="epg-row-channel"
+        onClick={() => onSelectChannel(channel)}
+        onDoubleClick={() => onWatchFullscreen(channel)}
+        title={`${channel.name} (double-click for fullscreen)`}
+      >
         {channel.stream_icon ? (
           <img src={channel.stream_icon} alt="" loading="lazy" />
         ) : (
@@ -126,6 +135,7 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
   const liveStreams = useAppStore((s) => s.liveStreams)
   const searchTerm = useAppStore((s) => s.searchTerm)
   const closeChannelPreview = useAppStore((s) => s.closeChannelPreview)
+  const nowPlaying = useAppStore((s) => s.nowPlaying)
   const client = useAppStore((s) => s.client)
   const play = useAppStore((s) => s.play)
   const playTimeshift = useAppStore((s) => s.playTimeshift)
@@ -157,9 +167,13 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
     return liveStreams.filter((c) => c.name.toLowerCase().includes(needle))
   }, [liveStreams, debouncedSearch])
 
+  // Suppress the small preview's own stream while the fullscreen player has one open for
+  // the same account — most Xtream providers cap concurrent connections quite low (often
+  // just 1), so running both at once can fail outright. It resumes automatically once
+  // fullscreen closes (nowPlaying clears) since previewUrl becomes non-null again.
   const previewUrl = useMemo(
-    () => (client && previewChannel ? client.getStreamUrl('live', previewChannel.stream_id, 'm3u8') : null),
-    [client, previewChannel]
+    () => (client && previewChannel && !nowPlaying ? client.getStreamUrl('live', previewChannel.stream_id, 'm3u8') : null),
+    [client, previewChannel, nowPlaying]
   )
   useHlsAttach(videoRef, previewUrl, muted)
 
@@ -191,13 +205,30 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
 
   const favorited = isFavorited('live', previewChannel.stream_id)
 
-  function watchFullscreen(): void {
-    if (!previewChannel) return
-    // Closing the preview stops its own stream connection before the fullscreen player
-    // opens its own — most Xtream accounts cap concurrent connections quite low (often
-    // just 1), so two simultaneous streams to the same account can fail outright.
-    play('live', previewChannel.stream_id, previewChannel.name, 'm3u8', previewChannel.stream_icon)
-    closeChannelPreview()
+  function watchFullscreen(channel: LiveStream = previewChannel!): void {
+    play('live', channel.stream_id, channel.name, 'm3u8', channel.stream_icon)
+    if (fullWidth) {
+      // Keep the grid's state in sync (so it shows this channel highlighted/previewing
+      // when fullscreen closes) rather than tearing the whole panel down — its own
+      // stream is already suppressed above while nowPlaying is set, so there's no
+      // concurrent-connection risk in leaving it mounted.
+      if (channel.stream_id !== previewChannel!.stream_id) openChannelPreview(channel)
+    } else {
+      // Docked mode (Movies/Series/Favorites): the panel isn't the primary browsing
+      // surface there, so just close it like before.
+      closeChannelPreview()
+    }
+  }
+
+  function handleWheel(e: React.WheelEvent): void {
+    // Horizontal trackpad swipe (deltaX) or a plain mouse wheel while holding Shift
+    // (browsers report that as deltaX too) shifts the visible time window; a normal
+    // vertical scroll is left alone so it can scroll the channel rows as usual.
+    if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return
+    e.preventDefault()
+    setWindowOffsetMs((o) =>
+      Math.min(MAX_WINDOW_OFFSET_MS, Math.max(-MAX_WINDOW_OFFSET_MS, o + e.deltaX * (MS_PER_SCROLL_UNIT / 100)))
+    )
   }
 
   function watchFromStart(channel: LiveStream, program: ShortEpgProgram): void {
@@ -239,22 +270,22 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
                 ✕
               </button>
             </div>
-            <button className="watch-now-button watch-now-button--compact" onClick={watchFullscreen}>
+            <button className="watch-now-button watch-now-button--compact" onClick={() => watchFullscreen()}>
               ⛶ Watch fullscreen
             </button>
           </div>
         </div>
 
-        <div className="epg-grid">
+        <div className="epg-grid" onWheel={handleWheel}>
           <div className="epg-time-header">
             <div className="epg-grid-nav">
-              <button onClick={() => setWindowOffsetMs((o) => o - HOUR_MS)} title="Earlier">
+              <button onClick={() => setWindowOffsetMs((o) => Math.max(-MAX_WINDOW_OFFSET_MS, o - HOUR_MS))} title="Earlier">
                 ◀
               </button>
               <button onClick={() => setWindowOffsetMs(0)} title="Jump to now">
                 Now
               </button>
-              <button onClick={() => setWindowOffsetMs((o) => o + HOUR_MS)} title="Later">
+              <button onClick={() => setWindowOffsetMs((o) => Math.min(MAX_WINDOW_OFFSET_MS, o + HOUR_MS))} title="Later">
                 ▶
               </button>
             </div>
@@ -281,6 +312,7 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
                   activeStreamId: previewChannel.stream_id,
                   clockFormat,
                   onSelectChannel: openChannelPreview,
+                  onWatchFullscreen: watchFullscreen,
                   onWatchTimeshift: watchFromStart
                 }}
                 rowComponent={EpgRow}
