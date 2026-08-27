@@ -14,6 +14,7 @@ function App(): JSX.Element {
   const init = useAppStore((s) => s.init)
   const status = useAppStore((s) => s.status)
   const error = useAppStore((s) => s.error)
+  const viewMode = useAppStore((s) => s.viewMode)
 
   useEffect(() => {
     init()
@@ -42,13 +43,22 @@ function App(): JSX.Element {
   return (
     <div className="app-shell">
       <TopBar />
+      {error && <div className="banner-error banner-error--top">{error}</div>}
       <div className="app-body">
         <Sidebar />
-        <main className="content-area">
-          {error && <div className="banner-error">{error}</div>}
-          <ChannelList />
-        </main>
-        <EpgGridPanel />
+        {viewMode === 'live' ? (
+          // The EPG grid's own channel column already lists every channel, so on the
+          // Live TV tab it replaces the separate list entirely instead of sitting docked
+          // beside it — no point browsing the same channels twice.
+          <EpgGridPanel fullWidth />
+        ) : (
+          <>
+            <main className="content-area">
+              <ChannelList />
+            </main>
+            <EpgGridPanel />
+          </>
+        )}
       </div>
       <Player />
       <SeriesModal />

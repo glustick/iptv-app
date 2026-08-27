@@ -287,7 +287,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ selectedCategoryId: categoryId })
     try {
       if (viewMode === 'live') {
-        set({ liveStreams: await client.getLiveStreams(categoryId ?? undefined) })
+        const liveStreams = await client.getLiveStreams(categoryId ?? undefined)
+        set({ liveStreams })
+        // The EPG grid is now the primary way to browse live channels (there's no
+        // separate clickable list next to it), so seed it with the first channel in
+        // the category instead of leaving it blank until something is clicked.
+        if (liveStreams.length > 0) get().openChannelPreview(liveStreams[0])
       } else if (viewMode === 'movies') {
         set({ vodStreams: await client.getVodStreams(categoryId ?? undefined) })
       } else if (viewMode === 'series') {

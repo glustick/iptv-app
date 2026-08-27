@@ -115,7 +115,13 @@ function EpgRow({
 // runs left-to-right along the horizontal axis, and each programme is a positioned block
 // sized by its duration. Replaces the old single-channel vertical preview — the small live
 // video preview now lives in the top-left corner instead of taking the whole panel.
-export function EpgGridPanel(): JSX.Element | null {
+//
+// `fullWidth`: on the Live TV tab this panel's own channel column already lists every
+// channel, so there's no separate list next to it — it fills all the remaining space after
+// the sidebar instead of being a fixed/resizable docked column. Movies/Series/Favorites
+// still use the docked form (resizable, alongside their own ChannelList) since only a
+// clicked live favorite opens it there, not a whole browsable channel column.
+export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JSX.Element | null {
   const previewChannel = useAppStore((s) => s.previewChannel)
   const liveStreams = useAppStore((s) => s.liveStreams)
   const searchTerm = useAppStore((s) => s.searchTerm)
@@ -167,7 +173,14 @@ export function EpgGridPanel(): JSX.Element | null {
     setMuted(true)
   }, [previewChannel?.stream_id])
 
-  if (!previewChannel) return null
+  if (!previewChannel) {
+    if (!fullWidth) return null
+    return (
+      <aside className="channel-detail-panel channel-detail-panel--full">
+        <p className="modal-loading">Loading channels…</p>
+      </aside>
+    )
+  }
 
   const baseHour = Math.floor(Date.now() / HOUR_MS) * HOUR_MS
   const windowStart = baseHour + windowOffsetMs
@@ -195,9 +208,13 @@ export function EpgGridPanel(): JSX.Element | null {
   return (
     // The resize handle lives in this non-scrolling wrapper, not inside the scrollable
     // content div — see Sidebar.tsx for why (a position:absolute child of a scrolled
-    // overflow:auto element scrolls with it).
-    <aside className="channel-detail-panel" style={{ width }}>
-      <div className="resize-handle resize-handle--left" onMouseDown={startDrag} />
+    // overflow:auto element scrolls with it). In fullWidth mode there's nothing to its
+    // right to resize against, so it just fills the remaining space instead.
+    <aside
+      className={fullWidth ? 'channel-detail-panel channel-detail-panel--full' : 'channel-detail-panel'}
+      style={fullWidth ? undefined : { width }}
+    >
+      {!fullWidth && <div className="resize-handle resize-handle--left" onMouseDown={startDrag} />}
       <div className="detail-panel-scroll">
         <div className="epg-panel-top">
           <div

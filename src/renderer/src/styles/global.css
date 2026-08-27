@@ -412,6 +412,11 @@ body.resizing-col {
   flex-shrink: 0;
 }
 
+.banner-error--top {
+  margin: 10px 20px 0;
+  border-radius: 8px;
+}
+
 .empty-state {
   color: var(--text-dim);
   font-size: 13px;
@@ -755,6 +760,12 @@ body.resizing-col {
   border-left: 1px solid var(--border);
   background: var(--bg-elevated);
   display: flex;
+}
+
+.channel-detail-panel--full {
+  flex: 1;
+  min-width: 0;
+  border-left: none;
 }
 
 .detail-panel-scroll {
