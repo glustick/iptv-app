@@ -606,7 +606,7 @@ body.resizing-col {
   left: 0;
   right: 0;
   bottom: 0;
-  height: 92px;
+  height: 116px;
   background: linear-gradient(to top, rgba(0, 0, 0, 0.85), rgba(0, 0, 0, 0.55));
   backdrop-filter: blur(6px);
   z-index: 2;
@@ -615,17 +615,17 @@ body.resizing-col {
 .channel-bar-item {
   width: 100%;
   height: 100%;
-  padding: 10px 8px;
+  padding: 10px 10px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid transparent;
   border-radius: 6px;
   color: var(--text);
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
-  gap: 4px;
-  text-align: center;
+  gap: 6px;
+  text-align: left;
   overflow: hidden;
   box-sizing: border-box;
 }
@@ -639,10 +639,17 @@ body.resizing-col {
   background: rgba(79, 124, 255, 0.15);
 }
 
+.channel-bar-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 .channel-bar-item img,
 .channel-bar-icon {
-  width: 28px;
-  height: 28px;
+  width: 22px;
+  height: 22px;
   object-fit: contain;
   border-radius: 4px;
   background: rgba(255, 255, 255, 0.08);
@@ -651,15 +658,55 @@ body.resizing-col {
 
 .channel-bar-name {
   font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* Mirrors the main EPG grid's Gantt blocks in miniature: a title plus a filled bar showing
+   how far into the current programme playback is, so this reads as a small EPG rather than
+   a plain channel-name tile. */
+.channel-bar-listing {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.channel-bar-now {
+  font-size: 10px;
+  color: var(--text-dim);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
 }
 
-.channel-bar-now {
-  font-size: 10px;
+.channel-bar-now--empty {
+  font-style: italic;
+  opacity: 0.7;
+}
+
+.channel-bar-progress {
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.15);
+  overflow: hidden;
+}
+
+.channel-bar-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+.channel-bar-next {
+  font-size: 9px;
   color: var(--text-dim);
+  opacity: 0.75;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

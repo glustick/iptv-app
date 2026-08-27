@@ -200,8 +200,15 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
   const windowStart = baseHour + windowOffsetMs
   const windowEnd = windowStart + WINDOW_HOURS * HOUR_MS
 
+  // Ticks sit at real clock-hour boundaries, not at fixed fractions of the window — that's
+  // what makes them visually slide as windowStart shifts continuously (wheel-scrolling moves
+  // it by 30s increments, so it's rarely hour-aligned). Anchoring ticks to windowStart itself
+  // instead would always land them at the same 0/33/66/100% positions no matter how far you'd
+  // scrolled, since pct() is relative to the window — only their label text would change,
+  // making the header look stuck in place.
+  const firstTick = Math.ceil(windowStart / HOUR_MS) * HOUR_MS
   const hourTicks: number[] = []
-  for (let t = windowStart; t <= windowEnd; t += HOUR_MS) hourTicks.push(t)
+  for (let t = firstTick; t <= windowEnd; t += HOUR_MS) hourTicks.push(t)
 
   const favorited = isFavorited('live', previewChannel.stream_id)
 

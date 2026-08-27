@@ -9,7 +9,9 @@ Recommended enhancements for future development, roughly ordered by priority wit
 - **0.4.0** added double-click-a-channel-for-fullscreen, a semi-transparent channel-swap bar overlaid on the fullscreen player (click the video to toggle it), and continuous horizontal scroll on the EPG grid's time axis (trackpad swipe / shift+wheel, in addition to the ◀ Now ▶ buttons).
 - **0.4.1** fixed the channel bar being invisible in practice: `.player-body` (a flex child) had no `min-height: 0`, so flexbox's default `min-height: auto` let the video's own aspect ratio push the box taller than the actual space available — on this test stream, 112px taller than the window. That pushed everything anchored to its bottom, including the whole channel bar, off the visible window entirely, even though it existed in the DOM. Also removed the native HTML5 `controls` attribute for live channels specifically (VOD/series keep it, for scrubbing) — with it on, clicking the video both toggled play/pause *and* the bar at once (freezing the live feed), and clicking near the bottom of the video — exactly where the bar renders, and where a real user's click would land — got swallowed by the native control strip's shadow DOM before it ever reached the click handler.
 
-What's below is what's left, plus fresh findings from building 0.4.1.
+- **0.4.2** fixed the EPG grid's time header appearing stuck when scrolling: ticks were generated relative to `windowStart` itself (always landing at a fixed 0/33/66/100%), so only their label text changed as you scrolled — nothing visually moved. Ticks now anchor to real clock-hour boundaries, so their on-screen position genuinely slides as the window shifts, with ticks entering/leaving at the edges. Also reworked the fullscreen channel-swap bar from plain name/icon tiles into an actual mini EPG: each cell now shows the current programme title, a Gantt-style progress bar for how far into it playback is, and a "Next:" preview — mirroring the main grid's Gantt language instead of being a flat channel switcher.
+
+What's below is what's left, plus fresh findings from building 0.4.2.
 
 ## Quick wins
 

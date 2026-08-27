@@ -4,7 +4,7 @@ import { useAppStore } from '../store/useAppStore'
 import { useElementSize } from '../lib/useElementSize'
 import type { LiveStream, ShortEpgProgram } from '../lib/types'
 
-const COLUMN_WIDTH = 150
+const COLUMN_WIDTH = 180
 
 interface CellProps {
   channels: LiveStream[]
@@ -26,6 +26,25 @@ function BarCell({
   const listings = shortEpgByStream[channel.stream_id]
   const now = Date.now()
   const current = listings?.find((p) => Number(p.start_timestamp) * 1000 <= now && now < Number(p.stop_timestamp) * 1000)
+  // "Next" is whichever listing starts soonest after now — get_short_epg's results aren't
+  // guaranteed sorted, so find the minimum rather than assuming the first future entry is it.
+  const next = listings
+    ?.filter((p) => Number(p.start_timestamp) * 1000 > now)
+    .reduce<ShortEpgProgram | null>(
+      (soonest, p) => (!soonest || Number(p.start_timestamp) < Number(soonest.start_timestamp) ? p : soonest),
+      null
+    )
+  const elapsedPct = current
+    ? Math.min(
+        100,
+        Math.max(
+          0,
+          ((now - Number(current.start_timestamp) * 1000) /
+            (Number(current.stop_timestamp) * 1000 - Number(current.start_timestamp) * 1000)) *
+            100
+        )
+      )
+    : 0
   const active = activeStreamId === channel.stream_id
 
   return (
@@ -35,13 +54,27 @@ function BarCell({
         onClick={() => onSelect(channel)}
         title={channel.name}
       >
-        {channel.stream_icon ? (
-          <img src={channel.stream_icon} alt="" loading="lazy" />
+        <div className="channel-bar-head">
+          {channel.stream_icon ? (
+            <img src={channel.stream_icon} alt="" loading="lazy" />
+          ) : (
+            <span className="channel-bar-icon placeholder" />
+          )}
+          <span className="channel-bar-name">{channel.name}</span>
+        </div>
+        {current ? (
+          <div className="channel-bar-listing">
+            <span className="channel-bar-now">{current.title}</span>
+            <div className="channel-bar-progress">
+              <div className="channel-bar-progress-fill" style={{ width: `${elapsedPct}%` }} />
+            </div>
+            {next && <span className="channel-bar-next">Next: {next.title}</span>}
+          </div>
         ) : (
-          <span className="channel-bar-icon placeholder" />
+          <div className="channel-bar-listing">
+            <span className="channel-bar-now channel-bar-now--empty">No listing</span>
+          </div>
         )}
-        <span className="channel-bar-name">{channel.name}</span>
-        {current && <span className="channel-bar-now">{current.title}</span>}
       </button>
     </div>
   )
