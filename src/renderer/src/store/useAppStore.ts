@@ -29,7 +29,7 @@ import type {
   EpisodeProgress,
   AppSettings
 } from '../lib/types'
-import { favoriteKey } from '../lib/types'
+import { DEFAULT_SETTINGS, favoriteKey } from '../lib/types'
 
 export type ViewMode = 'live' | 'movies' | 'series' | 'favorites'
 export type ConnectionStatus = 'idle' | 'connecting' | 'ready' | 'error'
@@ -144,7 +144,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   favorites: [],
   recentlyWatched: [],
   episodeProgress: {},
-  settings: { bufferProfile: 'smooth', clockFormat: '12h', parentalPin: null, lockedCategoryIds: [] },
+  settings: DEFAULT_SETTINGS,
   unlockedCategoryIds: [],
   pinPromptCategoryId: null,
   pinPromptError: null,

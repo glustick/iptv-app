@@ -48,10 +48,10 @@ function App(): JSX.Element {
           {error && <div className="banner-error">{error}</div>}
           <ChannelList />
         </main>
+        <ChannelPreview />
       </div>
       <Player />
       <SeriesModal />
-      <ChannelPreview />
       <PinPrompt />
       <SettingsPage />
     </div>

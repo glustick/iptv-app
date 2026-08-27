@@ -145,11 +145,15 @@ export interface AppSettings {
   clockFormat: ClockFormat
   parentalPin: string | null
   lockedCategoryIds: string[]
+  sidebarWidth: number
+  detailPanelWidth: number
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
   bufferProfile: 'smooth',
   clockFormat: '12h',
   parentalPin: null,
-  lockedCategoryIds: []
+  lockedCategoryIds: [],
+  sidebarWidth: 220,
+  detailPanelWidth: 380
 }
