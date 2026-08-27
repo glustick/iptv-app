@@ -75,13 +75,17 @@ function EpgRow({
   const showNowLine = now >= windowStart && now <= windowEnd
 
   return (
-    <div style={style} className={isActive ? 'epg-row active' : 'epg-row'}>
-      <button
-        className="epg-row-channel"
-        onClick={() => onSelectChannel(channel)}
-        onDoubleClick={() => onWatchFullscreen(channel)}
-        title={`${channel.name} (double-click for fullscreen)`}
-      >
+    // Double-click anywhere in the row — not just the channel-name button — opens fullscreen.
+    // Programme blocks call stopPropagation() on their own onClick (so clicking one doesn't
+    // also select the row underneath), but that only suppresses the 'click' event; 'dblclick'
+    // is dispatched separately and still bubbles up to this handler untouched.
+    <div
+      style={style}
+      className={isActive ? 'epg-row active' : 'epg-row'}
+      onDoubleClick={() => onWatchFullscreen(channel)}
+      title={`${channel.name} (double-click for fullscreen)`}
+    >
+      <button className="epg-row-channel" onClick={() => onSelectChannel(channel)}>
         {channel.stream_icon ? (
           <img src={channel.stream_icon} alt="" loading="lazy" />
         ) : (

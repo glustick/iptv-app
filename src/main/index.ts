@@ -6,6 +6,18 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import Store from 'electron-store'
 import { autoUpdater } from 'electron-updater'
 
+// Electron resolves the app's name from package.json's "productName" (falling back to
+// "name") before any of this module's own code runs — by the time a line here calls
+// app.getPath('userData'), that already reflects the new "AllisonIPTV" productName added
+// alongside this rename, not the "iptv-app" name the existing userData folder was created
+// under. So the pre-rename location has to be reconstructed explicitly (appData is the
+// OS-level user-data root and doesn't depend on the app's own name) rather than captured
+// from getPath('userData'), or every user's saved server profile, favorites, and settings
+// would silently go missing the first time this runs post-rename.
+const legacyUserDataPath = join(app.getPath('appData'), 'iptv-app')
+app.setName('AllisonIPTV')
+app.setPath('userData', legacyUserDataPath)
+
 const store = new Store()
 
 /**
@@ -120,6 +132,7 @@ const devIconPath = join(__dirname, '../../build/icon.png')
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
+    title: 'AllisonIPTV',
     width: 1320,
     height: 840,
     minWidth: 1024,
