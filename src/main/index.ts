@@ -34,6 +34,20 @@ const legacyUserDataPath = join(app.getPath('appData'), 'iptv-app')
 app.setName('AllisonIPTV')
 app.setPath('userData', legacyUserDataPath)
 
+// Electron's default behavior for either of these is a disruptive "A JavaScript error occurred
+// in the main process" dialog — and, depending on what's still running, sometimes takes the
+// whole app down with it. For a media player, an unhandled error in some background event
+// callback (a network error handler, a timer) is almost always recoverable — the user just
+// loses whatever that one operation was doing, not the app itself — so logging and continuing
+// serves them far better than a crash. (Found the hard way: a Promise-returning Electron API
+// called fire-and-forget without a .catch() produced exactly this dialog for a real user.)
+process.on('uncaughtException', (err) => {
+  console.error('[main] uncaught exception:', err)
+})
+process.on('unhandledRejection', (reason) => {
+  console.error('[main] unhandled rejection:', reason)
+})
+
 const store = new Store()
 
 // app.getVersion() already reads package.json's "version" natively, but buildNumber is a
@@ -368,12 +382,45 @@ function startLocalProxy(): Promise<number> {
         if (range) upstreamReq.setHeader('range', Array.isArray(range) ? range.join(', ') : range)
 
         let gotResponse = false
+        let settled = false
+
+        // Split out from the 'error' handler rather than having the timeout only call
+        // .destroy() and hope that reliably emits 'error' — Electron's net.ClientRequest, built
+        // on Chromium's network stack rather than Node's http module, isn't guaranteed to fire
+        // one just because JS-side .destroy() was called. If it doesn't, a timeout that only
+        // destroys and waits leaves this request permanently unsettled: no response, no error,
+        // res never gets written to, and whatever's waiting on it (ffmpeg, the renderer) hangs
+        // forever — indistinguishable from the original bug this timeout exists to fix. Calling
+        // this directly from the timeout guarantees the retry/failure path actually runs.
+        function giveUpOrRetry(err: Error): void {
+          if (settled) return
+          settled = true
+          clearTimeout(timeout)
+          if (!upstreamReq.destroyed) upstreamReq.destroy()
+          if (!gotResponse && !retried) {
+            retried = true
+            // clearHostResolverCache() returns a Promise (an IPC round-trip to the browser
+            // process) — a rejection here left unhandled would be an unhandled promise
+            // rejection in the main process, which is exactly the kind of thing that surfaces
+            // as Electron's disruptive "A JavaScript error occurred in the main process"
+            // dialog. Best-effort only: whether or not it succeeds, the retry itself is what
+            // matters, so failure here just means the retry runs without a fresh DNS lookup.
+            session.defaultSession.clearHostResolverCache().catch(() => {})
+            attemptUpstream()
+            return
+          }
+          console.error('[proxy] upstream request error:', err)
+          if (!res.headersSent) res.writeHead(502)
+          res.end(`Upstream request failed: ${err.message}`)
+        }
+
         const timeout = setTimeout(() => {
-          if (!gotResponse && !upstreamReq.destroyed) upstreamReq.destroy()
+          if (!gotResponse) giveUpOrRetry(new Error(`Upstream request timed out after ${UPSTREAM_TIMEOUT_MS}ms`))
         }, UPSTREAM_TIMEOUT_MS)
 
         upstreamReq.on('response', (upstreamRes) => {
           gotResponse = true
+          settled = true
           clearTimeout(timeout)
           const headers = { ...upstreamRes.headers }
           headers['access-control-allow-origin'] = '*'
@@ -389,18 +436,7 @@ function startLocalProxy(): Promise<number> {
           res.writeHead(upstreamRes.statusCode, headers)
           upstreamRes.pipe(res)
         })
-        upstreamReq.on('error', (err) => {
-          clearTimeout(timeout)
-          if (!gotResponse && !retried) {
-            retried = true
-            session.defaultSession.clearHostResolverCache()
-            attemptUpstream()
-            return
-          }
-          console.error('[proxy] upstream request error:', err)
-          if (!res.headersSent) res.writeHead(502)
-          res.end(`Upstream request failed: ${err.message}`)
-        })
+        upstreamReq.on('error', giveUpOrRetry)
         // `.pipe()` only carries data forward — it does nothing when the *destination* goes
         // away, so a renderer that abandons a request mid-stream (a <video> element doing
         // `.removeAttribute('src'); .load()` to switch sources, a page navigating away) left
@@ -413,6 +449,11 @@ function startLocalProxy(): Promise<number> {
         // request as soon as the client side closes — for any reason, not just success — is
         // what actually frees the slot.
         res.on('close', () => {
+          // Marking this settled (not just clearing the timeout) matters here specifically:
+          // destroying upstreamReq below can itself emit 'error', and without this the client
+          // having already disconnected wouldn't stop giveUpOrRetry from kicking off a pointless
+          // retry — a fresh attemptUpstream() writing to a res nobody is listening to anymore.
+          settled = true
           clearTimeout(timeout)
           if (!upstreamReq.destroyed) upstreamReq.destroy()
         })
