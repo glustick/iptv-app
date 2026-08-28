@@ -1,8 +1,8 @@
 {
   "name": "iptv-app",
   "productName": "AllisonIPTV",
-  "version": "0.6.3",
-  "buildNumber": 6,
+  "version": "0.6.4",
+  "buildNumber": 7,
   "description": "Desktop IPTV client for Xtream Codes providers with live TV, VOD, series and EPG guide support",
   "main": "./out/main/index.js",
   "author": "",
