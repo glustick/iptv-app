@@ -1180,6 +1180,50 @@ body.resizing-col {
   font-weight: 600;
 }
 
+/* About modal */
+
+.about-card {
+  max-width: 320px;
+}
+
+.about-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 8px 0 4px;
+}
+
+.about-icon {
+  width: 72px;
+  height: 72px;
+  border-radius: 16px;
+  margin-bottom: 12px;
+}
+
+.about-name {
+  margin: 0 0 16px;
+  font-size: 16px;
+}
+
+.about-meta {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.about-meta dt {
+  color: var(--text-dim);
+  text-align: right;
+}
+
+.about-meta dd {
+  margin: 0;
+  text-align: left;
+}
+
 /* Settings page */
 
 .settings-card {

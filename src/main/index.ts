@@ -1,10 +1,19 @@
-import { app, shell, BrowserWindow, ipcMain, net, nativeImage } from 'electron'
+import {
+  app,
+  shell,
+  BrowserWindow,
+  ipcMain,
+  net,
+  nativeImage,
+  Menu,
+  type MenuItemConstructorOptions
+} from 'electron'
 import { join, extname } from 'path'
 import { createServer, IncomingMessage, ServerResponse } from 'http'
 import { URL } from 'url'
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import { mkdtemp, rm, readFile } from 'fs/promises'
-import { existsSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { randomUUID } from 'crypto'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -25,6 +34,14 @@ app.setName('AllisonIPTV')
 app.setPath('userData', legacyUserDataPath)
 
 const store = new Store()
+
+// app.getVersion() already reads package.json's "version" natively, but buildNumber is a
+// custom field with no built-in getter — app.getAppPath() resolves correctly both in dev and
+// packaged (inside app.asar, which Node's fs can read transparently), so this mirrors how
+// Electron itself locates package.json rather than assuming a fixed relative path.
+const pkgMeta = JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8')) as {
+  buildNumber: number
+}
 
 /**
  * ffmpeg-static's exported path always points inside app.asar, even once packaged — the
@@ -290,6 +307,11 @@ function startLocalProxy(): Promise<number> {
 // for the unpackaged dev app, which otherwise falls back to Electron's own default icon.
 const devIconPath = join(__dirname, '../../build/icon.png')
 
+// The About menu item needs to reach the renderer via IPC, but Menu.buildFromTemplate's click
+// handler has no direct reference to whichever BrowserWindow is currently focused — captured
+// here instead of threading it through, since this app only ever has one window at a time.
+let mainWindowRef: BrowserWindow | null = null
+
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
     title: 'AllisonIPTV',
@@ -305,6 +327,11 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
     }
+  })
+
+  mainWindowRef = mainWindow
+  mainWindow.on('closed', () => {
+    if (mainWindowRef === mainWindow) mainWindowRef = null
   })
 
   mainWindow.on('ready-to-show', () => {
@@ -323,8 +350,44 @@ function createWindow(): void {
   }
 }
 
+// A custom click handler (not role: 'about') so the panel is a renderer-side modal showing the
+// buildNumber field too — the native macOS About panel (role: 'about') has no slot for that.
+function buildAppMenu(): void {
+  const isMac = process.platform === 'darwin'
+  const openAbout = (): void => mainWindowRef?.webContents.send('menu:open-about')
+  const aboutItem: MenuItemConstructorOptions = { label: `About ${app.getName()}`, click: openAbout }
+
+  const template: MenuItemConstructorOptions[] = [
+    ...(isMac
+      ? ([
+          {
+            label: app.getName(),
+            submenu: [
+              aboutItem,
+              { type: 'separator' },
+              { role: 'services' },
+              { type: 'separator' },
+              { role: 'hide' },
+              { role: 'hideOthers' },
+              { role: 'unhide' },
+              { type: 'separator' },
+              { role: 'quit' }
+            ]
+          }
+        ] satisfies MenuItemConstructorOptions[])
+      : []),
+    { role: 'fileMenu' },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' },
+    { role: 'help', submenu: isMac ? [] : [aboutItem] }
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
 app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.iptv.app')
+  buildAppMenu()
 
   // BrowserWindow's `icon` option only affects Windows/Linux — macOS Dock icon has to be set
   // separately, and only matters in dev, since the packaged .app bundle carries its own icns.
@@ -335,6 +398,12 @@ app.whenReady().then(async () => {
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
+
+  ipcMain.handle('app:info', () => ({
+    name: app.getName(),
+    version: app.getVersion(),
+    buildNumber: pkgMeta.buildNumber
+  }))
 
   ipcMain.handle('store:get', (_event, key: string) => store.get(key))
   ipcMain.handle('store:set', (_event, key: string, value: unknown) => store.set(key, value))

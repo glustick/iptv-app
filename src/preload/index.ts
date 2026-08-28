@@ -2,6 +2,15 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
 const api = {
+  app: {
+    getInfo: () =>
+      ipcRenderer.invoke('app:info') as Promise<{ name: string; version: string; buildNumber: number }>,
+    onOpenAbout: (callback: () => void) => {
+      const listener = (): void => callback()
+      ipcRenderer.on('menu:open-about', listener)
+      return () => ipcRenderer.removeListener('menu:open-about', listener)
+    }
+  },
   store: {
     get: (key: string) => ipcRenderer.invoke('store:get', key),
     set: (key: string, value: unknown) => ipcRenderer.invoke('store:set', key, value),

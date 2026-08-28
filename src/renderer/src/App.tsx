@@ -9,16 +9,20 @@ import { SeriesModal } from './components/SeriesModal'
 import { EpgGridPanel } from './components/EpgGridPanel'
 import { PinPrompt } from './components/PinPrompt'
 import { SettingsPage } from './components/SettingsPage'
+import { AboutModal } from './components/AboutModal'
 
 function App(): JSX.Element {
   const init = useAppStore((s) => s.init)
   const status = useAppStore((s) => s.status)
   const error = useAppStore((s) => s.error)
   const viewMode = useAppStore((s) => s.viewMode)
+  const openAbout = useAppStore((s) => s.openAbout)
 
   useEffect(() => {
     init()
   }, [init])
+
+  useEffect(() => window.api.app.onOpenAbout(openAbout), [openAbout])
 
   // The ONE place Escape is handled for every overlay, front-to-back — including the
   // fullscreen player and its channel-swap bar, both of which used to have their own
@@ -34,7 +38,8 @@ function App(): JSX.Element {
     function onKeyDown(e: KeyboardEvent): void {
       if (e.key !== 'Escape') return
       const state = useAppStore.getState()
-      if (state.settingsOpen) state.closeSettings()
+      if (state.aboutOpen) state.closeAbout()
+      else if (state.settingsOpen) state.closeSettings()
       else if (state.pinPromptCategoryId) state.cancelPinPrompt()
       else if (state.openSeries) state.closeSeriesDetail()
       else if (state.channelBarOpen) state.setChannelBarOpen(false)
@@ -76,6 +81,7 @@ function App(): JSX.Element {
       <SeriesModal />
       <PinPrompt />
       <SettingsPage />
+      <AboutModal />
     </div>
   )
 }

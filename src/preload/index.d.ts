@@ -1,5 +1,10 @@
 import type { ElectronAPI } from '@electron-toolkit/preload'
 
+interface AppInfoAPI {
+  getInfo: () => Promise<{ name: string; version: string; buildNumber: number }>
+  onOpenAbout: (callback: () => void) => () => void
+}
+
 interface StoreAPI {
   get: (key: string) => Promise<unknown>
   set: (key: string, value: unknown) => Promise<void>
@@ -20,6 +25,7 @@ declare global {
   interface Window {
     electron: ElectronAPI
     api: {
+      app: AppInfoAPI
       store: StoreAPI
       proxy: ProxyAPI
       transcode: TranscodeAPI

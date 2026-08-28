@@ -100,6 +100,7 @@ interface AppState {
   pinPromptCategoryId: string | null
   pinPromptError: string | null
   settingsOpen: boolean
+  aboutOpen: boolean
 
   init: () => Promise<void>
   addProfile: (profile: Omit<XtreamProfile, 'id'>) => Promise<void>
@@ -134,6 +135,8 @@ interface AppState {
   cancelPinPrompt: () => void
   openSettings: () => void
   closeSettings: () => void
+  openAbout: () => void
+  closeAbout: () => void
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -173,6 +176,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   pinPromptCategoryId: null,
   pinPromptError: null,
   settingsOpen: false,
+  aboutOpen: false,
 
   init: async () => {
     const [profiles, favorites, recentlyWatched, episodeProgress, settings] = await Promise.all([
@@ -467,5 +471,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   cancelPinPrompt: () => set({ pinPromptCategoryId: null, pinPromptError: null }),
 
   openSettings: () => set({ settingsOpen: true }),
-  closeSettings: () => set({ settingsOpen: false })
+  closeSettings: () => set({ settingsOpen: false }),
+
+  openAbout: () => set({ aboutOpen: true }),
+  closeAbout: () => set({ aboutOpen: false })
 }))
