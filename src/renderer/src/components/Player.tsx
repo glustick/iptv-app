@@ -39,6 +39,11 @@ interface ChromiumVideoElement extends HTMLVideoElement {
   webkitVideoDecodedByteCount?: number
   webkitAudioDecodedByteCount?: number
 }
+
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+}
 // Click-zone thresholds for fullscreen mode, in pixels from the respective screen edge —
 // roughly matched to the header's own height and the channel bar's (see CHANNEL_BAR height in
 // global.css) so each zone lines up with the chrome it reveals rather than an arbitrary split.
@@ -85,6 +90,7 @@ export function Player(): JSX.Element | null {
   const wasOffline = useRef(false)
   const autoHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastStreamKeyRef = useRef<string | null>(null)
+  const [transcodeElapsedSeconds, setTranscodeElapsedSeconds] = useState(0)
 
   const {
     transcoding,
@@ -118,6 +124,21 @@ export function Player(): JSX.Element | null {
       if (nowPlaying) setReloadTick((t) => t + 1)
     }
   }, [isOnline, nowPlaying])
+
+  // The audio-fix wait for movies/series has no real progress to report — ffmpeg either hasn't
+  // opened the source yet or is still probing it — so the only honest signal available is how
+  // long it's been running. Surfacing that (see the "Fixing audio…" message below) is what
+  // actually answers "is this stuck?" for a wait that can genuinely take a couple of minutes on
+  // this account's slower titles, rather than leaving a static spinner that looks identical
+  // whether it's 5 seconds in or hung entirely.
+  useEffect(() => {
+    if (!transcoding) {
+      setTranscodeElapsedSeconds(0)
+      return
+    }
+    const interval = setInterval(() => setTranscodeElapsedSeconds((s) => s + 1), 1000)
+    return () => clearInterval(interval)
+  }, [transcoding])
 
   useEffect(() => {
     const video = videoRef.current
@@ -693,7 +714,7 @@ export function Player(): JSX.Element | null {
             <span>
               {nowPlaying.kind === 'live'
                 ? 'Fixing audio for this channel…'
-                : 'Fixing audio for this title… this can take a minute or two on a slow connection'}
+                : `Fixing audio for this title… this can take a minute or two on a slow connection (${formatElapsed(transcodeElapsedSeconds)})`}
             </span>
           </div>
         )}
