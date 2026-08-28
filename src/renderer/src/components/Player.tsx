@@ -690,7 +690,11 @@ export function Player(): JSX.Element | null {
         {transcoding && !playbackError && (
           <div className="player-buffering">
             <div className="spinner" />
-            <span>Fixing audio for this channel…</span>
+            <span>
+              {nowPlaying.kind === 'live'
+                ? 'Fixing audio for this channel…'
+                : 'Fixing audio for this title… this can take a minute or two on a slow connection'}
+            </span>
           </div>
         )}
         {buffering && !playbackError && !transcoding && (
