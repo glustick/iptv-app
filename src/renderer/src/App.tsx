@@ -65,7 +65,10 @@ function App(): JSX.Element {
             <main className="content-area">
               <ChannelList />
             </main>
-            <EpgGridPanel />
+            {/* Only Favorites can ever populate previewChannel here (clicking a live
+                favorite calls openChannelPreview) — Movies/Series never do, so the panel
+                would just sit there empty, eating width the grid could use instead. */}
+            {viewMode === 'favorites' && <EpgGridPanel />}
           </>
         )}
       </div>

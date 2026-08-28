@@ -13,6 +13,7 @@ const ROW_HEIGHT = 34
 export function PlayerChannelBar(): JSX.Element {
   const liveStreams = useAppStore((s) => s.liveStreams)
   const nowPlaying = useAppStore((s) => s.nowPlaying)
+  const favorites = useAppStore((s) => s.favorites)
   const clockFormat = useAppStore((s) => s.settings.clockFormat)
   const play = useAppStore((s) => s.play)
   const playTimeshift = useAppStore((s) => s.playTimeshift)
@@ -21,27 +22,32 @@ export function PlayerChannelBar(): JSX.Element {
   // liveStreams reflects whatever category was last browsed in the main grid — if fullscreen
   // was entered some other way (e.g. picked from Favorites), the actual playing channel might
   // not be in it at all, and would be missing from its own swap bar. nowPlaying only carries
-  // the flat fields play() was given, not a full LiveStream record, so this stand-in fills the
-  // rest with the safest defaults (no catch-up, no category) rather than guessing.
+  // the flat fields play() was given, not a full LiveStream record, so a stand-in normally has
+  // to fill the rest with the safest defaults (no catch-up, no category) — but if the channel
+  // was reached via Favorites specifically, the full record (including tv_archive) is right
+  // there in the favorites list, so check there first rather than guessing.
   const channels = useMemo(() => {
     if (nowPlaying?.kind !== 'live') return liveStreams
     if (liveStreams.some((c) => c.stream_id === nowPlaying.streamId)) return liveStreams
-    const placeholder: LiveStream = {
-      num: -1,
-      name: nowPlaying.name,
-      stream_type: 'live',
-      stream_id: nowPlaying.streamId,
-      stream_icon: '',
-      epg_channel_id: null,
-      added: '',
-      category_id: '',
-      custom_sid: null,
-      tv_archive: 0,
-      direct_source: '',
-      tv_archive_duration: 0
-    }
+    const favorited = favorites.find((f): f is Extract<typeof f, { kind: 'live' }> => f.kind === 'live' && f.stream.stream_id === nowPlaying.streamId)
+    const placeholder: LiveStream = favorited
+      ? favorited.stream
+      : {
+          num: -1,
+          name: nowPlaying.name,
+          stream_type: 'live',
+          stream_id: nowPlaying.streamId,
+          stream_icon: '',
+          epg_channel_id: null,
+          added: '',
+          category_id: '',
+          custom_sid: null,
+          tv_archive: 0,
+          direct_source: '',
+          tv_archive_duration: 0
+        }
     return [placeholder, ...liveStreams]
-  }, [liveStreams, nowPlaying])
+  }, [liveStreams, nowPlaying, favorites])
 
   const handleSelect = useCallback(
     (channel: LiveStream) => {

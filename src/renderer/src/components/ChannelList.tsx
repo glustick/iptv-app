@@ -1,5 +1,5 @@
-import { useMemo } from 'react'
-import { Grid } from 'react-window'
+import { useEffect, useMemo, useState } from 'react'
+import { Grid, useGridRef } from 'react-window'
 import { useAppStore } from '../store/useAppStore'
 import { useElementSize } from '../lib/useElementSize'
 import { useDebouncedValue } from '../lib/useDebouncedValue'
@@ -27,9 +27,19 @@ export interface GridEntry {
   favorite?: { active: boolean; onToggle: () => void }
 }
 
+// A provider's icon/poster URL going stale (channel renamed, artwork removed) would otherwise
+// show the browser's own broken-image icon indefinitely — falls back to the normal empty
+// placeholder instead, same as when there was never a URL at all.
+function PosterImage({ src, className }: { src: string; className: string }): JSX.Element {
+  const [broken, setBroken] = useState(false)
+  if (!src || broken) return <div className={`${className} placeholder`} />
+  return <img className={className} src={src} alt="" loading="lazy" onError={() => setBroken(true)} />
+}
+
 interface GridCellProps {
   entries: GridEntry[]
   columnCount: number
+  focusedIndex: number
 }
 
 function GridCell({
@@ -37,22 +47,20 @@ function GridCell({
   rowIndex,
   style,
   entries,
-  columnCount
+  columnCount,
+  focusedIndex
 }: { columnIndex: number; rowIndex: number; style: React.CSSProperties } & GridCellProps): JSX.Element | null {
   const index = rowIndex * columnCount + columnIndex
   const entry = entries[index]
   if (!entry) return null
+  const isFocused = index === focusedIndex
   return (
     <div style={{ ...style, padding: GRID_GAP / 2 }}>
       <div
-        className={entry.active ? 'channel-item channel-item--grid active' : 'channel-item channel-item--grid'}
+        className={`channel-item channel-item--grid${entry.active ? ' active' : ''}${isFocused ? ' channel-item--focused' : ''}`}
         onClick={entry.onClick}
       >
-        {entry.image ? (
-          <img className="channel-poster" src={entry.image} alt="" loading="lazy" />
-        ) : (
-          <div className="channel-poster placeholder" />
-        )}
+        <PosterImage src={entry.image} className="channel-poster" />
         <div className="channel-info">
           <span className="channel-name">{entry.name}</span>
           {entry.badge && <span className="channel-epg">{entry.badge}</span>}
@@ -80,16 +88,62 @@ function MediaGrid({ entries }: { entries: GridEntry[] }): JSX.Element {
   const columnWidth = width > 0 ? width / columnCount : GRID_CELL_MIN_WIDTH
   const rowHeight = columnWidth * 1.5 + 48
   const rowCount = Math.ceil(entries.length / columnCount)
+  const [focusedIndex, setFocusedIndex] = useState(0)
+  const gridRef = useGridRef(null)
+
+  // Keeps the focused cell in range as the entry list itself changes (search narrowing it, a
+  // different category loading in) rather than pointing past the end.
+  useEffect(() => {
+    setFocusedIndex((i) => Math.min(i, Math.max(0, entries.length - 1)))
+  }, [entries.length])
+
+  function moveFocus(next: number): void {
+    const clamped = Math.max(0, Math.min(entries.length - 1, next))
+    setFocusedIndex(clamped)
+    gridRef.current?.scrollToCell({
+      rowIndex: Math.floor(clamped / columnCount),
+      columnIndex: clamped % columnCount,
+      rowAlign: 'smart',
+      columnAlign: 'smart'
+    })
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent): void {
+    if (entries.length === 0) return
+    if (e.key === 'ArrowRight') {
+      e.preventDefault()
+      moveFocus(focusedIndex + 1)
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault()
+      moveFocus(focusedIndex - 1)
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      moveFocus(focusedIndex + columnCount)
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      moveFocus(focusedIndex - columnCount)
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      entries[focusedIndex]?.onClick()
+    }
+  }
 
   return (
-    <div ref={containerRef} style={{ width: '100%', height: '100%' }}>
+    <div
+      ref={containerRef}
+      className="media-grid-wrap"
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
+      style={{ width: '100%', height: '100%' }}
+    >
       {width > 0 && height > 0 && (
         <Grid<GridCellProps>
+          gridRef={gridRef}
           columnCount={columnCount}
           columnWidth={columnWidth}
           rowCount={rowCount}
           rowHeight={rowHeight}
-          cellProps={{ entries, columnCount }}
+          cellProps={{ entries, columnCount, focusedIndex }}
           style={{ height: '100%', width: '100%' }}
           cellComponent={GridCell}
         />
@@ -238,11 +292,7 @@ export function ChannelList(): JSX.Element {
                 className="channel-item channel-item--grid recently-watched-card"
                 onClick={entry.onClick}
               >
-                {entry.image ? (
-                  <img className="channel-poster" src={entry.image} alt="" loading="lazy" />
-                ) : (
-                  <div className="channel-poster placeholder" />
-                )}
+                <PosterImage src={entry.image} className="channel-poster" />
                 <div className="channel-info">
                   <span className="channel-name">{entry.name}</span>
                   {entry.badge && <span className="channel-epg">{entry.badge}</span>}

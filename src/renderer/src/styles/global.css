@@ -460,6 +460,18 @@ body.resizing-col {
   background: var(--bg-hover);
 }
 
+.channel-item--focused {
+  border-color: var(--accent);
+}
+
+/* Focusable via tabIndex so arrow-key navigation works — see MediaGrid in ChannelList.tsx.
+   The default browser focus ring on a div reads as a UI glitch here; a focused CELL already
+   gets its own visible highlight (.channel-item--focused) so the ring on the whole grid would
+   just be redundant, not just ugly. */
+.media-grid-wrap:focus {
+  outline: none;
+}
+
 .favorite-toggle {
   background: none;
   border: none;
