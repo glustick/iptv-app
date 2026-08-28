@@ -16,7 +16,6 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import { mkdtemp, rm, readFile } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
-import { randomUUID } from 'crypto'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import Store from 'electron-store'
 import { autoUpdater } from 'electron-updater'
@@ -70,11 +69,21 @@ interface TranscodeSession {
 }
 const transcodeSessions = new Map<string, TranscodeSession>()
 
+// The renderer picks a sessionId up front and can call stop() on it well before startTranscode
+// below has actually spawned ffmpeg and registered it in transcodeSessions — e.g. switching to a
+// different title while the previous one's transcode attempt is still in flight, before it has
+// ever produced output. Without tracking that, stopTranscode would find nothing to do, and the
+// spawn already in progress would carry on regardless — leaving an orphaned ffmpeg process
+// competing for this account's single connection slot with whatever plays next. Recording the
+// cancellation here lets startTranscode notice it and kill the process it just spawned instead.
+const cancelledSessions = new Set<string>()
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 async function stopTranscode(sessionId: string): Promise<void> {
+  cancelledSessions.add(sessionId)
   const session = transcodeSessions.get(sessionId)
   if (!session) return
   transcodeSessions.delete(sessionId)
@@ -93,11 +102,20 @@ async function stopTranscode(sessionId: string): Promise<void> {
   await rm(session.dir, { recursive: true, force: true }).catch(() => {})
 }
 
-async function startTranscode(sourceUrl: string): Promise<{ sessionId: string; playlistPath: string }> {
+async function startTranscode(
+  sourceUrl: string,
+  isVod: boolean,
+  sessionId: string
+): Promise<{ sessionId: string; playlistPath: string }> {
   if (!ffmpegPath) {
     throw new Error('ffmpeg binary not available on this platform')
   }
-  const sessionId = randomUUID()
+  // A stop() for this exact sessionId could already have arrived (the renderer switched away
+  // before this call even started) — nothing to spawn in that case.
+  if (cancelledSessions.has(sessionId)) {
+    cancelledSessions.delete(sessionId)
+    throw new Error('Transcode cancelled')
+  }
   const dir = await mkdtemp(join(tmpdir(), 'allisoniptv-transcode-'))
   const playlistFile = join(dir, 'playlist.m3u8')
 
@@ -105,6 +123,19 @@ async function startTranscode(sourceUrl: string): Promise<{ sessionId: string; p
     '-y',
     '-i',
     sourceUrl,
+    // Movies/series routinely carry an embedded subtitle track alongside the audio this fix
+    // targets. Left unmapped, ffmpeg auto-selects it and the HLS muxer treats it as a second
+    // WebVTT rendition — which defers writing the main playlist.m3u8 until the *entire* input
+    // has been processed, not incrementally per segment (confirmed live: ffmpeg fully
+    // transcoded a 76-minute movie at 19x realtime, writing hundreds of segments the whole
+    // time, yet playlist.m3u8 itself never appeared until the process was killed at the very
+    // end — every prior timeout in this investigation was this, not a network/connection
+    // problem). Excluding subtitles avoids that rendition entirely; there's no reason to carry
+    // them through here anyway, since fixing silent audio is the only thing this path is for.
+    '-map',
+    '0:v:0',
+    '-map',
+    '0:a:0',
     '-c:v',
     'copy',
     '-c:a',
@@ -117,18 +148,40 @@ async function startTranscode(sourceUrl: string): Promise<{ sessionId: string; p
     'hls',
     '-hls_time',
     '4',
-    '-hls_list_size',
-    '6',
-    '-hls_flags',
-    'delete_segments+omit_endlist',
+    // Live's list is deliberately a short, ever-deleting window (there's no fixed end to keep
+    // segments for). VOD is the opposite: a movie/episode has a real duration, and the whole
+    // point is being able to scrub anywhere in it (native <video controls>'s seek bar), so
+    // every segment has to stick around and the playlist needs its own real end marker —
+    // omitting one would make hls.js treat a 2-hour movie as an endless live stream.
+    ...(isVod
+      ? ['-hls_list_size', '0', '-hls_playlist_type', 'vod']
+      : ['-hls_list_size', '6', '-hls_flags', 'delete_segments+omit_endlist']),
     '-hls_segment_filename',
     join(dir, 'seg_%05d.ts'),
     playlistFile
   ])
 
+  // mkdtemp and spawn() both involve a real async/OS gap after the check above — a stop() can
+  // still have landed in between. Checking again right before registering the session (rather
+  // than relying on the polling loop alone) keeps a cancelled request from ever occupying the
+  // account's connection slot at all, instead of just getting killed a beat later.
+  if (cancelledSessions.has(sessionId)) {
+    cancelledSessions.delete(sessionId)
+    proc.kill('SIGKILL')
+    await rm(dir, { recursive: true, force: true }).catch(() => {})
+    throw new Error('Transcode cancelled')
+  }
   const session: TranscodeSession = { proc, dir, stderrTail: [] }
   transcodeSessions.set(sessionId, session)
 
+  // A stall-detection scheme keyed on "time since ffmpeg last wrote to stderr" was tried here
+  // and had to be abandoned: ffmpeg's stderr is a pipe, not a tty, and glibc/libSystem's stdio
+  // buffers pipes fully rather than line-by-line — so long, apparently silent stretches
+  // (confirmed live, repeatedly, against a real account: 60-120+ seconds with zero stderr
+  // output) don't reliably mean ffmpeg is stuck. Several of those "stalls" turned out to have
+  // already opened the input and started encoding; the silence was just unflushed buffer, and
+  // killing on it destroyed transcodes that were actually about to succeed. A single generous
+  // deadline (below) doesn't have that false-positive problem.
   proc.stderr.on('data', (chunk: Buffer) => {
     // Keep only a rolling tail — ffmpeg is chatty, but the last few lines are what actually
     // explain a failure to start (bad input, unsupported option, etc).
@@ -147,11 +200,23 @@ async function startTranscode(sourceUrl: string): Promise<{ sessionId: string; p
     void signal
   })
 
-  // ffmpeg only writes the playlist once it's produced enough of the first segment, so poll
-  // for it rather than assuming it exists immediately — and give up if the process has
-  // already died, rather than polling for the full timeout on a lost cause.
-  const deadline = Date.now() + 20000
+  // ffmpeg only writes the playlist once it's produced enough of the first segment, so poll for
+  // it rather than assuming it exists immediately — and give up if the process has already
+  // died, rather than polling for the full timeout on a lost cause. VOD gets a much longer
+  // budget than live: confirmed live against a real account, just opening the input (probing
+  // the container, before ffmpeg writes a single frame) took anywhere from ~25s to ~90s across
+  // otherwise-identical attempts against the same file, and actual encode throughput — once it
+  // does get going — was fast (19x realtime, -c:v copy isn't CPU-bound). The bottleneck is
+  // entirely how long this account's connection takes to start delivering data, which varies
+  // enough attempt-to-attempt that the deadline needs real headroom rather than being tuned to
+  // the common case.
+  const deadline = Date.now() + (isVod ? 240000 : 20000)
   while (Date.now() < deadline) {
+    if (cancelledSessions.has(sessionId)) {
+      cancelledSessions.delete(sessionId)
+      await stopTranscode(sessionId)
+      throw new Error('Transcode cancelled')
+    }
     if (existsSync(playlistFile)) return { sessionId, playlistPath: playlistFile }
     if (proc.exitCode !== null) {
       throw new Error(`ffmpeg exited before producing output: ${session.stderrTail.slice(-10).join('\n')}`)
@@ -292,6 +357,19 @@ function startLocalProxy(): Promise<number> {
         res.end(`Upstream request failed: ${err.message}`)
       })
       req.on('error', (err) => console.error('[proxy] client request error:', err))
+      // `.pipe()` only carries data forward — it does nothing when the *destination* goes away,
+      // so a renderer that abandons a request mid-stream (a <video> element doing
+      // `.removeAttribute('src'); .load()` to switch sources, a page navigating away) left the
+      // upstream request to the real Xtream server running indefinitely with nothing left to
+      // write to. Invisible on an unlimited-connections account, but fatal on one capped at a
+      // single concurrent stream (confirmed via a real account's get_server_info,
+      // max_connections: "1"): the old connection never actually released, so a second
+      // legitimate request (e.g. this app's own ffmpeg transcode fallback, moments later) had
+      // nothing to connect with and just hung. Destroying the upstream request as soon as the
+      // client side closes — for any reason, not just success — is what actually frees the slot.
+      res.on('close', () => {
+        if (!upstreamReq.destroyed) upstreamReq.destroy()
+      })
       req.pipe(upstreamReq)
     }
 
@@ -429,8 +507,8 @@ app.whenReady().then(async () => {
     proxyTargetBase = baseUrl
   })
 
-  ipcMain.handle('transcode:start', async (_event, sourceUrl: string) => {
-    const { sessionId } = await startTranscode(sourceUrl)
+  ipcMain.handle('transcode:start', async (_event, sourceUrl: string, isVod: boolean, sessionId: string) => {
+    await startTranscode(sourceUrl, isVod, sessionId)
     return { sessionId, url: `http://127.0.0.1:${proxyPort}/__transcode/${sessionId}/playlist.m3u8` }
   })
   ipcMain.handle('transcode:stop', (_event, sessionId: string) => stopTranscode(sessionId))

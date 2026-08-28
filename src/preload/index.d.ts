@@ -17,7 +17,7 @@ interface ProxyAPI {
 }
 
 interface TranscodeAPI {
-  start: (sourceUrl: string) => Promise<{ sessionId: string; url: string }>
+  start: (sourceUrl: string, isVod: boolean, sessionId: string) => Promise<{ sessionId: string; url: string }>
   stop: (sessionId: string) => Promise<void>
 }
 

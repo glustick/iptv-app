@@ -21,8 +21,11 @@ const api = {
     setTarget: (baseUrl: string) => ipcRenderer.invoke('proxy:setTarget', baseUrl) as Promise<void>
   },
   transcode: {
-    start: (sourceUrl: string) =>
-      ipcRenderer.invoke('transcode:start', sourceUrl) as Promise<{ sessionId: string; url: string }>,
+    start: (sourceUrl: string, isVod: boolean, sessionId: string) =>
+      ipcRenderer.invoke('transcode:start', sourceUrl, isVod, sessionId) as Promise<{
+        sessionId: string
+        url: string
+      }>,
     stop: (sessionId: string) => ipcRenderer.invoke('transcode:stop', sessionId) as Promise<void>
   },
   safeStorage: {

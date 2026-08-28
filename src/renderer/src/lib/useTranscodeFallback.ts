@@ -24,11 +24,20 @@ export function isUnsupportedAudioCodecError(data: ErrorData): boolean {
  * (the fullscreen player) and useHlsAttach.ts (the small preview) so this detection and
  * remediation logic isn't duplicated between them — only the video actually froze/glitched
  * in each place, the fix is identical.
+ *
+ * VOD/series never go through hls.js at all (see Player.tsx: only .m3u8 — always live —
+ * attaches hls.js; everything else is a plain `video.src` assignment), so this exact failure
+ * mode shows up completely differently there: no error event ever fires, video decodes and
+ * plays normally, and the audio track just silently produces nothing. There's no ErrorData to
+ * check in that case — Player.tsx detects it itself by polling webkitAudioDecodedByteCount —
+ * so tryFallbackForSilentAudio skips the isUnsupportedAudioCodecError check entirely and is
+ * only ever called once that polling has already confirmed the symptom.
  */
 export function useTranscodeFallback(): {
   transcoding: boolean
   getSourceUrl: (originalUrl: string) => string
   tryFallback: (data: ErrorData, originalUrl: string, onReload: () => void, onError?: (message: string) => void) => boolean
+  tryFallbackForSilentAudio: (originalUrl: string, onReload: () => void, onError?: (message: string) => void) => boolean
   reset: () => void
   beginRun: () => void
 } {
@@ -58,21 +67,24 @@ export function useTranscodeFallback(): {
 
   const getSourceUrl = useCallback((originalUrl: string) => transcodedUrlRef.current ?? originalUrl, [])
 
-  const tryFallback = useCallback(
-    (data: ErrorData, originalUrl: string, onReload: () => void, onError?: (message: string) => void): boolean => {
-      // Spinning up ffmpeg takes a few real seconds, during which the still-attached, still-
-      // broken hls instance keeps hitting the identical error repeatedly. Once a fix is
-      // already in flight there's nothing new to react to.
-      if (awaitingTranscodeRef.current) return true
-      if (!isUnsupportedAudioCodecError(data) || triedTranscodeRef.current) return false
-
+  const startFallback = useCallback(
+    (originalUrl: string, isVod: boolean, onReload: () => void, onError?: (message: string) => void): void => {
       triedTranscodeRef.current = true
       awaitingTranscodeRef.current = true
       setTranscoding(true)
+      // Generated here rather than taken from transcode:start's resolved value — spawning
+      // ffmpeg and waiting for it to produce output can take up to several minutes for VOD (see
+      // startTranscode's deadline in src/main/index.ts), and reset() needs a sessionId to cancel
+      // *during* that wait (e.g. the user switches titles before it resolves), not just after.
+      // Registering it into the ref
+      // immediately, before the IPC call is even made, is what makes that possible — otherwise
+      // the old ffmpeg process is orphaned, left running and competing for the account's
+      // connection slot with whatever plays next.
+      const sessionId = crypto.randomUUID()
+      transcodeSessionIdRef.current = sessionId
       window.api.transcode
-        .start(originalUrl)
-        .then(({ sessionId, url }) => {
-          transcodeSessionIdRef.current = sessionId
+        .start(originalUrl, isVod, sessionId)
+        .then(({ url }) => {
           transcodedUrlRef.current = url
           onReload()
         })
@@ -81,10 +93,31 @@ export function useTranscodeFallback(): {
           onError?.(err instanceof Error ? err.message : String(err))
         })
         .finally(() => setTranscoding(false))
-      return true
     },
     []
   )
 
-  return { transcoding, getSourceUrl, tryFallback, reset, beginRun }
+  const tryFallback = useCallback(
+    (data: ErrorData, originalUrl: string, onReload: () => void, onError?: (message: string) => void): boolean => {
+      // Spinning up ffmpeg takes a few real seconds, during which the still-attached, still-
+      // broken hls instance keeps hitting the identical error repeatedly. Once a fix is
+      // already in flight there's nothing new to react to.
+      if (awaitingTranscodeRef.current) return true
+      if (!isUnsupportedAudioCodecError(data) || triedTranscodeRef.current) return false
+      startFallback(originalUrl, false, onReload, onError)
+      return true
+    },
+    [startFallback]
+  )
+
+  const tryFallbackForSilentAudio = useCallback(
+    (originalUrl: string, onReload: () => void, onError?: (message: string) => void): boolean => {
+      if (awaitingTranscodeRef.current || triedTranscodeRef.current) return false
+      startFallback(originalUrl, true, onReload, onError)
+      return true
+    },
+    [startFallback]
+  )
+
+  return { transcoding, getSourceUrl, tryFallback, tryFallbackForSilentAudio, reset, beginRun }
 }
