@@ -513,6 +513,46 @@ body.resizing-col {
   background: var(--bg-hover);
 }
 
+/* Recently Watched: a plain horizontal row, not virtualized — recentlyWatched is capped at
+   30 entries by the store, so react-window's overhead isn't worth it here. Sits above the
+   Favorites grid on the Favorites tab. */
+
+.favorites-view {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.recently-watched {
+  flex-shrink: 0;
+}
+
+.section-heading {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 10px;
+}
+
+.recently-watched-row {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.recently-watched-card {
+  width: 150px;
+  flex-shrink: 0;
+}
+
+.favorites-grid-wrap {
+  flex: 1;
+  min-height: 0;
+}
+
 .channel-info {
   display: flex;
   flex-direction: column;
@@ -899,6 +939,20 @@ body.resizing-col {
   padding-top: 10px;
 }
 
+/* Focusable via tabIndex so arrow-key navigation works without a document-level listener
+   (which would otherwise move both the main grid's and the channel bar's selection at once,
+   since both can be mounted simultaneously) — the default browser focus ring on a div reads
+   as a UI glitch here, so it's replaced with a subtle border that only shows for keyboard
+   focus, not a mouse click. */
+.epg-grid:focus {
+  outline: none;
+}
+
+.epg-grid:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
 .epg-time-header {
   display: flex;
   flex-shrink: 0;
@@ -957,6 +1011,10 @@ body.resizing-col {
 
 .epg-row.active {
   background: var(--bg-hover);
+}
+
+.epg-row--focused {
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 .epg-row-channel {

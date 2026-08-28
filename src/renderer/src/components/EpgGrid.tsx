@@ -1,5 +1,5 @@
-import { useEffect, useState, type CSSProperties } from 'react'
-import { List } from 'react-window'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { List, useListRef } from 'react-window'
 import { useAppStore } from '../store/useAppStore'
 import type { LiveStream, ShortEpgProgram, ClockFormat } from '../lib/types'
 
@@ -31,6 +31,7 @@ interface RowProps {
   windowEnd: number
   now: number
   activeStreamId?: number
+  focusedIndex: number
   clockFormat: ClockFormat
   onSelectChannel: (channel: LiveStream) => void
   onWatchFullscreen: (channel: LiveStream) => void
@@ -45,6 +46,7 @@ function EpgRow({
   windowEnd,
   now,
   activeStreamId,
+  focusedIndex,
   clockFormat,
   onSelectChannel,
   onWatchFullscreen,
@@ -67,6 +69,7 @@ function EpgRow({
     (p) => Number(p.stop_timestamp) * 1000 > windowStart && Number(p.start_timestamp) * 1000 < windowEnd
   )
   const isActive = activeStreamId === channel.stream_id
+  const isFocused = index === focusedIndex
   const nowPct = pct(now, windowStart, windowEnd)
   const showNowLine = now >= windowStart && now <= windowEnd
 
@@ -77,7 +80,7 @@ function EpgRow({
     // is dispatched separately and still bubbles up to this handler untouched.
     <div
       style={style}
-      className={isActive ? 'epg-row active' : 'epg-row'}
+      className={`epg-row${isActive ? ' active' : ''}${isFocused ? ' epg-row--focused' : ''}`}
       onDoubleClick={() => onWatchFullscreen(channel)}
       title={`${channel.name} (double-click for fullscreen)`}
     >
@@ -125,6 +128,7 @@ interface EpgGridProps {
   activeStreamId?: number
   clockFormat: ClockFormat
   rowHeight?: number
+  autoFocus?: boolean
   onSelectChannel: (channel: LiveStream) => void
   onWatchFullscreen: (channel: LiveStream) => void
   onWatchTimeshift: (channel: LiveStream, program: ShortEpgProgram) => void
@@ -140,17 +144,37 @@ export function EpgGrid({
   activeStreamId,
   clockFormat,
   rowHeight = 40,
+  autoFocus = false,
   onSelectChannel,
   onWatchFullscreen,
   onWatchTimeshift
 }: EpgGridProps): JSX.Element {
   const [now, setNow] = useState(() => Date.now())
   const [windowOffsetMs, setWindowOffsetMs] = useState(0)
+  const [focusedIndex, setFocusedIndex] = useState(0)
+  const listRef = useListRef(null)
+  const rootRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 30_000)
     return () => clearInterval(interval)
   }, [])
+
+  // The JSX `autoFocus` prop leans on the browser's native autofocus-on-parse behavior, which
+  // only fires for elements present in the initial HTML parse — not for ones a React component
+  // inserts later via the DOM API, which is exactly this case (the channel bar mounts
+  // conditionally, well after the page's first render). Calling .focus() explicitly on mount
+  // is the reliable way to get the same effect for a dynamically-mounted element.
+  useEffect(() => {
+    if (autoFocus) rootRef.current?.focus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Keeps the focused row in range as the channel list itself changes (a search filter
+  // shrinking it, a different category loading in) rather than pointing past the end.
+  useEffect(() => {
+    setFocusedIndex((i) => Math.min(i, Math.max(0, channels.length - 1)))
+  }, [channels.length])
 
   const baseHour = Math.floor(Date.now() / HOUR_MS) * HOUR_MS
   const windowStart = baseHour + windowOffsetMs
@@ -177,8 +201,31 @@ export function EpgGrid({
     )
   }
 
+  // Scoped to this element (via tabIndex, not a document-level listener) specifically because
+  // the main grid and the fullscreen channel bar can both be mounted at once — a global
+  // listener would move both grids' selections on every arrow press instead of just the
+  // visible/focused one.
+  function handleKeyDown(e: React.KeyboardEvent): void {
+    if (channels.length === 0) return
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      const next = Math.min(channels.length - 1, focusedIndex + 1)
+      setFocusedIndex(next)
+      listRef.current?.scrollToRow({ index: next, align: 'smart' })
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      const next = Math.max(0, focusedIndex - 1)
+      setFocusedIndex(next)
+      listRef.current?.scrollToRow({ index: next, align: 'smart' })
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      const channel = channels[focusedIndex]
+      if (channel) onSelectChannel(channel)
+    }
+  }
+
   return (
-    <div className="epg-grid" onWheel={handleWheel}>
+    <div ref={rootRef} className="epg-grid" tabIndex={0} onWheel={handleWheel} onKeyDown={handleKeyDown}>
       <div className="epg-time-header">
         <div className="epg-grid-nav">
           <button onClick={() => setWindowOffsetMs((o) => Math.max(-MAX_WINDOW_OFFSET_MS, o - HOUR_MS))} title="Earlier">
@@ -204,6 +251,7 @@ export function EpgGrid({
           <p className="modal-loading">No channels to show.</p>
         ) : (
           <List<RowProps>
+            listRef={listRef}
             rowCount={channels.length}
             rowHeight={rowHeight}
             rowProps={{
@@ -212,6 +260,7 @@ export function EpgGrid({
               windowEnd,
               now,
               activeStreamId,
+              focusedIndex,
               clockFormat,
               onSelectChannel,
               onWatchFullscreen,

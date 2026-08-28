@@ -20,8 +20,12 @@ export function Sidebar(): JSX.Element | null {
 
   if (viewMode === 'favorites') return null
 
-  const isLocked = (categoryId: string): boolean =>
-    !!parentalPin && lockedCategoryIds.includes(categoryId) && !unlockedCategoryIds.includes(categoryId)
+  // Namespaced by section since Xtream doesn't guarantee category_id uniqueness across
+  // Live/Movies/Series — see useAppStore's requestCategory and setCategoryLocked.
+  const isLocked = (categoryId: string): boolean => {
+    const lockKey = `${viewMode}:${categoryId}`
+    return !!parentalPin && lockedCategoryIds.includes(lockKey) && !unlockedCategoryIds.includes(lockKey)
+  }
 
   return (
     // The resize handle lives in this non-scrolling wrapper, not inside the scrollable

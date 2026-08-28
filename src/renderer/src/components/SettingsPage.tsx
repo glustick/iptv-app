@@ -92,18 +92,23 @@ export function SettingsPage(): JSX.Element | null {
               </button>
               {categories.length > 0 && (
                 <ul className="lock-list">
-                  {categories.map((cat) => (
-                    <li key={cat.category_id}>
-                      <label>
-                        <input
-                          type="checkbox"
-                          checked={settings.lockedCategoryIds.includes(cat.category_id)}
-                          onChange={(e) => setCategoryLocked(cat.category_id, e.target.checked)}
-                        />
-                        {cat.category_name}
-                      </label>
-                    </li>
-                  ))}
+                  {categories.map((cat) => {
+                    // Namespaced by section (the current tab) since Xtream doesn't guarantee
+                    // category_id uniqueness across Live/Movies/Series — see useAppStore.
+                    const lockKey = `${viewMode}:${cat.category_id}`
+                    return (
+                      <li key={cat.category_id}>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={settings.lockedCategoryIds.includes(lockKey)}
+                            onChange={(e) => setCategoryLocked(lockKey, e.target.checked)}
+                          />
+                          {cat.category_name}
+                        </label>
+                      </li>
+                    )
+                  })}
                 </ul>
               )}
             </>

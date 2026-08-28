@@ -34,6 +34,23 @@ import { DEFAULT_SETTINGS, favoriteKey } from '../lib/types'
 export type ViewMode = 'live' | 'movies' | 'series' | 'favorites'
 export type ConnectionStatus = 'idle' | 'connecting' | 'ready' | 'error'
 
+// Both the main EPG grid and the fullscreen channel-swap bar lazy-load per-row short EPG as
+// rows scroll into view — fine at normal browsing speed, but flinging a scrollbar through a
+// large category can otherwise fire a burst of simultaneous get_short_epg requests. Module-
+// level (not store state) since it's plumbing, not something any component needs to render.
+const MAX_CONCURRENT_SHORT_EPG_FETCHES = 4
+let activeShortEpgFetches = 0
+const shortEpgQueue: Array<() => void> = []
+const shortEpgInFlight = new Set<number>()
+
+function runNextShortEpgFetch(): void {
+  if (activeShortEpgFetches >= MAX_CONCURRENT_SHORT_EPG_FETCHES) return
+  const next = shortEpgQueue.shift()
+  if (!next) return
+  activeShortEpgFetches++
+  next()
+}
+
 export interface NowPlaying {
   kind: MediaKind
   streamId: number
@@ -63,6 +80,11 @@ interface AppState {
   shortEpgByStream: Record<number, ShortEpgProgram[]>
 
   nowPlaying: NowPlaying | null
+  // Lives in the store (not Player.tsx's own local state) so App.tsx's single centralized
+  // Escape handler can include it in the same priority chain as every other overlay —
+  // otherwise Player.tsx would need its own separate Escape listener again, which is exactly
+  // the uncoordinated-multiple-listeners pattern that caused a real race condition before.
+  channelBarOpen: boolean
 
   openSeries: SeriesItem | null
   seriesInfo: SeriesInfo | null
@@ -93,6 +115,7 @@ interface AppState {
   play: (kind: MediaKind, streamId: number, name: string, extension: string, icon?: string) => void
   playTimeshift: (channel: LiveStream, program: ShortEpgProgram) => void
   stop: () => void
+  setChannelBarOpen: (open: boolean) => void
 
   openSeriesDetail: (item: SeriesItem) => Promise<void>
   closeSeriesDetail: () => void
@@ -134,6 +157,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   shortEpgByStream: {},
 
   nowPlaying: null,
+  channelBarOpen: false,
 
   openSeries: null,
   seriesInfo: null,
@@ -232,6 +256,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       series: [],
       epg: null,
       nowPlaying: null,
+      channelBarOpen: false,
       unlockedCategoryIds: []
     })
   },
@@ -268,13 +293,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Wraps selectCategory with the parental-lock check: a locked category not yet
   // unlocked this session prompts for the PIN instead of loading its content.
   requestCategory: (categoryId) => {
-    const { settings, unlockedCategoryIds } = get()
-    if (
-      categoryId &&
-      settings.parentalPin &&
-      settings.lockedCategoryIds.includes(categoryId) &&
-      !unlockedCategoryIds.includes(categoryId)
-    ) {
+    const { settings, unlockedCategoryIds, viewMode } = get()
+    // Namespaced by section since Xtream doesn't guarantee category_id uniqueness across
+    // Live/Movies/Series — see setCategoryLocked and loadSettings' migration.
+    const lockKey = categoryId ? `${viewMode}:${categoryId}` : null
+    if (lockKey && settings.parentalPin && settings.lockedCategoryIds.includes(lockKey) && !unlockedCategoryIds.includes(lockKey)) {
       set({ pinPromptCategoryId: categoryId, pinPromptError: null })
       return
     }
@@ -320,15 +343,26 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  loadShortEpg: async (streamId) => {
+  loadShortEpg: (streamId) => {
     const { client, shortEpgByStream } = get()
-    if (!client || shortEpgByStream[streamId]) return
-    try {
-      const listings = await client.getShortEpg(streamId, 16)
-      set({ shortEpgByStream: { ...get().shortEpgByStream, [streamId]: listings } })
-    } catch {
-      // EPG is best-effort; a missing short guide shouldn't block playback.
-    }
+    if (!client || shortEpgByStream[streamId] || shortEpgInFlight.has(streamId)) return Promise.resolve()
+    shortEpgInFlight.add(streamId)
+    return new Promise((resolve) => {
+      shortEpgQueue.push(async () => {
+        try {
+          const listings = await client.getShortEpg(streamId, 16)
+          set({ shortEpgByStream: { ...get().shortEpgByStream, [streamId]: listings } })
+        } catch {
+          // EPG is best-effort; a missing short guide shouldn't block playback.
+        } finally {
+          shortEpgInFlight.delete(streamId)
+          activeShortEpgFetches--
+          resolve()
+          runNextShortEpgFetch()
+        }
+      })
+      runNextShortEpgFetch()
+    })
   },
 
   play: (kind, streamId, name, extension, icon = '') => {
@@ -354,7 +388,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
   },
 
-  stop: () => set({ nowPlaying: null }),
+  stop: () => set({ nowPlaying: null, channelBarOpen: false }),
+  setChannelBarOpen: (open) => set({ channelBarOpen: open }),
 
   openSeriesDetail: async (item) => {
     const { client } = get()
@@ -412,11 +447,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   submitPinAttempt: (pin) => {
-    const { pinPromptCategoryId, settings, unlockedCategoryIds } = get()
+    const { pinPromptCategoryId, settings, unlockedCategoryIds, viewMode } = get()
     if (!pinPromptCategoryId) return
     if (pin === settings.parentalPin) {
+      // Matches the namespaced key requestCategory checks against — pinPromptCategoryId
+      // itself stays bare since selectCategory needs the real Xtream category_id.
+      const lockKey = `${viewMode}:${pinPromptCategoryId}`
       set({
-        unlockedCategoryIds: [...unlockedCategoryIds, pinPromptCategoryId],
+        unlockedCategoryIds: [...unlockedCategoryIds, lockKey],
         pinPromptCategoryId: null,
         pinPromptError: null
       })

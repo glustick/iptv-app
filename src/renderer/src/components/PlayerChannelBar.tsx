@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useMemo } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { EpgGrid } from './EpgGrid'
 import type { LiveStream, ShortEpgProgram } from '../lib/types'
@@ -17,6 +17,31 @@ export function PlayerChannelBar(): JSX.Element {
   const play = useAppStore((s) => s.play)
   const playTimeshift = useAppStore((s) => s.playTimeshift)
   const openChannelPreview = useAppStore((s) => s.openChannelPreview)
+
+  // liveStreams reflects whatever category was last browsed in the main grid — if fullscreen
+  // was entered some other way (e.g. picked from Favorites), the actual playing channel might
+  // not be in it at all, and would be missing from its own swap bar. nowPlaying only carries
+  // the flat fields play() was given, not a full LiveStream record, so this stand-in fills the
+  // rest with the safest defaults (no catch-up, no category) rather than guessing.
+  const channels = useMemo(() => {
+    if (nowPlaying?.kind !== 'live') return liveStreams
+    if (liveStreams.some((c) => c.stream_id === nowPlaying.streamId)) return liveStreams
+    const placeholder: LiveStream = {
+      num: -1,
+      name: nowPlaying.name,
+      stream_type: 'live',
+      stream_id: nowPlaying.streamId,
+      stream_icon: '',
+      epg_channel_id: null,
+      added: '',
+      category_id: '',
+      custom_sid: null,
+      tv_archive: 0,
+      direct_source: '',
+      tv_archive_duration: 0
+    }
+    return [placeholder, ...liveStreams]
+  }, [liveStreams, nowPlaying])
 
   const handleSelect = useCallback(
     (channel: LiveStream) => {
@@ -38,10 +63,11 @@ export function PlayerChannelBar(): JSX.Element {
   return (
     <div className="player-channel-bar" onClick={(e) => e.stopPropagation()}>
       <EpgGrid
-        channels={liveStreams}
+        channels={channels}
         activeStreamId={nowPlaying?.kind === 'live' ? nowPlaying.streamId : undefined}
         clockFormat={clockFormat}
         rowHeight={ROW_HEIGHT}
+        autoFocus
         onSelectChannel={handleSelect}
         onWatchFullscreen={handleSelect}
         onWatchTimeshift={handleTimeshift}

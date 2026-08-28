@@ -78,7 +78,13 @@ export async function saveEpisodeProgress(progress: Record<string, EpisodeProgre
 
 export async function loadSettings(): Promise<AppSettings> {
   const loaded = await loadJson<Partial<AppSettings>>(SETTINGS_KEY, {})
-  return { ...DEFAULT_SETTINGS, ...loaded }
+  const merged = { ...DEFAULT_SETTINGS, ...loaded }
+  // Locked category IDs used to be stored bare (just the Xtream category_id), shared across
+  // Live/Movies/Series — but Xtream doesn't guarantee those IDs are unique across sections,
+  // so a bare ID could lock the wrong section's category. IDs are now namespaced as
+  // "section:id"; drop any legacy bare ones rather than guessing which section they meant —
+  // applying a lock to the wrong section would be worse than a one-time reset.
+  return { ...merged, lockedCategoryIds: merged.lockedCategoryIds.filter((id) => id.includes(':')) }
 }
 
 export async function saveSettings(settings: AppSettings): Promise<void> {

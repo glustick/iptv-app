@@ -18,6 +18,7 @@ import type { LiveStream, ShortEpgProgram } from '../lib/types'
 export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JSX.Element | null {
   const previewChannel = useAppStore((s) => s.previewChannel)
   const liveStreams = useAppStore((s) => s.liveStreams)
+  const shortEpgByStream = useAppStore((s) => s.shortEpgByStream)
   const searchTerm = useAppStore((s) => s.searchTerm)
   const closeChannelPreview = useAppStore((s) => s.closeChannelPreview)
   const nowPlaying = useAppStore((s) => s.nowPlaying)
@@ -47,8 +48,17 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
   const channels = useMemo(() => {
     if (!debouncedSearch.trim()) return liveStreams
     const needle = debouncedSearch.toLowerCase()
-    return liveStreams.filter((c) => c.name.toLowerCase().includes(needle))
-  }, [liveStreams, debouncedSearch])
+    return liveStreams.filter((c) => {
+      if (c.name.toLowerCase().includes(needle)) return true
+      // Also matches programme titles, but only for channels whose short EPG has already
+      // been loaded (rows scrolled near at some point) — get_short_epg is per-channel with
+      // no bulk/search endpoint, so searching every one of a 24k-channel catalog up front
+      // isn't practical. Real but limited: "what's playing X right now" works for channels
+      // you've already browsed past, not the whole catalog sight-unseen.
+      const listings = shortEpgByStream[c.stream_id]
+      return listings?.some((p) => p.title.toLowerCase().includes(needle)) ?? false
+    })
+  }, [liveStreams, debouncedSearch, shortEpgByStream])
 
   // Suppress the small preview's own stream while the fullscreen player has one open for
   // the same account — most Xtream providers cap concurrent connections quite low (often

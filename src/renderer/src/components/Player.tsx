@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import Hls from 'hls.js'
 import { useAppStore } from '../store/useAppStore'
 import { PlayerChannelBar } from './PlayerChannelBar'
+import { useTranscodeFallback } from '../lib/useTranscodeFallback'
 
 const MAX_NETWORK_RETRIES = 4
 const MAX_MEDIA_ERROR_RECOVERIES = 3
@@ -16,29 +17,21 @@ export function Player(): JSX.Element | null {
   const episodeProgress = useAppStore((s) => s.episodeProgress)
   const updateEpisodeProgress = useAppStore((s) => s.updateEpisodeProgress)
   const isOnline = useAppStore((s) => s.isOnline)
+  const showChannelBar = useAppStore((s) => s.channelBarOpen)
+  const setShowChannelBar = useAppStore((s) => s.setChannelBarOpen)
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const hlsRef = useRef<Hls | null>(null)
   const [playbackError, setPlaybackError] = useState<string | null>(null)
   const [buffering, setBuffering] = useState(false)
-  const [transcoding, setTranscoding] = useState(false)
   const [pipActive, setPipActive] = useState(false)
   const [reloadTick, setReloadTick] = useState(0)
-  const [showChannelBar, setShowChannelBar] = useState(false)
   const wasOffline = useRef(false)
   const autoHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  // Some channels carry an audio codec (EC-3/E-AC-3) that hls.js's demuxer can't parse at
-  // all — every fragment fails identically, forever, rather than as a rare blip. The only
-  // real fix is remuxing that channel's audio to AAC via a local ffmpeg process (see
-  // src/main/index.ts's transcode: IPC handlers) and falling back to that output instead.
-  // These are refs, not state: they need to survive a same-channel effect re-run (triggered
-  // by the fallback itself) without resetting, unlike genuine per-channel state.
-  const transcodedUrlRef = useRef<string | null>(null)
-  const triedTranscodeRef = useRef(false)
-  const awaitingTranscodeRef = useRef(false)
-  const transcodeSessionIdRef = useRef<string | null>(null)
   const lastStreamKeyRef = useRef<string | null>(null)
+
+  const { transcoding, getSourceUrl, tryFallback, reset: resetTranscodeFallback, beginRun: beginTranscodeRun } =
+    useTranscodeFallback()
 
   // Channel identity changing (including to nothing, i.e. the player closing) is the only
   // thing that should reset the transcode-fallback state or tear down a session — a fresh
@@ -49,13 +42,8 @@ export function Player(): JSX.Element | null {
     const streamKey = nowPlaying ? `${nowPlaying.kind}:${nowPlaying.streamId}` : null
     if (streamKey === lastStreamKeyRef.current) return
     lastStreamKeyRef.current = streamKey
-    triedTranscodeRef.current = false
-    awaitingTranscodeRef.current = false
-    transcodedUrlRef.current = null
-    const staleSessionId = transcodeSessionIdRef.current
-    transcodeSessionIdRef.current = null
-    if (staleSessionId) window.api.transcode.stop(staleSessionId)
-  }, [nowPlaying])
+    resetTranscodeFallback()
+  }, [nowPlaying, resetTranscodeFallback])
 
   // Auto-reconnect: if the whole network dropped (not just this fragment), hls.js's own
   // retry budget may already be exhausted by the time connectivity returns. Force a fresh
@@ -75,10 +63,7 @@ export function Player(): JSX.Element | null {
 
     setPlaybackError(null)
     setBuffering(true)
-    // Every fresh attempt — whether this is the very first try or the reload after a
-    // successful transcode fallback — starts with no fallback already in flight; it only
-    // becomes true again if this run's own error handler kicks one off.
-    awaitingTranscodeRef.current = false
+    beginTranscodeRun()
     let networkRetryCount = 0
     let mediaErrorRecoveryCount = 0
     let mediaErrorResetTimer: ReturnType<typeof setTimeout> | null = null
@@ -132,9 +117,8 @@ export function Player(): JSX.Element | null {
     }
 
     // Falls back to the ffmpeg-transcoded output for this exact channel once one exists —
-    // set by the ERROR handler below the first time it detects an unsupported audio codec,
-    // and persisted across this same-channel reload via a ref (see the effect above).
-    const sourceUrl = transcodedUrlRef.current ?? nowPlaying.url
+    // set by the ERROR handler below the first time it detects an unsupported audio codec.
+    const sourceUrl = getSourceUrl(nowPlaying.url)
     const isM3u8 = sourceUrl.endsWith('.m3u8')
 
     if (isM3u8 && Hls.isSupported()) {
@@ -157,44 +141,20 @@ export function Player(): JSX.Element | null {
       hls.loadSource(sourceUrl)
       hls.attachMedia(video)
       hls.on(Hls.Events.ERROR, (_event, data) => {
-        // Spinning up ffmpeg takes a few real seconds, during which this same (still-attached,
-        // still-broken) hls instance keeps hitting the identical error repeatedly. Once a fix
-        // is already in flight there's nothing new to react to — ignore the noise rather than
-        // running the normal escalation logic (and possibly flashing a "gave up" message) for
-        // a stream we're already replacing.
-        if (awaitingTranscodeRef.current) return
-
-        // Two distinct hls.js failure modes share the same real cause — a Dolby Digital
-        // (AC-3/E-AC-3) audio track this app's playback engine can't handle: hls.js's own
-        // demuxer refusing to parse EC-3 inside MPEG-TS at all (fatal fragParsingError), or
-        // Chromium's SourceBuffer rejecting the codec once handed valid AAC-shaped data
-        // (non-fatal bufferAddCodecError/bufferAppendError). Try transcoding once before
-        // falling through to either path's normal (terminal) error handling.
-        const isUnsupportedAudioCodec =
-          (data.details === 'fragParsingError' && typeof data.reason === 'string' && /ec-?3|ac-?3/i.test(data.reason)) ||
-          ((data.details === 'bufferAddCodecError' || data.details === 'bufferAppendError') &&
-            typeof data.mimeType === 'string' &&
-            data.mimeType.toLowerCase().includes('audio'))
-
-        if (isUnsupportedAudioCodec && !triedTranscodeRef.current) {
-          triedTranscodeRef.current = true
-          awaitingTranscodeRef.current = true
+        // Try transcoding once for the EC-3/AC-3-shaped failure (see useTranscodeFallback)
+        // before falling through to either path's normal (terminal) error handling — and
+        // ignore repeats of it while a fix is already in flight, since ffmpeg takes a few
+        // real seconds to spin up and this same still-broken hls instance keeps hitting the
+        // identical error meanwhile.
+        if (
+          tryFallback(
+            data,
+            nowPlaying.url,
+            () => setReloadTick((t) => t + 1),
+            (message) => setPlaybackError(`Audio codec not supported by this player, and automatic transcoding failed: ${message}`)
+          )
+        ) {
           setPlaybackError(null)
-          setTranscoding(true)
-          window.api.transcode
-            .start(nowPlaying.url)
-            .then(({ sessionId, url }) => {
-              transcodeSessionIdRef.current = sessionId
-              transcodedUrlRef.current = url
-              setReloadTick((t) => t + 1)
-            })
-            .catch((err) => {
-              awaitingTranscodeRef.current = false
-              setPlaybackError(
-                `Audio codec not supported by this player, and automatic transcoding failed: ${err instanceof Error ? err.message : String(err)}`
-              )
-            })
-            .finally(() => setTranscoding(false))
           return
         }
 
@@ -297,19 +257,15 @@ export function Player(): JSX.Element | null {
     if (nowPlaying?.kind !== 'live') setShowChannelBar(false)
   }, [nowPlaying])
 
-  // Keyboard shortcuts while the player is open: Escape to close, M to mute, arrows for volume.
+  // Keyboard shortcuts while the player is open: M to mute, arrows for volume. Escape is
+  // deliberately not handled here — see App.tsx's single centralized Escape handler, which
+  // already covers closing the channel bar and the player itself in the right priority order.
   useEffect(() => {
     if (!nowPlaying) return
     function onKeyDown(e: KeyboardEvent): void {
       const video = videoRef.current
       if (!video) return
-      if (e.key === 'Escape') {
-        // Close the channel bar first if it's open, matching the layered-overlay pattern
-        // used elsewhere in the app (App.tsx's Escape handler) — only close the whole
-        // player once there's nothing else open on top of it.
-        if (showChannelBar) setShowChannelBar(false)
-        else stop()
-      } else if (e.key === 'm' || e.key === 'M') {
+      if (e.key === 'm' || e.key === 'M') {
         video.muted = !video.muted
       } else if (e.key === 'ArrowUp') {
         video.volume = Math.min(1, video.volume + 0.05)
@@ -321,7 +277,7 @@ export function Player(): JSX.Element | null {
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [nowPlaying, stop, showChannelBar])
+  }, [nowPlaying])
 
   useEffect(() => {
     const video = videoRef.current
@@ -333,6 +289,22 @@ export function Player(): JSX.Element | null {
     return () => {
       video.removeEventListener('enterpictureinpicture', onEnterPip)
       video.removeEventListener('leavepictureinpicture', onLeavePip)
+    }
+  }, [nowPlaying])
+
+  // Picture-in-Picture opens a genuine floating OS window (confirmed: it renders on top of
+  // other apps, not just inside this one) tied to this video element — closing the player or
+  // switching channels while it's open would otherwise leave that window floating on the
+  // desktop indefinitely, frozen on the last decoded frame, since nothing else ever tells the
+  // OS to close it once the underlying video is torn down. Deliberately scoped to [nowPlaying]
+  // only (not bufferProfile/reloadTick) so an internal same-channel reload — a network
+  // reconnect, the audio-transcode fallback — doesn't unexpectedly kick the user out of PiP.
+  useEffect(() => {
+    const video = videoRef.current
+    return () => {
+      if (video && document.pictureInPictureElement === video) {
+        document.exitPictureInPicture().catch(() => {})
+      }
     }
   }, [nowPlaying])
 
@@ -395,7 +367,7 @@ export function Player(): JSX.Element | null {
           controls={nowPlaying.kind !== 'live'}
           autoPlay
           onClick={() => {
-            if (nowPlaying.kind === 'live') setShowChannelBar((v) => !v)
+            if (nowPlaying.kind === 'live') setShowChannelBar(!showChannelBar)
           }}
         />
         {showChannelBar && <PlayerChannelBar />}

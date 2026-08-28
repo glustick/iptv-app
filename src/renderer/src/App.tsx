@@ -20,15 +20,16 @@ function App(): JSX.Element {
     init()
   }, [init])
 
-  // Escape closes whichever non-player overlay is open, in front-to-back priority.
-  // The Player has its own Escape handler (it also needs Space/arrow-key shortcuts
-  // scoped to itself, plus its own bar-then-player layering), so it's deliberately
-  // not duplicated here — and specifically must NOT also act on previewChannel
-  // while the player is open: on the Live TV tab previewChannel stays set behind a
-  // fullscreen player (see EpgGridPanel's fullWidth mode), and since neither
-  // handler stops propagation, both fire on every Escape press. Without this guard,
-  // this handler would close the grid's preview out from under the Player's own
-  // Escape handling on every single press.
+  // The ONE place Escape is handled for every overlay, front-to-back — including the
+  // fullscreen player and its channel-swap bar, both of which used to have their own
+  // separate `document`-level listener in Player.tsx. Two uncoordinated listeners both
+  // reacting to the same key was a real bug: neither stopped propagation, so both fired on
+  // every press, and once previewChannel could legitimately stay set behind an open
+  // fullscreen player, App's old handler would close the grid's preview out from under
+  // Player's own bar-then-player Escape logic. Player.tsx now only listens for M/arrow-key
+  // shortcuts (different keys entirely, so there's no possible overlap left to race).
+  // channelBarOpen and nowPlaying both live in the store specifically so this single
+  // handler can include them in the same priority chain as every other overlay.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
       if (e.key !== 'Escape') return
@@ -36,7 +37,9 @@ function App(): JSX.Element {
       if (state.settingsOpen) state.closeSettings()
       else if (state.pinPromptCategoryId) state.cancelPinPrompt()
       else if (state.openSeries) state.closeSeriesDetail()
-      else if (state.previewChannel && !state.nowPlaying) state.closeChannelPreview()
+      else if (state.channelBarOpen) state.setChannelBarOpen(false)
+      else if (state.nowPlaying) state.stop()
+      else if (state.previewChannel) state.closeChannelPreview()
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
