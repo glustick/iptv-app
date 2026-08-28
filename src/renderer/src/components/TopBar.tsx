@@ -36,19 +36,22 @@ export function TopBar(): JSX.Element {
       <input
         className="search-input"
         placeholder="Search…"
-        // On Live TV, this also matches programme titles — but only for channels whose short
-        // EPG has already loaded (rows scrolled near at some point). There's no bulk/search
-        // endpoint in the Xtream API to search programme titles across an entire unbrowsed
-        // catalog, so a search that "finds nothing" for content you haven't scrolled past yet
-        // is expected, not a bug — worth explaining rather than leaving silent.
-        title={
-          viewMode === 'live'
-            ? 'Matches channel names, and programme titles for channels already scrolled into view'
-            : undefined
-        }
         value={searchTerm}
         onChange={(e) => setSearchTerm(e.target.value)}
       />
+
+      {viewMode === 'live' && (
+        // A hover-only title attribute on the input itself is easy to never discover — this
+        // makes the limitation visible up front instead of only explaining it to someone who
+        // happens to hover, since a search that silently "finds nothing" for an unbrowsed
+        // channel's programme otherwise reads as a bug, not an API limitation.
+        <span
+          className="search-hint"
+          title="Matches channel names, and programme titles for channels already scrolled into view"
+        >
+          ⓘ
+        </span>
+      )}
 
       {!isOnline && <span className="offline-badge">Offline</span>}
 

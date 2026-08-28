@@ -128,6 +128,9 @@ export interface RecentlyWatchedEntry {
   name: string
   icon: string
   extension: string
+  // Only meaningful for kind === 'live' — see NowPlaying.tvArchive for why this is carried
+  // through rather than looked up again later.
+  tvArchive: number
   watchedAt: number
 }
 
@@ -139,6 +142,7 @@ export interface EpisodeProgress {
 
 export type BufferProfile = 'smooth' | 'lowLatency'
 export type ClockFormat = '12h' | '24h'
+export type EpgRowDensity = 'comfortable' | 'compact'
 
 export interface AppSettings {
   bufferProfile: BufferProfile
@@ -147,6 +151,7 @@ export interface AppSettings {
   lockedCategoryIds: string[]
   sidebarWidth: number
   detailPanelWidth: number
+  epgRowDensity: EpgRowDensity
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -155,5 +160,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   parentalPin: null,
   lockedCategoryIds: [],
   sidebarWidth: 220,
-  detailPanelWidth: 560
+  detailPanelWidth: 560,
+  epgRowDensity: 'comfortable'
 }

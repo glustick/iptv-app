@@ -57,6 +57,10 @@ export interface NowPlaying {
   name: string
   url: string
   extension: string
+  // Only meaningful for kind === 'live'; carried through from whichever full LiveStream record
+  // play() was called with, so the channel bar can offer real catch-up for a channel reached via
+  // Favorites or Recently Watched, not just ones in the currently-browsed EPG grid category.
+  tvArchive: number
 }
 
 interface AppState {
@@ -113,7 +117,14 @@ interface AppState {
   setSearchTerm: (term: string) => void
   loadEpg: () => Promise<void>
   loadShortEpg: (streamId: number) => Promise<void>
-  play: (kind: MediaKind, streamId: number, name: string, extension: string, icon?: string) => void
+  play: (
+    kind: MediaKind,
+    streamId: number,
+    name: string,
+    extension: string,
+    icon?: string,
+    tvArchive?: number
+  ) => void
   playTimeshift: (channel: LiveStream, program: ShortEpgProgram) => void
   stop: () => void
   setChannelBarOpen: (open: boolean) => void
@@ -369,12 +380,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
   },
 
-  play: (kind, streamId, name, extension, icon = '') => {
+  play: (kind, streamId, name, extension, icon = '', tvArchive = 0) => {
     const { client, recentlyWatched } = get()
     if (!client) return
-    set({ nowPlaying: { kind, streamId, name, extension, url: client.getStreamUrl(kind, streamId, extension) } })
+    set({
+      nowPlaying: { kind, streamId, name, extension, tvArchive, url: client.getStreamUrl(kind, streamId, extension) }
+    })
 
-    const entry: RecentlyWatchedEntry = { kind, streamId, name, icon, extension, watchedAt: Date.now() }
+    const entry: RecentlyWatchedEntry = { kind, streamId, name, icon, extension, tvArchive, watchedAt: Date.now() }
     const withoutDupe = recentlyWatched.filter((e) => !(e.kind === kind && e.streamId === streamId))
     const updated = [entry, ...withoutDupe].slice(0, 30)
     set({ recentlyWatched: updated })
@@ -388,7 +401,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     const durationMinutes = (Number(program.stop_timestamp) - Number(program.start_timestamp)) / 60
     const url = client.getTimeshiftUrl(channel.stream_id, start, durationMinutes)
     set({
-      nowPlaying: { kind: 'live', streamId: channel.stream_id, name: `${channel.name} — ${program.title}`, extension: 'm3u8', url }
+      nowPlaying: {
+        kind: 'live',
+        streamId: channel.stream_id,
+        name: `${channel.name} — ${program.title}`,
+        extension: 'm3u8',
+        tvArchive: channel.tv_archive,
+        url
+      }
     })
   },
 

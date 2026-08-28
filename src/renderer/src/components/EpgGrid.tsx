@@ -1,17 +1,13 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { List, useListRef } from 'react-window'
 import { useAppStore } from '../store/useAppStore'
+import { pct } from '../lib/epgTime'
 import type { LiveStream, ShortEpgProgram, ClockFormat } from '../lib/types'
 
 const HOUR_MS = 3_600_000
 const WINDOW_HOURS = 3
 const MS_PER_SCROLL_UNIT = 30_000 // 30 seconds of time-shift per wheel delta unit
 const MAX_WINDOW_OFFSET_MS = 24 * HOUR_MS // soft clamp — get_short_epg's own window is far narrower than this anyway
-
-export function pct(t: number, start: number, end: number): number {
-  if (end <= start) return 0
-  return Math.min(100, Math.max(0, ((t - start) / (end - start)) * 100))
-}
 
 function formatHour(t: number, clockFormat: ClockFormat): string {
   return new Date(t).toLocaleTimeString([], { hour: 'numeric', hour12: clockFormat === '12h' })
@@ -128,7 +124,12 @@ interface EpgGridProps {
   activeStreamId?: number
   clockFormat: ClockFormat
   rowHeight?: number
+  compact?: boolean
   autoFocus?: boolean
+  // Rendered at the right edge of the time header — used by EpgGridPanel to add its row-density
+  // toggle without this shared component (also used by the much tighter fullscreen channel bar,
+  // which never passes this) needing to know that setting exists.
+  extraNavControls?: React.ReactNode
   onSelectChannel: (channel: LiveStream) => void
   onWatchFullscreen: (channel: LiveStream) => void
   onWatchTimeshift: (channel: LiveStream, program: ShortEpgProgram) => void
@@ -144,7 +145,9 @@ export function EpgGrid({
   activeStreamId,
   clockFormat,
   rowHeight = 40,
+  compact = false,
   autoFocus = false,
+  extraNavControls,
   onSelectChannel,
   onWatchFullscreen,
   onWatchTimeshift
@@ -225,7 +228,13 @@ export function EpgGrid({
   }
 
   return (
-    <div ref={rootRef} className="epg-grid" tabIndex={0} onWheel={handleWheel} onKeyDown={handleKeyDown}>
+    <div
+      ref={rootRef}
+      className={`epg-grid${compact ? ' epg-grid--compact' : ''}`}
+      tabIndex={0}
+      onWheel={handleWheel}
+      onKeyDown={handleKeyDown}
+    >
       <div className="epg-time-header">
         <div className="epg-grid-nav">
           <button onClick={() => setWindowOffsetMs((o) => Math.max(-MAX_WINDOW_OFFSET_MS, o - HOUR_MS))} title="Earlier">
@@ -245,6 +254,7 @@ export function EpgGrid({
             </span>
           ))}
         </div>
+        {extraNavControls && <div className="epg-time-header-controls">{extraNavControls}</div>}
       </div>
       <div className="epg-grid-body">
         {channels.length === 0 ? (

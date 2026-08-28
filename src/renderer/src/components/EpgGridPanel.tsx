@@ -29,8 +29,10 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
   const isFavorited = useAppStore((s) => s.isFavorited)
   const toggleFavorite = useAppStore((s) => s.toggleFavorite)
   const detailPanelWidth = useAppStore((s) => s.settings.detailPanelWidth)
+  const epgRowDensity = useAppStore((s) => s.settings.epgRowDensity)
   const updateSettings = useAppStore((s) => s.updateSettings)
   const openChannelPreview = useAppStore((s) => s.openChannelPreview)
+  const compact = epgRowDensity === 'compact'
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const [muted, setMuted] = useState(true)
@@ -86,7 +88,7 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
   const favorited = isFavorited('live', previewChannel.stream_id)
 
   function watchFullscreen(channel: LiveStream = previewChannel!): void {
-    play('live', channel.stream_id, channel.name, 'm3u8', channel.stream_icon)
+    play('live', channel.stream_id, channel.name, 'm3u8', channel.stream_icon, channel.tv_archive)
     if (fullWidth) {
       // Keep the grid's state in sync (so it shows this channel highlighted/previewing
       // when fullscreen closes) rather than tearing the whole panel down — its own
@@ -149,6 +151,17 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
           channels={channels}
           activeStreamId={previewChannel.stream_id}
           clockFormat={clockFormat}
+          rowHeight={compact ? 26 : 40}
+          compact={compact}
+          extraNavControls={
+            <button
+              className="epg-density-toggle"
+              onClick={() => updateSettings({ epgRowDensity: compact ? 'comfortable' : 'compact' })}
+              title={compact ? 'Switch to comfortable row height' : 'Switch to compact row height (shows more channels)'}
+            >
+              {compact ? '▤ Comfortable' : '▤ Compact'}
+            </button>
+          }
           onSelectChannel={openChannelPreview}
           onWatchFullscreen={watchFullscreen}
           onWatchTimeshift={watchFromStart}

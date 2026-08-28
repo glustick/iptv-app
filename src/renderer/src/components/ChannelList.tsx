@@ -277,7 +277,7 @@ export function ChannelList(): JSX.Element {
     favoriteEntryToGridEntry(f, { openChannelPreview, play, openSeriesDetail, toggleFavorite })
   )
   const resumeRecentlyWatched = (entry: RecentlyWatchedEntry): void =>
-    play(entry.kind, entry.streamId, entry.name, entry.extension, entry.icon)
+    play(entry.kind, entry.streamId, entry.name, entry.extension, entry.icon, entry.tvArchive)
   const recentEntries = recentlyWatched.map((entry) => recentlyWatchedEntryToGridEntry(entry, resumeRecentlyWatched))
 
   return (
