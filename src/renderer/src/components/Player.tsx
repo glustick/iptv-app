@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import Hls from 'hls.js'
 import { useAppStore } from '../store/useAppStore'
 import { PlayerChannelBar } from './PlayerChannelBar'
+import { PlayerStatsOverlay } from './PlayerStatsOverlay'
+import { PlayerSeekBar } from './PlayerSeekBar'
 import { useTranscodeFallback } from '../lib/useTranscodeFallback'
 
 const MAX_NETWORK_RETRIES = 4
@@ -9,6 +11,17 @@ const MAX_MEDIA_ERROR_RECOVERIES = 3
 const MEDIA_ERROR_RESET_AFTER_MS = 15000
 const PROGRESS_SAVE_INTERVAL_MS = 5000
 const CHANNEL_BAR_AUTO_HIDE_MS = 6000
+const SKIP_SECONDS = 10
+const SKIP_SECONDS_LONG = 60
+// Click-zone thresholds for fullscreen mode, in pixels from the respective screen edge —
+// roughly matched to the header's own height and the channel bar's (see CHANNEL_BAR height in
+// global.css) so each zone lines up with the chrome it reveals rather than an arbitrary split.
+const FULLSCREEN_TOP_ZONE_PX = 80
+const FULLSCREEN_BOTTOM_ZONE_PX = 220
+// The seek bar itself reveals on hover/cursor position (not click, unlike the header/channel
+// bar above) — a fraction of the player's own height rather than a fixed pixel count so it
+// scales sensibly whether the player is windowed or truly fullscreen.
+const SEEKBAR_REVEAL_ZONE_FRACTION = 0.2
 
 export function Player(): JSX.Element | null {
   const nowPlaying = useAppStore((s) => s.nowPlaying)
@@ -22,10 +35,18 @@ export function Player(): JSX.Element | null {
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const hlsRef = useRef<Hls | null>(null)
+  const playerRef = useRef<HTMLDivElement | null>(null)
   const [playbackError, setPlaybackError] = useState<string | null>(null)
   const [buffering, setBuffering] = useState(false)
   const [pipActive, setPipActive] = useState(false)
   const [reloadTick, setReloadTick] = useState(0)
+  const [paused, setPaused] = useState(false)
+  const [muted, setMuted] = useState(false)
+  const [volume, setVolume] = useState(1)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [fullscreenHeaderVisible, setFullscreenHeaderVisible] = useState(false)
+  const [statsVisible, setStatsVisible] = useState(false)
+  const [cursorNearBottom, setCursorNearBottom] = useState(false)
   const wasOffline = useRef(false)
   const autoHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastStreamKeyRef = useRef<string | null>(null)
@@ -292,6 +313,61 @@ export function Player(): JSX.Element | null {
     }
   }, [nowPlaying])
 
+  // Keeps the header's play/pause and volume controls in sync regardless of what actually
+  // changed them — the video element's own state (a native-control click for VOD/series, the
+  // M/arrow-key shortcuts, or these new buttons) rather than assuming this UI is the only
+  // mutator of paused/muted/volume.
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+    const syncPlayState = (): void => setPaused(video.paused)
+    const syncVolumeState = (): void => {
+      setMuted(video.muted)
+      setVolume(video.volume)
+    }
+    syncPlayState()
+    syncVolumeState()
+    video.addEventListener('play', syncPlayState)
+    video.addEventListener('pause', syncPlayState)
+    video.addEventListener('volumechange', syncVolumeState)
+    return () => {
+      video.removeEventListener('play', syncPlayState)
+      video.removeEventListener('pause', syncPlayState)
+      video.removeEventListener('volumechange', syncVolumeState)
+    }
+  }, [nowPlaying])
+
+  // document.fullscreenElement (not a per-window Electron API) is what actually toggles here —
+  // requestFullscreen() targets this player's own container, not the OS window, so the app's
+  // title bar/other windows are untouched; only this element grows to fill the screen.
+  useEffect(() => {
+    const onFullscreenChange = (): void => setIsFullscreen(document.fullscreenElement === playerRef.current)
+    document.addEventListener('fullscreenchange', onFullscreenChange)
+    return () => document.removeEventListener('fullscreenchange', onFullscreenChange)
+  }, [])
+
+  // The header starts hidden every time fullscreen is entered (revealed only by clicking the
+  // top edge — see handlePlayAreaClick) and is simply always visible again once fullscreen
+  // ends, matching its normal in-flow, always-on windowed-mode appearance.
+  useEffect(() => {
+    setFullscreenHeaderVisible(!isFullscreen)
+  }, [isFullscreen])
+
+  // The seek bar (unlike the header/channel bar, which are click-toggled) reveals purely on
+  // cursor position — it's meant to be glanceable without an extra click, but shouldn't sit
+  // permanently over the picture either. Booleans bail out of re-rendering when the new value
+  // matches the current one, so this is cheap even at native mousemove frequency.
+  useEffect(() => {
+    const container = playerRef.current
+    if (!container || nowPlaying?.kind !== 'live') return
+    function onMouseMove(e: MouseEvent): void {
+      const rect = container!.getBoundingClientRect()
+      setCursorNearBottom(e.clientY > rect.top + rect.height * (1 - SEEKBAR_REVEAL_ZONE_FRACTION))
+    }
+    container.addEventListener('mousemove', onMouseMove)
+    return () => container.removeEventListener('mousemove', onMouseMove)
+  }, [nowPlaying])
+
   // Picture-in-Picture opens a genuine floating OS window (confirmed: it renders on top of
   // other apps, not just inside this one) tied to this video element — closing the player or
   // switching channels while it's open would otherwise leave that window floating on the
@@ -304,6 +380,17 @@ export function Player(): JSX.Element | null {
     return () => {
       if (video && document.pictureInPictureElement === video) {
         document.exitPictureInPicture().catch(() => {})
+      }
+    }
+  }, [nowPlaying])
+
+  // Same reasoning as the PiP cleanup above: closing the player or switching channels while
+  // fullscreen would otherwise leave the OS in fullscreen mode with nothing meaningful behind
+  // it (the player itself is what's fullscreened, not the whole app window).
+  useEffect(() => {
+    return () => {
+      if (document.fullscreenElement === playerRef.current) {
+        document.exitFullscreen().catch(() => {})
       }
     }
   }, [nowPlaying])
@@ -325,11 +412,148 @@ export function Player(): JSX.Element | null {
     }
   }
 
+  async function toggleFullscreen(): Promise<void> {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen()
+      } else {
+        await playerRef.current?.requestFullscreen()
+      }
+    } catch {
+      // Same rationale as PiP above — not worth surfacing as a user-facing error.
+    }
+  }
+
+  function togglePlayPause(): void {
+    const video = videoRef.current
+    if (!video) return
+    if (video.paused) video.play().catch(() => {})
+    else video.pause()
+  }
+
+  // Clamped to the video's own seekable range rather than an arbitrary bound — for a live HLS
+  // stream that's the DVR buffer hls.js maintains (so this doubles as an "instant replay"/
+  // catch-up-within-the-buffer control), and for VOD/series it's just [0, duration].
+  function skip(deltaSeconds: number): void {
+    const video = videoRef.current
+    if (!video || video.seekable.length === 0) return
+    const target = video.currentTime + deltaSeconds
+    const min = video.seekable.start(0)
+    const max = video.seekable.end(video.seekable.length - 1)
+    video.currentTime = Math.min(max, Math.max(min, target))
+  }
+
+  // The end of the seekable range IS the live edge for a live HLS stream — hls.js keeps
+  // extending it as new segments arrive, so jumping here after skip()ping backward (or just
+  // falling behind from buffering) genuinely returns to the current transmission, not a fixed
+  // point that drifts stale.
+  function goToLive(): void {
+    const video = videoRef.current
+    if (!video || video.seekable.length === 0) return
+    video.currentTime = video.seekable.end(video.seekable.length - 1)
+    if (video.paused) video.play().catch(() => {})
+  }
+
+  function toggleMute(): void {
+    const video = videoRef.current
+    if (!video) return
+    video.muted = !video.muted
+  }
+
+  function handleVolumeChange(e: React.ChangeEvent<HTMLInputElement>): void {
+    const video = videoRef.current
+    if (!video) return
+    video.volume = Number(e.target.value)
+    if (video.volume > 0 && video.muted) video.muted = false
+  }
+
+  // Windowed mode keeps the old behavior (click anywhere on a live channel toggles the channel
+  // bar) unchanged — the header is always visible there, so there's no "reveal the chrome"
+  // concern to split zones for. Fullscreen replaces that with a top/bottom split: the header
+  // (translucent, hidden by default) is normally out of reach once it's hidden, so a click has
+  // to land somewhere to bring it back, and the bottom zone doubles as the in-video EPG toggle
+  // so it's reachable without a mouse ever leaving the video.
+  function handlePlayAreaClick(e: React.MouseEvent<HTMLVideoElement>): void {
+    if (isFullscreen) {
+      if (e.clientY < FULLSCREEN_TOP_ZONE_PX) {
+        setFullscreenHeaderVisible((v) => !v)
+        return
+      }
+      if (e.clientY > window.innerHeight - FULLSCREEN_BOTTOM_ZONE_PX) {
+        if (nowPlaying?.kind === 'live') setShowChannelBar(!showChannelBar)
+        return
+      }
+      return
+    }
+    if (nowPlaying?.kind === 'live') setShowChannelBar(!showChannelBar)
+  }
+
   return (
-    <div className="player-overlay">
-      <div className="player-header">
+    <div className="player-overlay" ref={playerRef}>
+      <div
+        className={`player-header${isFullscreen ? ' player-header--overlay' : ''}${isFullscreen && !fullscreenHeaderVisible ? ' player-header--hidden' : ''}`}
+        // Once revealed, the header itself covers the same top zone that opened it — a second
+        // click there lands on the header, not the video underneath, so closing it again has to
+        // be handled here too. Ignores clicks on an actual control (button/input) so pressing
+        // e.g. Pause doesn't also immediately hide the header out from under the next click.
+        onClick={(e) => {
+          if (!isFullscreen) return
+          if ((e.target as HTMLElement).closest('button, input')) return
+          setFullscreenHeaderVisible(false)
+        }}
+      >
         <span className="player-title">{nowPlaying.name}</span>
         <div className="player-header-actions">
+          {// Play/pause and skip are only added here for live TV — VOD/series already have full
+          // scrubbing via the native <video controls> bar below, and duplicating a second set
+          // of transport controls there would be redundant, not additive.
+          nowPlaying.kind === 'live' && (
+            <>
+              <button className="player-control-btn" onClick={() => skip(-SKIP_SECONDS_LONG)} title={`Back ${SKIP_SECONDS_LONG}s`}>
+                ⏪ 1m
+              </button>
+              <button className="player-control-btn" onClick={() => skip(-SKIP_SECONDS)} title={`Back ${SKIP_SECONDS}s`}>
+                ⏪ {SKIP_SECONDS}s
+              </button>
+              <button className="player-control-btn" onClick={togglePlayPause} title={paused ? 'Play' : 'Pause'}>
+                {paused ? '▶' : '⏸'}
+              </button>
+              <button className="player-control-btn" onClick={() => skip(SKIP_SECONDS)} title={`Forward ${SKIP_SECONDS}s`}>
+                {SKIP_SECONDS}s ⏩
+              </button>
+              <button className="player-control-btn" onClick={() => skip(SKIP_SECONDS_LONG)} title={`Forward ${SKIP_SECONDS_LONG}s`}>
+                1m ⏩
+              </button>
+              <button className="player-control-btn" onClick={goToLive} title="Jump to the current live transmission">
+                🔴 Live
+              </button>
+            </>
+          )}
+          <div className="player-volume">
+            <button className="player-control-btn" onClick={toggleMute} title={muted ? 'Unmute' : 'Mute'}>
+              {muted || volume === 0 ? '🔇' : volume < 0.5 ? '🔉' : '🔊'}
+            </button>
+            <input
+              type="range"
+              className="player-volume-slider"
+              min={0}
+              max={1}
+              step={0.05}
+              value={muted ? 0 : volume}
+              onChange={handleVolumeChange}
+              title="Volume"
+            />
+          </div>
+          <button
+            className="player-control-btn"
+            onClick={() => setStatsVisible((v) => !v)}
+            title={statsVisible ? 'Hide stream stats' : 'Show stream stats'}
+          >
+            📊 Stats
+          </button>
+          <button className="player-control-btn" onClick={toggleFullscreen} title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
+            {isFullscreen ? '⛶ Exit Fullscreen' : '⛶ Fullscreen'}
+          </button>
           <button className="player-pip" onClick={togglePip} title="Picture in picture">
             {pipActive ? '⧉ Exit PiP' : '⧉ PiP'}
           </button>
@@ -366,11 +590,20 @@ export function Player(): JSX.Element | null {
           // VOD/series, which still need them to scrub.
           controls={nowPlaying.kind !== 'live'}
           autoPlay
-          onClick={() => {
-            if (nowPlaying.kind === 'live') setShowChannelBar(!showChannelBar)
+          onClick={handlePlayAreaClick}
+          // Live-only: VOD/series keep the browser's own native double-click-to-fullscreen
+          // behavior on their <video controls>, and "back to the EPG" isn't a meaningful
+          // concept for something that was never browsed from the EPG grid to begin with.
+          onDoubleClick={() => {
+            if (nowPlaying?.kind === 'live') stop()
           }}
         />
+        {// Hidden while the channel bar/EPG is open (both anchor to the bottom edge, and the
+        // channel bar already shows its own sense of "when" via the EPG grid's now-line) and
+        // unless the cursor is actually near the bottom edge — see the mousemove effect above.
+        nowPlaying.kind === 'live' && !showChannelBar && cursorNearBottom && <PlayerSeekBar videoRef={videoRef} />}
         {showChannelBar && <PlayerChannelBar />}
+        {statsVisible && <PlayerStatsOverlay videoRef={videoRef} hlsRef={hlsRef} />}
       </div>
     </div>
   )

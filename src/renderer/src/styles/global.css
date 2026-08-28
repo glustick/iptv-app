@@ -613,6 +613,29 @@ body.resizing-col {
   background: rgba(11, 13, 18, 0.9);
 }
 
+/* Fullscreen replaces the header's normal in-flow, always-visible bar with a translucent
+   overlay floating on top of the video — hidden by default (see Player.tsx's
+   fullscreenHeaderVisible) and revealed only by clicking the top edge of the screen, the same
+   "hidden chrome" pattern most fullscreen video players use. Taking it out of flex flow (rather
+   than just hiding it) is what lets the video expand to fill the freed space instead of leaving
+   a blank gap where the header used to be. */
+.player-header--overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 4;
+  background: rgba(11, 13, 18, 0.55);
+  backdrop-filter: blur(6px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.player-header--hidden {
+  opacity: 0;
+  transform: translateY(-100%);
+  pointer-events: none;
+}
+
 .player-title {
   font-size: 14px;
   font-weight: 600;
@@ -625,18 +648,32 @@ body.resizing-col {
 }
 
 .player-close,
-.player-pip {
+.player-pip,
+.player-control-btn {
   background: none;
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
   padding: 6px 12px;
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .player-pip:hover,
-.player-close:hover {
+.player-close:hover,
+.player-control-btn:hover {
   border-color: var(--accent);
+}
+
+.player-volume {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.player-volume-slider {
+  width: 70px;
+  accent-color: var(--accent);
 }
 
 .player-body {
@@ -656,6 +693,99 @@ body.resizing-col {
 .player-video {
   width: 100%;
   height: 100%;
+}
+
+/* Live seek bar: always-on strip showing where playback sits relative to the live edge — click
+   to jump to a point, scroll horizontally to nudge backward/forward, matching the EPG grid's
+   own scroll-to-shift-time interaction language (see EpgGrid.tsx's handleWheel). */
+
+.player-seekbar-wrap {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.85), rgba(0, 0, 0, 0));
+  z-index: 2;
+}
+
+.player-seekbar-label {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  min-width: 34px;
+}
+
+.player-seekbar {
+  flex: 1;
+  padding: 8px 0; /* generous hit target for click/scroll without inflating the visible track */
+  cursor: pointer;
+}
+
+.player-seekbar-track {
+  position: relative;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.player-seekbar-progress {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.player-seekbar-thumb {
+  position: absolute;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  transform: translate(-50%, -50%);
+}
+
+.player-seekbar-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.player-seekbar-live-dot--active {
+  background: #e5484d;
+}
+
+.player-stats-overlay {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: rgba(11, 13, 18, 0.85);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  z-index: 3;
+  min-width: 220px;
+}
+
+.player-stats-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 2px 0;
+}
+
+.player-stats-row span:first-child {
+  color: var(--text-dim);
 }
 
 /* Channel bar: a compact vertical mini-EPG (the same EpgGrid used for browsing Live TV, see
