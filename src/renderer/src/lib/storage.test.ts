@@ -39,6 +39,18 @@ describe('loadSettings', () => {
     expect(loaded.bufferProfile).toBe('smooth')
     expect(loaded.epgRowDensity).toBe('comfortable')
   })
+
+  it('round-trips a parental PIN as plain text when there is no Electron main process to encrypt it with (hasElectronApi() is false in this test environment, same as a browser/dev-preview context)', async () => {
+    await saveSettings({ ...DEFAULT_SETTINGS, parentalPin: '1234' })
+    const loaded = await loadSettings()
+    expect(loaded.parentalPin).toBe('1234')
+  })
+
+  it('treats an "enc:"-prefixed PIN as unrecoverable without Electron rather than throwing', async () => {
+    localStorage.setItem('settings', JSON.stringify({ parentalPin: 'enc:c29tZWNpcGhlcnRleHQ=' }))
+    const loaded = await loadSettings()
+    expect(loaded.parentalPin).toBeNull()
+  })
 })
 
 describe('favorites / recently-watched round trip', () => {

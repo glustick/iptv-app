@@ -6,6 +6,7 @@ import {
   net,
   nativeImage,
   Menu,
+  safeStorage,
   type MenuItemConstructorOptions
 } from 'electron'
 import { join, extname } from 'path'
@@ -408,6 +409,19 @@ app.whenReady().then(async () => {
   ipcMain.handle('store:get', (_event, key: string) => store.get(key))
   ipcMain.handle('store:set', (_event, key: string, value: unknown) => store.set(key, value))
   ipcMain.handle('store:delete', (_event, key: string) => store.delete(key))
+
+  // OS-keychain-backed encryption (macOS Keychain / Windows DPAPI / Linux Secret Service where
+  // available) for the parental PIN — only reachable from the main process, hence the IPC
+  // round-trip rather than something storage.ts could do directly. isAvailable() can be false
+  // on Linux without a keyring daemon running; callers fall back to plaintext in that case,
+  // same as before this existed.
+  ipcMain.handle('safeStorage:isAvailable', () => safeStorage.isEncryptionAvailable())
+  ipcMain.handle('safeStorage:encrypt', (_event, plainText: string) =>
+    safeStorage.encryptString(plainText).toString('base64')
+  )
+  ipcMain.handle('safeStorage:decrypt', (_event, base64: string) =>
+    safeStorage.decryptString(Buffer.from(base64, 'base64'))
+  )
 
   const proxyPort = await startLocalProxy()
   ipcMain.handle('proxy:getBaseUrl', () => `http://127.0.0.1:${proxyPort}`)

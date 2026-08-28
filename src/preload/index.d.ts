@@ -21,6 +21,12 @@ interface TranscodeAPI {
   stop: (sessionId: string) => Promise<void>
 }
 
+interface SafeStorageAPI {
+  isAvailable: () => Promise<boolean>
+  encrypt: (plainText: string) => Promise<string>
+  decrypt: (base64: string) => Promise<string>
+}
+
 declare global {
   interface Window {
     electron: ElectronAPI
@@ -29,6 +35,7 @@ declare global {
       store: StoreAPI
       proxy: ProxyAPI
       transcode: TranscodeAPI
+      safeStorage: SafeStorageAPI
     }
   }
 }

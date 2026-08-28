@@ -76,6 +76,38 @@ export async function saveEpisodeProgress(progress: Record<string, EpisodeProgre
   return saveJson(EPISODE_PROGRESS_KEY, progress)
 }
 
+// The parental PIN used to be stored as plain text in electron-store's JSON file, on the same
+// footing as everything else there — fine for "don't let a kid stumble into the wrong
+// category," not fine against anyone who'd think to just open the file. safeStorage is
+// main-process-only (hence the IPC round-trip) and OS-keychain-backed (macOS Keychain, Windows
+// DPAPI, Linux Secret Service where a keyring daemon is actually running — isAvailable() can be
+// false there, in which case this falls back to the old plaintext behavior rather than losing
+// the feature). The rest of the app never sees any of this: AppSettings.parentalPin is always
+// plain text in memory, encrypted/decrypted only at this load/save boundary.
+const ENCRYPTED_PIN_PREFIX = 'enc:'
+
+async function encryptPin(pin: string): Promise<string> {
+  if (!hasElectronApi()) return pin
+  const available = await window.api.safeStorage.isAvailable().catch(() => false)
+  if (!available) return pin
+  const encrypted = await window.api.safeStorage.encrypt(pin).catch(() => null)
+  return encrypted === null ? pin : ENCRYPTED_PIN_PREFIX + encrypted
+}
+
+async function decryptPin(stored: string): Promise<string | null> {
+  if (!stored.startsWith(ENCRYPTED_PIN_PREFIX)) return stored // legacy plaintext, used as-is
+  if (!hasElectronApi()) return null // no main process to ask — can't decrypt here
+  return window.api.safeStorage.decrypt(stored.slice(ENCRYPTED_PIN_PREFIX.length)).catch(() => {
+    // Only realistically hit if the encrypted value came from a different machine/OS-key
+    // context (e.g. a copied userData folder) — the PIN itself can't be recovered at that
+    // point, so this fails open (no PIN enforced) rather than permanently locking categories
+    // behind a value nothing can ever decrypt again. Matches this feature's existing "soft
+    // lock" threat model: worse than losing the lock would be no recovery path at all.
+    console.error('[settings] failed to decrypt parental PIN — treating as unset')
+    return null
+  })
+}
+
 export async function loadSettings(): Promise<AppSettings> {
   const loaded = await loadJson<Partial<AppSettings>>(SETTINGS_KEY, {})
   const merged = { ...DEFAULT_SETTINGS, ...loaded }
@@ -84,9 +116,22 @@ export async function loadSettings(): Promise<AppSettings> {
   // so a bare ID could lock the wrong section's category. IDs are now namespaced as
   // "section:id"; drop any legacy bare ones rather than guessing which section they meant —
   // applying a lock to the wrong section would be worse than a one-time reset.
-  return { ...merged, lockedCategoryIds: merged.lockedCategoryIds.filter((id) => id.includes(':')) }
+  const result = { ...merged, lockedCategoryIds: merged.lockedCategoryIds.filter((id) => id.includes(':')) }
+  if (result.parentalPin) {
+    const wasLegacyPlaintext = !result.parentalPin.startsWith(ENCRYPTED_PIN_PREFIX)
+    result.parentalPin = await decryptPin(result.parentalPin)
+    // Migrate immediately rather than waiting for some unrelated setting to change next —
+    // otherwise a user who never opens Settings again keeps an existing plaintext PIN on disk
+    // indefinitely even after upgrading to a build that knows how to encrypt it.
+    if (wasLegacyPlaintext && result.parentalPin) saveSettings(result)
+  }
+  return result
 }
 
 export async function saveSettings(settings: AppSettings): Promise<void> {
-  return saveJson(SETTINGS_KEY, settings)
+  const toSave = { ...settings }
+  if (toSave.parentalPin) {
+    toSave.parentalPin = await encryptPin(toSave.parentalPin)
+  }
+  return saveJson(SETTINGS_KEY, toSave)
 }

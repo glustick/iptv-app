@@ -365,7 +365,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     return new Promise((resolve) => {
       shortEpgQueue.push(async () => {
         try {
-          const listings = await client.getShortEpg(streamId, 16)
+          // 48 isn't a real cap on this provider — a spot check with limit=200 still only
+          // returned ~26 items (its own natural "rest of today" window), so asking for more
+          // than that just lets whatever the provider actually has through instead of an
+          // artificial 16-item truncation that was cutting off real, already-available
+          // programming well before the provider's own window ran out.
+          const listings = await client.getShortEpg(streamId, 48)
           set({ shortEpgByStream: { ...get().shortEpgByStream, [streamId]: listings } })
         } catch {
           // EPG is best-effort; a missing short guide shouldn't block playback.

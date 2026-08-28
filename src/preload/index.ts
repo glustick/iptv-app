@@ -24,6 +24,11 @@ const api = {
     start: (sourceUrl: string) =>
       ipcRenderer.invoke('transcode:start', sourceUrl) as Promise<{ sessionId: string; url: string }>,
     stop: (sessionId: string) => ipcRenderer.invoke('transcode:stop', sessionId) as Promise<void>
+  },
+  safeStorage: {
+    isAvailable: () => ipcRenderer.invoke('safeStorage:isAvailable') as Promise<boolean>,
+    encrypt: (plainText: string) => ipcRenderer.invoke('safeStorage:encrypt', plainText) as Promise<string>,
+    decrypt: (base64: string) => ipcRenderer.invoke('safeStorage:decrypt', base64) as Promise<string>
   }
 }
 
