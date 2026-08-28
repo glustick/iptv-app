@@ -16,8 +16,14 @@ const SKIP_SECONDS_LONG = 60
 // Click-zone thresholds for fullscreen mode, in pixels from the respective screen edge —
 // roughly matched to the header's own height and the channel bar's (see CHANNEL_BAR height in
 // global.css) so each zone lines up with the chrome it reveals rather than an arbitrary split.
-const FULLSCREEN_TOP_ZONE_PX = 80
+// Deliberately independent from SEEKBAR_REVEAL_ZONE_FRACTION just below, even though both sit
+// near the bottom edge: this one is click-triggered and fullscreen-only (opens the EPG channel
+// bar), while the seek bar's is hover-triggered and applies in windowed mode too — a fixed
+// pixel count wouldn't scale sensibly there. They don't currently conflict (a click still
+// reaches the video first; the seek bar only intercepts a much thinner strip right at its own
+// edge), but if either threshold changes, sanity-check the other still makes sense next to it.
 const FULLSCREEN_BOTTOM_ZONE_PX = 220
+const FULLSCREEN_TOP_ZONE_PX = 80
 // The seek bar itself reveals on hover/cursor position (not click, unlike the header/channel
 // bar above) — a fraction of the player's own height rather than a fixed pixel count so it
 // scales sensibly whether the player is windowed or truly fullscreen.
@@ -27,6 +33,9 @@ export function Player(): JSX.Element | null {
   const nowPlaying = useAppStore((s) => s.nowPlaying)
   const stop = useAppStore((s) => s.stop)
   const bufferProfile = useAppStore((s) => s.settings.bufferProfile)
+  const persistedVolume = useAppStore((s) => s.settings.playerVolume)
+  const persistedMuted = useAppStore((s) => s.settings.playerMuted)
+  const updateSettings = useAppStore((s) => s.updateSettings)
   const episodeProgress = useAppStore((s) => s.episodeProgress)
   const updateEpisodeProgress = useAppStore((s) => s.updateEpisodeProgress)
   const isOnline = useAppStore((s) => s.isOnline)
@@ -81,6 +90,15 @@ export function Player(): JSX.Element | null {
   useEffect(() => {
     const video = videoRef.current
     if (!video || !nowPlaying) return
+
+    // A fresh <video> element (the player was just opened, or reopened after being fully
+    // closed) always starts at the browser's own defaults (volume 1, unmuted) — reapplying the
+    // last-used values here on every run of this effect is safe even for an internal reload of
+    // the same channel (network reconnect, transcode fallback) or a channel switch, since
+    // persistedVolume/persistedMuted already reflect whatever the user last set in real time
+    // (see the volumechange-driven updateSettings call below).
+    video.volume = persistedVolume
+    video.muted = persistedMuted
 
     setPlaybackError(null)
     setBuffering(true)
@@ -278,11 +296,15 @@ export function Player(): JSX.Element | null {
     if (nowPlaying?.kind !== 'live') setShowChannelBar(false)
   }, [nowPlaying])
 
-  // Keyboard shortcuts while the player is open: M to mute, arrows for volume. Escape is
-  // deliberately not handled here — see App.tsx's single centralized Escape handler, which
-  // already covers closing the channel bar and the player itself in the right priority order.
+  // Keyboard shortcuts while the player is open: M to mute, arrows for volume, and (live only,
+  // matching the header's transport buttons — VOD/series already get Space/arrow-seek for free
+  // from the native <video controls>) Space for play/pause, left/right arrows to skip (shift
+  // for the 60s jump — the common "small step / big step" convention), and End to jump to live.
+  // Escape is deliberately not handled here — see App.tsx's single centralized Escape handler,
+  // which already covers closing the channel bar and the player itself in the right order.
   useEffect(() => {
     if (!nowPlaying) return
+    const kind = nowPlaying.kind
     function onKeyDown(e: KeyboardEvent): void {
       const video = videoRef.current
       if (!video) return
@@ -294,6 +316,18 @@ export function Player(): JSX.Element | null {
       } else if (e.key === 'ArrowDown') {
         video.volume = Math.max(0, video.volume - 0.05)
         e.preventDefault()
+      } else if (kind === 'live' && e.key === ' ') {
+        e.preventDefault()
+        togglePlayPause()
+      } else if (kind === 'live' && e.key === 'ArrowLeft') {
+        e.preventDefault()
+        skip(e.shiftKey ? -SKIP_SECONDS_LONG : -SKIP_SECONDS)
+      } else if (kind === 'live' && e.key === 'ArrowRight') {
+        e.preventDefault()
+        skip(e.shiftKey ? SKIP_SECONDS_LONG : SKIP_SECONDS)
+      } else if (kind === 'live' && e.key === 'End') {
+        e.preventDefault()
+        goToLive()
       }
     }
     document.addEventListener('keydown', onKeyDown)
@@ -324,6 +358,10 @@ export function Player(): JSX.Element | null {
     const syncVolumeState = (): void => {
       setMuted(video.muted)
       setVolume(video.volume)
+      // Persisted regardless of what changed it (slider, mute button, M key, or a native VOD
+      // control) so the next time the player opens — this channel, a different one, or after a
+      // full app restart — it picks up wherever the user last left the volume.
+      updateSettings({ playerVolume: video.volume, playerMuted: video.muted })
     }
     syncPlayState()
     syncVolumeState()
@@ -335,7 +373,7 @@ export function Player(): JSX.Element | null {
       video.removeEventListener('pause', syncPlayState)
       video.removeEventListener('volumechange', syncVolumeState)
     }
-  }, [nowPlaying])
+  }, [nowPlaying, updateSettings])
 
   // document.fullscreenElement (not a per-window Electron API) is what actually toggles here —
   // requestFullscreen() targets this player's own container, not the OS window, so the app's

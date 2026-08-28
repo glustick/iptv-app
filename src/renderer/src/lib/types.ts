@@ -152,6 +152,8 @@ export interface AppSettings {
   sidebarWidth: number
   detailPanelWidth: number
   epgRowDensity: EpgRowDensity
+  playerVolume: number
+  playerMuted: boolean
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -161,5 +163,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   lockedCategoryIds: [],
   sidebarWidth: 220,
   detailPanelWidth: 560,
-  epgRowDensity: 'comfortable'
+  epgRowDensity: 'comfortable',
+  playerVolume: 1,
+  playerMuted: false
 }

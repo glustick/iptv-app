@@ -37,6 +37,15 @@ function App(): JSX.Element {
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
       if (e.key !== 'Escape') return
+      // Handled explicitly rather than relying solely on the browser's own native
+      // "Escape exits fullscreen" shortcut — that's standard Chromium behavior outside the
+      // page's own JS, but isn't guaranteed identical across every embedder/window-manager
+      // combination, and fullscreen is the outermost visual layer when active, so it takes
+      // priority over every other overlay below.
+      if (document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {})
+        return
+      }
       const state = useAppStore.getState()
       if (state.aboutOpen) state.closeAbout()
       else if (state.settingsOpen) state.closeSettings()
