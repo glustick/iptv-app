@@ -4,6 +4,7 @@ import {
   BrowserWindow,
   ipcMain,
   net,
+  session,
   nativeImage,
   Menu,
   safeStorage,
@@ -150,11 +151,22 @@ async function startTranscode(
     '4',
     // Live's list is deliberately a short, ever-deleting window (there's no fixed end to keep
     // segments for). VOD is the opposite: a movie/episode has a real duration, and the whole
-    // point is being able to scrub anywhere in it (native <video controls>'s seek bar), so
-    // every segment has to stick around and the playlist needs its own real end marker —
-    // omitting one would make hls.js treat a 2-hour movie as an endless live stream.
+    // point is being able to scrub anywhere in it, so every segment has to stick around. This
+    // is *not* `-hls_playlist_type vod`, despite the name fitting — confirmed directly (an
+    // isolated, network-free ffmpeg run, checked mid-encode): `vod` writes nothing to disk at
+    // all until the source hits EOF, per the HLS spec's own definition of a VOD playlist as
+    // "published complete and unchanging." That's exactly backwards for a still-in-progress
+    // remux — every earlier "timeout waiting for ffmpeg" in this feature's development was
+    // actually this, not a network or subtitle problem, and would recur for any file whose
+    // full runtime exceeds startTranscode's deadline. `event` is the type actually meant for
+    // this shape (segments keep appending until the source ends), and does write the playlist
+    // incrementally, confirmed by ffmpeg's own log showing repeated
+    // "Opening playlist.m3u8.tmp for writing" during encode rather than only at exit — hls.js
+    // (which is what actually plays this, once transcoded — see getSourceUrl/isM3u8 in
+    // Player.tsx) already knows to keep reloading an EVENT playlist until it sees
+    // #EXT-X-ENDLIST, so this is a drop-in behavior change, not a player-side one.
     ...(isVod
-      ? ['-hls_list_size', '0', '-hls_playlist_type', 'vod']
+      ? ['-hls_list_size', '0', '-hls_playlist_type', 'event']
       : ['-hls_list_size', '6', '-hls_flags', 'delete_segments+omit_endlist']),
     '-hls_segment_filename',
     join(dir, 'seg_%05d.ts'),
@@ -313,64 +325,105 @@ function startLocalProxy(): Promise<number> {
         return
       }
 
-      // Use Electron's net module (Chromium's network stack) rather than Node's http/https —
-      // Node ships its own bundled CA list, separate from the OS trust store, so on networks
-      // with a TLS-inspecting corporate proxy (which install their root CA into the system
-      // keychain), a plain Node https.request fails with SELF_SIGNED_CERT_IN_CHAIN even though
-      // curl and the browser itself trust the connection fine.
-      let upstreamReq
-      try {
-        upstreamReq = net.request({
-          method: req.method,
-          url: target.href,
-          redirect: 'follow'
-        })
-      } catch (err) {
-        res.writeHead(502)
-        res.end(`Could not reach upstream server: ${err instanceof Error ? err.message : String(err)}`)
-        return
-      }
       // Xtream auth is entirely via query-string params, not headers, so there's no need to
       // forward the browser's request headers — most of them (connection, content-length, a
       // Chromium-managed sec-fetch-* set, etc.) are hop-by-hop or forbidden and make Electron's
       // net.request throw ERR_INVALID_ARGUMENT. Only Range matters, for video-seek support.
       const range = req.headers.range
-      if (range) upstreamReq.setHeader('range', Array.isArray(range) ? range.join(', ') : range)
-      upstreamReq.on('response', (upstreamRes) => {
-        const headers = { ...upstreamRes.headers }
-        headers['access-control-allow-origin'] = '*'
-        headers['access-control-allow-headers'] = '*'
-        delete headers['content-security-policy']
-        // Electron's net module (Chromium's network stack) transparently decompresses
-        // gzip/br/zstd bodies before we ever see the bytes, but the upstream response
-        // headers still advertise the original encoding/length. Forwarding those stale
-        // headers alongside the now-plain body makes the renderer try to re-decompress
-        // already-decoded data, which fails with net::ERR_CONTENT_DECODING_FAILED.
-        delete headers['content-encoding']
-        delete headers['content-length']
-        res.writeHead(upstreamRes.statusCode, headers)
-        upstreamRes.pipe(res)
-      })
-      upstreamReq.on('error', (err) => {
-        console.error('[proxy] upstream request error:', err)
-        if (!res.headersSent) res.writeHead(502)
-        res.end(`Upstream request failed: ${err.message}`)
-      })
+
+      // Uses Electron's net module (Chromium's network stack) rather than Node's http/https —
+      // Node ships its own bundled CA list, separate from the OS trust store, so on networks
+      // with a TLS-inspecting corporate proxy (which install their root CA into the system
+      // keychain), a plain Node https.request fails with SELF_SIGNED_CERT_IN_CHAIN even though
+      // curl and the browser itself trust the connection fine.
+      //
+      // Confirmed live: Chromium's own network stack can end up in a state, mid-session, where
+      // *every* subsequent request to a given host hangs forever with no response — reproduced
+      // with a plain renderer-side `fetch()` to the same host (bypassing this proxy entirely)
+      // hanging identically, while a `curl` to the exact same URL from the same machine at the
+      // same moment succeeded in ~1s, repeatedly. So the origin is healthy; something in this
+      // process's own DNS cache or pooled-connection state for that host isn't. Previously this
+      // proxy had no timeout at all on the upstream request, so a hang like that was permanent —
+      // nothing short of restarting the app would recover. Now: give up on the *first* attempt
+      // early enough to matter (getting response *headers* back should be fast even for a huge
+      // video file — this doesn't bound how long the body then takes to fully arrive), clear
+      // Chromium's host resolver cache for this session in case a stale DNS entry is the cause,
+      // and retry exactly once with a fresh request before actually failing.
+      const UPSTREAM_TIMEOUT_MS = 20000
+      let retried = false
+
+      function attemptUpstream(): void {
+        let upstreamReq
+        try {
+          upstreamReq = net.request({
+            method: req.method,
+            url: target.href,
+            redirect: 'follow'
+          })
+        } catch (err) {
+          res.writeHead(502)
+          res.end(`Could not reach upstream server: ${err instanceof Error ? err.message : String(err)}`)
+          return
+        }
+        if (range) upstreamReq.setHeader('range', Array.isArray(range) ? range.join(', ') : range)
+
+        let gotResponse = false
+        const timeout = setTimeout(() => {
+          if (!gotResponse && !upstreamReq.destroyed) upstreamReq.destroy()
+        }, UPSTREAM_TIMEOUT_MS)
+
+        upstreamReq.on('response', (upstreamRes) => {
+          gotResponse = true
+          clearTimeout(timeout)
+          const headers = { ...upstreamRes.headers }
+          headers['access-control-allow-origin'] = '*'
+          headers['access-control-allow-headers'] = '*'
+          delete headers['content-security-policy']
+          // Electron's net module (Chromium's network stack) transparently decompresses
+          // gzip/br/zstd bodies before we ever see the bytes, but the upstream response
+          // headers still advertise the original encoding/length. Forwarding those stale
+          // headers alongside the now-plain body makes the renderer try to re-decompress
+          // already-decoded data, which fails with net::ERR_CONTENT_DECODING_FAILED.
+          delete headers['content-encoding']
+          delete headers['content-length']
+          res.writeHead(upstreamRes.statusCode, headers)
+          upstreamRes.pipe(res)
+        })
+        upstreamReq.on('error', (err) => {
+          clearTimeout(timeout)
+          if (!gotResponse && !retried) {
+            retried = true
+            session.defaultSession.clearHostResolverCache()
+            attemptUpstream()
+            return
+          }
+          console.error('[proxy] upstream request error:', err)
+          if (!res.headersSent) res.writeHead(502)
+          res.end(`Upstream request failed: ${err.message}`)
+        })
+        // `.pipe()` only carries data forward — it does nothing when the *destination* goes
+        // away, so a renderer that abandons a request mid-stream (a <video> element doing
+        // `.removeAttribute('src'); .load()` to switch sources, a page navigating away) left
+        // the upstream request to the real Xtream server running indefinitely with nothing
+        // left to write to. Invisible on an unlimited-connections account, but fatal on one
+        // capped at a single concurrent stream (confirmed via a real account's
+        // get_server_info, max_connections: "1"): the old connection never actually released,
+        // so a second legitimate request (e.g. this app's own ffmpeg transcode fallback,
+        // moments later) had nothing to connect with and just hung. Destroying the upstream
+        // request as soon as the client side closes — for any reason, not just success — is
+        // what actually frees the slot.
+        res.on('close', () => {
+          clearTimeout(timeout)
+          if (!upstreamReq.destroyed) upstreamReq.destroy()
+        })
+        // GET/HEAD requests (everything this app ever proxies — Xtream auth is query-string
+        // only, never a body) end `req` immediately with nothing written, so re-piping it into
+        // a second `upstreamReq` on retry just ends that one too, correctly, with no body lost.
+        req.pipe(upstreamReq)
+      }
+
       req.on('error', (err) => console.error('[proxy] client request error:', err))
-      // `.pipe()` only carries data forward — it does nothing when the *destination* goes away,
-      // so a renderer that abandons a request mid-stream (a <video> element doing
-      // `.removeAttribute('src'); .load()` to switch sources, a page navigating away) left the
-      // upstream request to the real Xtream server running indefinitely with nothing left to
-      // write to. Invisible on an unlimited-connections account, but fatal on one capped at a
-      // single concurrent stream (confirmed via a real account's get_server_info,
-      // max_connections: "1"): the old connection never actually released, so a second
-      // legitimate request (e.g. this app's own ffmpeg transcode fallback, moments later) had
-      // nothing to connect with and just hung. Destroying the upstream request as soon as the
-      // client side closes — for any reason, not just success — is what actually frees the slot.
-      res.on('close', () => {
-        if (!upstreamReq.destroyed) upstreamReq.destroy()
-      })
-      req.pipe(upstreamReq)
+      attemptUpstream()
     }
 
     server.on('error', reject)
