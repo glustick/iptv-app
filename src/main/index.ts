@@ -11,13 +11,13 @@ import {
   safeStorage,
   type MenuItemConstructorOptions
 } from 'electron'
-import { join, extname, dirname } from 'path'
+import { join, extname, dirname, basename, isAbsolute } from 'path'
 import { createServer, IncomingMessage, ServerResponse } from 'http'
 import { connect as netConnect, type Socket } from 'net'
 import { URL } from 'url'
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'child_process'
 import { promisify } from 'util'
-import { mkdtemp, rm, readFile, writeFile, chmod, readdir } from 'fs/promises'
+import { mkdtemp, rm, readFile, writeFile, chmod, readdir, copyFile } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { lookup as dnsLookup } from 'dns/promises'
@@ -554,6 +554,34 @@ async function cleanupVpnTempDir(): Promise<void> {
   }
 }
 
+// macOS's TCC privacy protection blocks a root process spawned via sudo-prompt's elevated
+// AppleScript "administrator privileges" mechanism from reading files under the user's
+// Desktop/Documents/Downloads — confirmed live: the exact same config and binary, invoked the
+// exact same way, fails with "Error opening configuration file" from that location but connects
+// fine once copied elsewhere. Root normally bypasses Unix permission bits, but TCC is a separate
+// check macOS enforces regardless of UID, specifically so sudo/root can't be used to route around
+// it. Copying the config (and whatever ca/cert/key/etc. files it references by relative path)
+// into the per-connection temp dir — already proven reachable under this same elevation — sidesteps
+// the restriction regardless of where the user's original .ovpn file happens to live.
+async function importVpnConfigInto(destDir: string, originalConfigPath: string): Promise<string> {
+  const originalDir = dirname(originalConfigPath)
+  const content = await readFile(originalConfigPath, 'utf8')
+  const referencedFileDirectives = ['ca', 'cert', 'key', 'dh', 'tls-auth', 'tls-crypt', 'pkcs12', 'crl-verify']
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith(';')) continue
+    const [directive, ...rest] = trimmed.split(/\s+/)
+    if (!referencedFileDirectives.includes(directive)) continue
+    const rawArg = rest[0]?.replace(/^["']|["']$/, '').replace(/["']$/, '')
+    if (!rawArg || isAbsolute(rawArg)) continue
+    const sourcePath = join(originalDir, rawArg)
+    if (existsSync(sourcePath)) await copyFile(sourcePath, join(destDir, rawArg))
+  }
+  const destConfigPath = join(destDir, basename(originalConfigPath))
+  await copyFile(originalConfigPath, destConfigPath)
+  return destConfigPath
+}
+
 async function startVpn(
   configPath: string,
   username: string | null,
@@ -569,6 +597,7 @@ async function startVpn(
     const originalGateway = await getDefaultGateway()
     const dir = await mkdtemp(join(tmpdir(), 'allisoniptv-vpn-'))
     vpnRuntime.tempDir = dir
+    const importedConfigPath = await importVpnConfigInto(dir, configPath)
     const routeUpScript = await writeRouteScript(dir, 'route-up', xtreamIp, 'add', originalGateway)
     // OpenVPN has no "--route-down" option — the flag that runs a command before routes are
     // torn down is "--route-pre-down". Using a nonexistent flag makes OpenVPN reject the whole
@@ -583,14 +612,13 @@ async function startVpn(
     const command = [
       quoteArg(openvpnPath),
       '--config',
-      quoteArg(configPath),
-      // Many real-world .ovpn files (this app's own test config included) reference their
-      // ca/cert/key files by bare relative filename, resolved against OpenVPN's working
-      // directory rather than the config file's own location. Without --cd, that resolves
-      // against whatever cwd the elevated shell happens to start in (not necessarily where
-      // the config lives), so cert loading fails even though --config itself was found fine.
+      quoteArg(importedConfigPath),
+      // The config and any relative ca/cert/key files it references were just copied into
+      // `dir` by importVpnConfigInto — --cd points here (not the original file's own
+      // directory) so relative references resolve regardless of where the user's original
+      // .ovpn lives, and regardless of what cwd the elevated shell happens to start in.
       '--cd',
-      quoteArg(dirname(configPath)),
+      quoteArg(dir),
       '--route-nopull',
       '--script-security',
       '2',
