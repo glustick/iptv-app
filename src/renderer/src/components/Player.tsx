@@ -101,6 +101,13 @@ export function Player(): JSX.Element | null {
   const [fullscreenHeaderVisible, setFullscreenHeaderVisible] = useState(false)
   const [statsVisible, setStatsVisible] = useState(false)
   const [cursorNearBottom, setCursorNearBottom] = useState(false)
+  // Only ever populated for VOD/series titles whose audio-fix transcode fallback detected and
+  // carried through an embedded subtitle track (see transcodeService.ts) — Live TV never has
+  // one, and most VOD/series never need the fallback at all. At most one entry today (this
+  // app's own ffmpeg invocation only ever maps a single subtitle stream), but tracked as a list
+  // rather than a boolean so a source with more than one wouldn't need this reworked later.
+  const [subtitleTracks, setSubtitleTracks] = useState<{ id: number; name: string }[]>([])
+  const [activeSubtitleTrack, setActiveSubtitleTrack] = useState(-1)
   const wasOffline = useRef(false)
   const autoHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastStreamKeyRef = useRef<string | null>(null)
@@ -169,6 +176,8 @@ export function Player(): JSX.Element | null {
 
     setPlaybackError(null)
     setBuffering(true)
+    setSubtitleTracks([])
+    setActiveSubtitleTrack(-1)
     beginTranscodeRun()
     let networkRetryCount = 0
     let mediaErrorRecoveryCount = 0
@@ -263,6 +272,17 @@ export function Player(): JSX.Element | null {
       hlsRef.current = hls
       hls.loadSource(sourceUrl)
       hls.attachMedia(video)
+      // Fires once hls.js has parsed the (master or flat) playlist and knows what subtitle
+      // renditions, if any, it references — a no-op for every stream except a VOD/series title
+      // whose transcode fallback carried one through. Defaults to whatever hls.js auto-selected
+      // (the master playlist's own DEFAULT=YES marks the fallback's track that way), which is
+      // why subtitles already showed up with no explicit code enabling them.
+      hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, (_event, data) => {
+        setSubtitleTracks(data.subtitleTracks.map((t) => ({ id: t.id, name: t.name || `Track ${t.id + 1}` })))
+      })
+      hls.on(Hls.Events.SUBTITLE_TRACK_SWITCH, (_event, data) => {
+        setActiveSubtitleTrack(data.id)
+      })
       hls.on(Hls.Events.ERROR, (_event, data) => {
         // Try transcoding once for the EC-3/AC-3-shaped failure (see useTranscodeFallback)
         // before falling through to either path's normal (terminal) error handling — and
@@ -673,6 +693,19 @@ export function Player(): JSX.Element | null {
     video.muted = !video.muted
   }
 
+  // Cycles rather than a plain on/off toggle so this doesn't need reworking if this app's own
+  // transcode fallback ever starts carrying more than one subtitle track through — today it
+  // never does (see subtitleTracks' own comment), so in practice this only ever has one track
+  // to cycle to before landing back on "off".
+  function cycleSubtitleTrack(): void {
+    const hls = hlsRef.current
+    if (!hls || subtitleTracks.length === 0) return
+    const ids = subtitleTracks.map((t) => t.id)
+    const currentIndex = ids.indexOf(hls.subtitleTrack)
+    const nextIndex = currentIndex + 1
+    hls.subtitleTrack = nextIndex < ids.length ? ids[nextIndex] : -1
+  }
+
   function handleVolumeChange(e: React.ChangeEvent<HTMLInputElement>): void {
     const video = videoRef.current
     if (!video) return
@@ -777,6 +810,20 @@ export function Player(): JSX.Element | null {
               title="Volume"
             />
           </div>
+          {subtitleTracks.length > 0 && (
+            <button
+              className="player-control-btn"
+              onClick={cycleSubtitleTrack}
+              title={activeSubtitleTrack === -1 ? 'Turn subtitles on' : 'Turn subtitles off'}
+            >
+              💬{' '}
+              {activeSubtitleTrack === -1
+                ? 'CC Off'
+                : subtitleTracks.length > 1
+                  ? (subtitleTracks.find((t) => t.id === activeSubtitleTrack)?.name ?? 'CC On')
+                  : 'CC On'}
+            </button>
+          )}
           <button
             className="player-control-btn"
             onClick={() => setStatsVisible((v) => !v)}
