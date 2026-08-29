@@ -4,7 +4,7 @@ import { useAppStore } from '../store/useAppStore'
 import { PlayerChannelBar } from './PlayerChannelBar'
 import { PlayerStatsOverlay } from './PlayerStatsOverlay'
 import { PlayerSeekBar } from './PlayerSeekBar'
-import { VpnDisconnectWarning } from './VpnDisconnectWarning'
+import { VpnWarnings } from './VpnWarnings'
 import { useTranscodeFallback } from '../lib/useTranscodeFallback'
 
 const MAX_NETWORK_RETRIES = 4
@@ -801,7 +801,7 @@ export function Player(): JSX.Element | null {
       {/* Rendered here too (App.tsx also mounts one) since .player-overlay is a fixed,
           full-viewport layer that covers everything else, fullscreen or not — without this,
           an unexpected VPN drop while actively watching would show no warning at all. */}
-      <VpnDisconnectWarning />
+      <VpnWarnings />
     </div>
   )
 }

@@ -311,6 +311,11 @@ interface VpnRuntimeState {
   managementSocket: Socket | null
   managementBuffer: string
   tempDir: string | null
+  // The single host the route-up script actually routes through the tunnel (see startVpn) —
+  // kept here, not just as a local variable inside startVpn, so the proxy's own request
+  // handler can tell whether a given redirect target is one of the hosts this connection
+  // promised to route, without threading it through as a parameter.
+  tunneledHost: string | null
 }
 
 const vpnRuntime: VpnRuntimeState = {
@@ -318,12 +323,22 @@ const vpnRuntime: VpnRuntimeState = {
   errorMessage: null,
   managementSocket: null,
   managementBuffer: '',
-  tempDir: null
+  tempDir: null,
+  tunneledHost: null
 }
+
+// Redirect targets already reported for the current connection — reset on every new connect
+// attempt (see setVpnStatus below) so a channel that keeps redirecting to the same off-tunnel
+// CDN host doesn't repost the same warning on every segment request.
+const warnedOffTunnelHosts = new Set<string>()
 
 function setVpnStatus(status: VpnStatus, errorMessage: string | null = null): void {
   vpnRuntime.status = status
   vpnRuntime.errorMessage = errorMessage
+  if (status !== 'connected' && status !== 'connecting') {
+    vpnRuntime.tunneledHost = null
+    warnedOffTunnelHosts.clear()
+  }
   mainWindowRef?.webContents.send('vpn:status-changed', { status, errorMessage })
 }
 
@@ -671,6 +686,7 @@ async function startVpn(
   try {
     const openvpnPath = await findOpenvpnBinary()
     const xtreamHost = new URL(xtreamServerUrl).hostname
+    vpnRuntime.tunneledHost = xtreamHost.toLowerCase()
     const { address: xtreamIp } = await dnsLookup(xtreamHost)
     const originalGateway = await getDefaultGateway()
     const dir = await mkdtemp(join(tmpdir(), 'allisoniptv-vpn-'))
@@ -872,7 +888,13 @@ function startLocalProxy(): Promise<number> {
           upstreamReq = net.request({
             method: req.method,
             url: target.href,
-            redirect: 'follow'
+            // 'manual' (not 'follow') so the 'redirect' listener below gets a chance to see
+            // every hop's target host before it's taken — 'follow' resolves them invisibly,
+            // which is exactly how a provider redirecting stream delivery to an off-tunnel CDN
+            // host could go unnoticed while the VPN is meant to be covering all of it (see the
+            // VPN section of ROADMAP.md). Every redirect is still followed either way; this
+            // only adds visibility, it doesn't block anything.
+            redirect: 'manual'
           })
         } catch (err) {
           res.writeHead(502)
@@ -880,6 +902,27 @@ function startLocalProxy(): Promise<number> {
           return
         }
         if (range) upstreamReq.setHeader('range', Array.isArray(range) ? range.join(', ') : range)
+
+        upstreamReq.on('redirect', (_statusCode, _method, redirectUrl) => {
+          if (vpnRuntime.status === 'connected' && vpnRuntime.tunneledHost) {
+            try {
+              const redirectHost = new URL(redirectUrl).hostname.toLowerCase()
+              if (redirectHost !== vpnRuntime.tunneledHost && !warnedOffTunnelHosts.has(redirectHost)) {
+                warnedOffTunnelHosts.add(redirectHost)
+                console.warn(
+                  `[vpn] proxied request redirected off the tunneled host: ${vpnRuntime.tunneledHost} -> ${redirectHost}`
+                )
+                mainWindowRef?.webContents.send('vpn:stream-route-warning', {
+                  message: `A request was redirected to ${redirectHost}, which isn't routed through the VPN — only ${vpnRuntime.tunneledHost} is. That traffic may be bypassing the tunnel.`
+                })
+              }
+            } catch {
+              // Malformed redirect URL — nothing useful to compare against; let followRedirect()
+              // below surface whatever error actually following it produces instead.
+            }
+          }
+          upstreamReq.followRedirect()
+        })
 
         let gotResponse = false
         let settled = false

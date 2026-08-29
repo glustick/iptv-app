@@ -40,6 +40,7 @@ interface VpnAPI {
   getStatus: () => Promise<VpnStatusPayload>
   openLog: () => Promise<{ ok: boolean; message?: string }>
   onStatusChange: (callback: (status: VpnStatusPayload) => void) => () => void
+  onStreamRouteWarning: (callback: (payload: { message: string }) => void) => () => void
 }
 
 declare global {

@@ -121,6 +121,11 @@ interface AppState {
   // outside as a "connected" -> "disconnected" transition, so intent has to be tracked
   // explicitly rather than inferred from the status change alone.
   vpnDisconnectingIntentionally: boolean
+  // Set whenever the main-process proxy sees a redirect land on a host other than the one the
+  // active tunnel's route-up script actually routes (see vpn:stream-route-warning in
+  // src/main/index.ts) — a real, live sign that some of this connection's traffic may be
+  // bypassing the VPN. null when nothing like that has been seen yet.
+  vpnStreamRouteWarning: string | null
 
   init: () => Promise<void>
   addProfile: (profile: Omit<XtreamProfile, 'id'>) => Promise<void>
@@ -172,6 +177,7 @@ interface AppState {
   activateVpnProfile: (id: string) => Promise<void>
   deactivateVpnProfile: () => Promise<void>
   dismissVpnDisconnectWarning: () => void
+  dismissVpnStreamRouteWarning: () => void
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -217,6 +223,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   vpnErrorMessage: null,
   vpnDisconnectWarning: null,
   vpnDisconnectingIntentionally: false,
+  vpnStreamRouteWarning: null,
 
   init: async () => {
     const [profiles, favorites, recentlyWatched, episodeProgress, settings] = await Promise.all([
@@ -250,6 +257,13 @@ export const useAppStore = create<AppState>((set, get) => ({
             "The VPN has disconnected — this app's connection is no longer tunneled. Reactivate it from Settings if you need it back."
         })
       })
+    })
+
+    // See vpn:stream-route-warning in src/main/index.ts — pushed the same way as vpn:status-
+    // changed, since the main process is what actually sees each proxied request's redirect
+    // chain and can tell whether a hop landed outside the tunneled host.
+    window.api?.vpn?.onStreamRouteWarning((payload) => {
+      set({ vpnStreamRouteWarning: payload.message })
     })
 
     const active = profiles.find((p) => p.id === activeId) ?? profiles[0]
@@ -610,5 +624,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     get().updateSettings({ activeVpnProfileId: null })
   },
 
-  dismissVpnDisconnectWarning: () => set({ vpnDisconnectWarning: null })
+  dismissVpnDisconnectWarning: () => set({ vpnDisconnectWarning: null }),
+  dismissVpnStreamRouteWarning: () => set({ vpnStreamRouteWarning: null })
 }))

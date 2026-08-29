@@ -368,15 +368,21 @@ input {
   }
 }
 
-.vpn-disconnect-warning {
+.vpn-warnings {
   position: fixed;
   top: 16px;
   right: 16px;
   z-index: 200;
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 10px;
   max-width: 380px;
+}
+
+.vpn-warning {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   background: rgba(20, 12, 13, 0.96);
   border: 1px solid var(--danger);
   color: var(--text);
@@ -386,7 +392,7 @@ input {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
 }
 
-.vpn-disconnect-warning-dismiss {
+.vpn-warning-dismiss {
   flex-shrink: 0;
   background: none;
   border: none;
@@ -396,7 +402,7 @@ input {
   padding: 0 0 0 4px;
 }
 
-.vpn-disconnect-warning-dismiss:hover {
+.vpn-warning-dismiss:hover {
   color: var(--text);
 }
 

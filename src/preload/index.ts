@@ -48,6 +48,11 @@ const api = {
         callback(status)
       ipcRenderer.on('vpn:status-changed', listener)
       return () => ipcRenderer.removeListener('vpn:status-changed', listener)
+    },
+    onStreamRouteWarning: (callback: (payload: { message: string }) => void) => {
+      const listener = (_event: unknown, payload: { message: string }): void => callback(payload)
+      ipcRenderer.on('vpn:stream-route-warning', listener)
+      return () => ipcRenderer.removeListener('vpn:stream-route-warning', listener)
     }
   }
 }

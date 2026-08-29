@@ -10,7 +10,7 @@ import { EpgGridPanel } from './components/EpgGridPanel'
 import { PinPrompt } from './components/PinPrompt'
 import { SettingsPage } from './components/SettingsPage'
 import { AboutModal } from './components/AboutModal'
-import { VpnDisconnectWarning } from './components/VpnDisconnectWarning'
+import { VpnWarnings } from './components/VpnWarnings'
 
 function App(): JSX.Element {
   const init = useAppStore((s) => s.init)
@@ -100,7 +100,7 @@ function App(): JSX.Element {
       <PinPrompt />
       <SettingsPage />
       <AboutModal />
-      <VpnDisconnectWarning />
+      <VpnWarnings />
     </div>
   )
 }
