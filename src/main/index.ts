@@ -616,10 +616,12 @@ function startLocalProxy(): Promise<number> {
       // could go unnoticed while the VPN is meant to be covering all of it (see the VPN
       // section of ROADMAP.md). Every redirect is still followed either way; this only adds
       // visibility, it doesn't block anything.
-      // Cast bridges a real typings gap in Electron's own bundled .d.ts (ClientRequest is
-      // declared with only the older .abort(), missing .destroy()/.destroyed entirely) — both
-      // genuinely exist and work at runtime, confirmed live across many releases of this exact
-      // proxy (see proxyServer.ts's UpstreamClientRequest doc comment).
+      // Cast is a TypeScript limitation, not a real gap: Electron's ClientRequest genuinely
+      // declares 'response'/'redirect'/'abort' with matching signatures (checked directly in
+      // electron.d.ts), but assigning a type with as many overloaded .on() event names as
+      // ClientRequest has to an interface expecting only a handful of them trips up TS's
+      // overload-set assignability check even though every individual overload actually
+      // matches.
       createUpstreamRequest: ({ method, url }) =>
         net.request({ method, url, redirect: 'manual' }) as unknown as UpstreamClientRequest,
       clearHostResolverCache: () => session.defaultSession.clearHostResolverCache(),

@@ -18,7 +18,6 @@ import { createProxyServer, type ProxyServerDeps, type UpstreamClientRequest, ty
 // those three would crash the moment pipe() tried to listen for anything else.
 function createNodeHttpUpstreamRequest(opts: { method: string | undefined; url: string }): UpstreamClientRequest {
   const emitter = new EventEmitter()
-  let destroyed = false
   let pendingRedirectUrl: string | null = null
   let activeReq: ReturnType<typeof httpRequest> | null = null
 
@@ -58,12 +57,13 @@ function createNodeHttpUpstreamRequest(opts: { method: string | undefined; url: 
     followRedirect() {
       if (pendingRedirectUrl) issue(pendingRedirectUrl)
     },
-    destroy() {
-      destroyed = true
+    // Node's http.ClientRequest doesn't have abort() as a distinct method the way Electron's
+    // net.ClientRequest does (Node's own .abort() was removed/deprecated in favor of
+    // .destroy(), which behaves correctly on a plain Node request regardless of redirects —
+    // unlike Electron's net module, this fake has no equivalent "silent no-op after a
+    // redirect" quirk to reproduce, since it isn't the thing that quirk was found in).
+    abort() {
       activeReq?.destroy()
-    },
-    get destroyed() {
-      return destroyed
     },
     // Pipe compatibility for req.pipe(upstreamReq) — every request this proxy ever issues is
     // GET/HEAD with nothing written, so these only need to exist, not do anything meaningful.
@@ -385,6 +385,34 @@ describe('createProxyServer', () => {
     const proxy = await startProxy(makeDeps({ getProxyTargetBase: () => originUrl, upstreamTimeoutMs: 100 }))
 
     const res = await fetchViaProxy(proxy, '/slow')
+
+    expect(res.statusCode).toBe(502)
+    expect(res.body).toContain('Upstream request failed')
+  }, 10000)
+
+  // Exercises the exact shape of a real bug found live (see UpstreamClientRequest's own doc
+  // comment): a request that redirects to a host which then hangs forever with zero response —
+  // real movie/VOD stream URLs redirecting to a CDN host are exactly this shape. This confirms
+  // the orchestration logic (timeout still fires, retries, eventually gives up) is correct
+  // end-to-end; it can't reproduce the specific Electron net.ClientRequest quirk this bug
+  // actually came from (destroy() silently no-op-ing on a request that already followed a
+  // redirect — the fake upstream here is Node's http.request, which has no such quirk), since
+  // that lives entirely inside Electron's own net module, outside what a plain Node/vitest test
+  // can exercise. That part was verified separately with a one-off isolated Electron
+  // reproduction script, not as a permanent test in this suite.
+  it('times out and retries correctly even when the hang is on the far side of a redirect', async () => {
+    const { url: hangingUrl, server: hangingOrigin } = await startMockOrigin(() => {
+      // Never respond, ever — the redirect target itself is what hangs.
+    })
+    openServers.push(hangingOrigin)
+    const { url: redirectUrl, server: redirectOrigin } = await startMockOrigin((req, res) => {
+      res.writeHead(302, { location: `${hangingUrl}${req.url}` })
+      res.end()
+    })
+    openServers.push(redirectOrigin)
+    const proxy = await startProxy(makeDeps({ getProxyTargetBase: () => redirectUrl, upstreamTimeoutMs: 100 }))
+
+    const res = await fetchViaProxy(proxy, '/movie.mp4')
 
     expect(res.statusCode).toBe(502)
     expect(res.body).toContain('Upstream request failed')

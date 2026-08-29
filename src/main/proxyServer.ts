@@ -5,10 +5,23 @@ import { URL } from 'url'
  * The subset of Electron's net.ClientRequest this module actually uses — kept as a local
  * structural type (not imported from 'electron') so this file has no Electron dependency at
  * all and can be unit-tested with a plain Node http.request-backed implementation instead.
- * Electron's real net.ClientRequest satisfies this at runtime (confirmed live across many
- * releases — .destroy()/.destroyed genuinely exist and work), even though its own bundled
- * .d.ts only declares the older .abort() and omits both; index.ts casts across that specific
- * typings gap once, at the one call site that constructs a real one.
+ * Electron's real net.ClientRequest genuinely has every member here with a matching signature
+ * (checked directly in electron.d.ts) — index.ts still casts to this type at its one
+ * construction site, but that's a TypeScript overload-set assignability limitation, not a real
+ * gap (see the comment there).
+ *
+ * abort() — not destroy() — is the one that actually works here. Found the hard way (an
+ * isolated, real-net.request reproduction, no live account involved): once a request has
+ * followed at least one redirect, .destroyed reports true even before anything has cancelled
+ * it, and calling .destroy() on it is a silent no-op — the underlying connection to the
+ * redirect target is never actually closed. That's a real leak: since Electron's net module
+ * shares one connection pool per host across the whole app, a single stuck, never-released
+ * connection from this proxy's own retry logic can eventually starve *every other* request to
+ * the same Xtream server, not just the one that leaked (reproduced live: a VOD title's failed
+ * audio-fix transcode left the entire app's menus/API calls unable to reach the server
+ * afterward). abort() closes the connection correctly in both the redirected and
+ * non-redirected cases, and is safe to call more than once or after the request already
+ * completed normally — confirmed directly, not assumed.
  */
 export interface UpstreamClientRequest {
   setHeader(name: string, value: string): void
@@ -16,8 +29,7 @@ export interface UpstreamClientRequest {
   on(event: 'redirect', listener: (statusCode: number, method: string, redirectUrl: string) => void): this
   on(event: 'error', listener: (error: Error) => void): this
   followRedirect(): void
-  destroy(): void
-  readonly destroyed: boolean
+  abort(): void
 }
 
 export interface UpstreamResponse {
@@ -184,19 +196,21 @@ export function createProxyServer(deps: ProxyServerDeps): Server {
       let gotResponse = false
       let settled = false
 
-      // Split out from the 'error' handler rather than having the timeout only call
-      // .destroy() and hope that reliably emits 'error' — Electron's net.ClientRequest, built
-      // on Chromium's network stack rather than Node's http module, isn't guaranteed to fire
-      // one just because JS-side .destroy() was called. If it doesn't, a timeout that only
-      // destroys and waits leaves this request permanently unsettled: no response, no error,
-      // res never gets written to, and whatever's waiting on it (ffmpeg, the renderer) hangs
-      // forever — indistinguishable from the original bug this timeout exists to fix. Calling
-      // this directly from the timeout guarantees the retry/failure path actually runs.
+      // Split out from the 'error' handler rather than having the timeout only call abort()
+      // and hope that reliably emits 'error' — Electron's net.ClientRequest, built on
+      // Chromium's network stack rather than Node's http module, isn't guaranteed to fire one
+      // just because JS-side abort() was called. If it doesn't, a timeout that only aborts and
+      // waits leaves this request permanently unsettled: no response, no error, res never gets
+      // written to, and whatever's waiting on it (ffmpeg, the renderer) hangs forever —
+      // indistinguishable from the original bug this timeout exists to fix. Calling this
+      // directly from the timeout guarantees the retry/failure path actually runs.
       function giveUpOrRetry(err: Error): void {
         if (settled) return
         settled = true
         clearTimeout(timeout)
-        if (!upstreamReq.destroyed) upstreamReq.destroy()
+        // abort() unconditionally — no .destroyed-style guard needed, it's safe to call more
+        // than once or on an already-completed request (see the interface's own doc comment).
+        upstreamReq.abort()
         if (!gotResponse && !retried) {
           retried = true
           // clearHostResolverCache() returns a Promise (an IPC round-trip to the browser
@@ -254,17 +268,23 @@ export function createProxyServer(deps: ProxyServerDeps): Server {
       // capped at a single concurrent stream (confirmed via a real account's
       // get_server_info, max_connections: "1"): the old connection never actually released,
       // so a second legitimate request (e.g. this app's own ffmpeg transcode fallback,
-      // moments later) had nothing to connect with and just hung. Destroying the upstream
+      // moments later) had nothing to connect with and just hung. Aborting the upstream
       // request as soon as the client side closes — for any reason, not just success — is
-      // what actually frees the slot.
+      // what actually frees the slot. This used to call destroy() here, which turned out to
+      // be exactly this same bug in a different shape: for a request that had followed even
+      // one redirect, destroy() was a silent no-op (see the interface's own doc comment) — the
+      // connection to the *redirect target* leaked instead, still occupying the account's one
+      // slot, which is exactly what a real VOD title's stream URL (redirected to a CDN host)
+      // hit live: the failed title never recovered, and every other request to the same
+      // server — menus, other streams, all of it — was starved right along with it.
       res.on('close', () => {
         // Marking this settled (not just clearing the timeout) matters here specifically:
-        // destroying upstreamReq below can itself emit 'error', and without this the client
+        // aborting upstreamReq below can itself emit 'error', and without this the client
         // having already disconnected wouldn't stop giveUpOrRetry from kicking off a pointless
         // retry — a fresh attemptUpstream() writing to a res nobody is listening to anymore.
         settled = true
         clearTimeout(timeout)
-        if (!upstreamReq.destroyed) upstreamReq.destroy()
+        upstreamReq.abort()
       })
       // GET/HEAD requests (everything this app ever proxies — Xtream auth is query-string
       // only, never a body) end `req` immediately with nothing written, so re-piping it into
