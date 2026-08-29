@@ -29,6 +29,9 @@ import ffmpegPathRaw from 'ffmpeg-static'
 import { exec as sudoExec } from 'sudo-prompt'
 import extractZip from 'extract-zip'
 import { createProxyServer, type UpstreamClientRequest } from './proxyServer'
+import { createFfmpegResolver } from './ffmpegResolver'
+
+const execFileAsync = promisify(execFile)
 
 // Electron resolves the app's name from package.json's "productName" (falling back to
 // "name") before any of this module's own code runs — by the time a line here calls
@@ -72,9 +75,18 @@ const pkgMeta = JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 
  * native executable can't be run from inside a virtual asar archive. This substitution is
  * only meaningful once packaged; in dev the path already resolves directly on disk.
  */
-const ffmpegPath = app.isPackaged
+const bundledFfmpegPath = app.isPackaged
   ? ffmpegPathRaw?.replace('app.asar', 'app.asar.unpacked')
   : ffmpegPathRaw
+
+// A system-installed ffmpeg, when one exists and actually works, is preferred over the
+// bundled copy at runtime — see ffmpegResolver.ts for why this doesn't shrink the installer
+// and isn't meant to.
+const resolveFfmpegPath = createFfmpegResolver(bundledFfmpegPath ?? null, {
+  platform: process.platform,
+  fileExists: existsSync,
+  execFile: execFileAsync
+})
 
 /**
  * Some providers' live channels carry EC-3/E-AC-3 (Dolby Digital Plus) audio inside their
@@ -130,6 +142,7 @@ async function startTranscode(
   isVod: boolean,
   sessionId: string
 ): Promise<{ sessionId: string; playlistPath: string }> {
+  const ffmpegPath = await resolveFfmpegPath()
   if (!ffmpegPath) {
     throw new Error('ffmpeg binary not available on this platform')
   }
@@ -361,8 +374,6 @@ function findFreeLocalPort(): Promise<number> {
 function quoteArg(value: string): string {
   return `"${value.replace(/"/g, '\\"')}"`
 }
-
-const execFileAsync = promisify(execFile)
 
 // Tunnelblick (a free, open-source OpenVPN GUI, distributed as a plain signed .dmg — no
 // package manager needed) bundles the real openvpn binary inside its own .app, under a
