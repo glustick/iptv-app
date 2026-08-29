@@ -17,15 +17,17 @@ import { connect as netConnect, type Socket } from 'net'
 import { URL } from 'url'
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'child_process'
 import { promisify } from 'util'
-import { mkdtemp, rm, readFile, writeFile, chmod, readdir, copyFile } from 'fs/promises'
+import { mkdtemp, mkdir, rm, readFile, writeFile, chmod, readdir, copyFile } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
+import { randomUUID } from 'crypto'
 import { lookup as dnsLookup } from 'dns/promises'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import Store from 'electron-store'
 import { autoUpdater } from 'electron-updater'
 import ffmpegPathRaw from 'ffmpeg-static'
 import { exec as sudoExec } from 'sudo-prompt'
+import extractZip from 'extract-zip'
 
 // Electron resolves the app's name from package.json's "productName" (falling back to
 // "name") before any of this module's own code runs — by the time a line here calls
@@ -563,6 +565,17 @@ async function cleanupVpnTempDir(): Promise<void> {
 // it. Copying the config (and whatever ca/cert/key/etc. files it references by relative path)
 // into the per-connection temp dir — already proven reachable under this same elevation — sidesteps
 // the restriction regardless of where the user's original .ovpn file happens to live.
+// Resolves `relativePath` under `baseDir`, refusing anything that would land outside it
+// (e.g. a .ovpn file's own "ca ../../../../etc/passwd" directive) rather than trusting the
+// config's author — a .ovpn is exactly the kind of file people import from strangers/community
+// sources, so treat its directive arguments as untrusted input, not just a filename to join.
+function safeJoin(baseDir: string, relativePath: string): string | null {
+  const resolvedBase = join(baseDir)
+  const target = join(baseDir, relativePath)
+  if (target !== resolvedBase && !target.startsWith(resolvedBase + '/')) return null
+  return target
+}
+
 async function importVpnConfigInto(destDir: string, originalConfigPath: string): Promise<string> {
   const originalDir = dirname(originalConfigPath)
   const content = await readFile(originalConfigPath, 'utf8')
@@ -574,12 +587,73 @@ async function importVpnConfigInto(destDir: string, originalConfigPath: string):
     if (!referencedFileDirectives.includes(directive)) continue
     const rawArg = rest[0]?.replace(/^["']|["']$/, '').replace(/["']$/, '')
     if (!rawArg || isAbsolute(rawArg)) continue
-    const sourcePath = join(originalDir, rawArg)
-    if (existsSync(sourcePath)) await copyFile(sourcePath, join(destDir, rawArg))
+    const sourcePath = safeJoin(originalDir, rawArg)
+    const destPath = sourcePath ? safeJoin(destDir, rawArg) : null
+    if (sourcePath && destPath && existsSync(sourcePath)) await copyFile(sourcePath, destPath)
   }
   const destConfigPath = join(destDir, basename(originalConfigPath))
   await copyFile(originalConfigPath, destConfigPath)
   return destConfigPath
+}
+
+async function assertNoSymlinks(dir: string): Promise<void> {
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const entryPath = join(dir, entry.name)
+    if (entry.isSymbolicLink()) {
+      throw new Error(`Refusing to import: "${entry.name}" is a symlink, which isn't supported for security reasons.`)
+    }
+    if (entry.isDirectory()) await assertNoSymlinks(entryPath)
+  }
+}
+
+// extract-zip has a known, currently-unfixed vulnerability (GHSA-jmr9-qjv8-65gv): a maliciously
+// crafted zip containing a symlink can write files outside the intended destination directory.
+// A VPN config bundle is exactly the kind of file people download from third-party/community
+// sources, so this isn't a theoretical concern — verify no symlink made it into the extracted
+// tree (a legitimate OpenVPN config bundle never needs one) and refuse the whole import if so,
+// rather than trusting the library's own containment.
+async function extractVpnConfigZip(zipPath: string, destDir: string): Promise<void> {
+  await extractZip(zipPath, { dir: destDir })
+  await assertNoSymlinks(destDir)
+}
+
+async function findOvpnFile(dir: string): Promise<string | null> {
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const entryPath = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      const found = await findOvpnFile(entryPath)
+      if (found) return found
+    } else if (extname(entry.name).toLowerCase() === '.ovpn') {
+      return entryPath
+    }
+  }
+  return null
+}
+
+// Imports a user-picked .ovpn file (or a .zip bundle containing one, alongside its ca/cert/key
+// files — the format most real-world VPN providers actually distribute) into a directory this
+// app owns under userData, rather than referencing the original location in place. This avoids
+// two real problems: the original file moving/being deleted later, and macOS's TCC blocking the
+// elevated connect step from ever reading it if it happens to live under Desktop/Documents/
+// Downloads (see importVpnConfigInto's own comment) — importing up front means the connect-time
+// copy always reads from a location this app controls, not wherever the user happened to pick.
+async function importPickedVpnConfig(pickedPath: string): Promise<string> {
+  let sourceOvpnPath = pickedPath
+  let zipStagingDir: string | null = null
+  try {
+    if (extname(pickedPath).toLowerCase() === '.zip') {
+      zipStagingDir = await mkdtemp(join(tmpdir(), 'allisoniptv-vpn-zip-'))
+      await extractVpnConfigZip(pickedPath, zipStagingDir)
+      const found = await findOvpnFile(zipStagingDir)
+      if (!found) throw new Error('No .ovpn file found inside that zip.')
+      sourceOvpnPath = found
+    }
+    const destDir = join(app.getPath('userData'), 'vpn-profiles', randomUUID())
+    await mkdir(destDir, { recursive: true })
+    return await importVpnConfigInto(destDir, sourceOvpnPath)
+  } finally {
+    if (zipStagingDir) await rm(zipStagingDir, { recursive: true, force: true }).catch(() => {})
+  }
 }
 
 async function startVpn(
@@ -1027,13 +1101,15 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('vpn:selectConfigFile', async () => {
     if (!mainWindowRef) return null
+    // Most real-world providers distribute a .ovpn alongside separate ca/cert/key files bundled
+    // in a .zip (this app's own test config included) rather than a single self-contained file.
     const result = await dialog.showOpenDialog(mainWindowRef, {
       title: 'Select OpenVPN configuration file',
-      filters: [{ name: 'OpenVPN config', extensions: ['ovpn'] }],
+      filters: [{ name: 'OpenVPN config (.ovpn or .zip)', extensions: ['ovpn', 'zip'] }],
       properties: ['openFile']
     })
     if (result.canceled || result.filePaths.length === 0) return null
-    return result.filePaths[0]
+    return importPickedVpnConfig(result.filePaths[0])
   })
   ipcMain.handle(
     'vpn:connect',
@@ -1054,6 +1130,17 @@ app.whenReady().then(async () => {
   )
   ipcMain.handle('vpn:disconnect', () => stopVpn())
   ipcMain.handle('vpn:getStatus', () => ({ status: vpnRuntime.status, errorMessage: vpnRuntime.errorMessage }))
+  ipcMain.handle('vpn:removeImportedConfig', async (_event, configPath: string) => {
+    // Only ever delete inside our own vpn-profiles import directory — a profile added before
+    // this import-on-add behavior existed can still have configPath pointing anywhere the user
+    // originally picked (e.g. their own Desktop folder), and removing that profile must never
+    // touch the user's own files.
+    const importsRoot = join(app.getPath('userData'), 'vpn-profiles')
+    const configDir = dirname(configPath)
+    if (dirname(configDir) === importsRoot) {
+      await rm(configDir, { recursive: true, force: true }).catch(() => {})
+    }
+  })
 
   createWindow()
 

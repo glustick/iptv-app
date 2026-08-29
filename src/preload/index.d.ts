@@ -36,6 +36,7 @@ interface VpnAPI {
   selectConfigFile: () => Promise<string | null>
   connect: (configPath: string, username: string | null, password: string | null) => Promise<void>
   disconnect: () => Promise<void>
+  removeImportedConfig: (configPath: string) => Promise<void>
   getStatus: () => Promise<VpnStatusPayload>
   onStatusChange: (callback: (status: VpnStatusPayload) => void) => () => void
 }

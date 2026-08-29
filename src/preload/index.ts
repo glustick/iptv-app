@@ -38,6 +38,8 @@ const api = {
     connect: (configPath: string, username: string | null, password: string | null) =>
       ipcRenderer.invoke('vpn:connect', configPath, username, password) as Promise<void>,
     disconnect: () => ipcRenderer.invoke('vpn:disconnect') as Promise<void>,
+    removeImportedConfig: (configPath: string) =>
+      ipcRenderer.invoke('vpn:removeImportedConfig', configPath) as Promise<void>,
     getStatus: () =>
       ipcRenderer.invoke('vpn:getStatus') as Promise<{ status: string; errorMessage: string | null }>,
     onStatusChange: (callback: (status: { status: string; errorMessage: string | null }) => void) => {

@@ -277,12 +277,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ client, status: 'ready' })
       await saveActiveProfileId(profileId)
       await get().setViewMode('live')
-      // Fired in the background, not awaited — establishing a tunnel means an OS elevation
-      // prompt plus real connection time, and there's no reason to make browsing wait on that.
-      // The status dot reflects "connecting" in the meantime; playback for actual streams is
-      // what genuinely needs the tunnel up, not the catalog/EPG calls this unblocks first.
-      const { activeVpnProfileId } = get().settings
-      if (activeVpnProfileId) void get().activateVpnProfile(activeVpnProfileId)
+      // Deliberately does NOT auto-reconnect the VPN here, even if a profile was left active
+      // last session — connecting spawns an OS elevation prompt, and that must only ever happen
+      // from an explicit Activate click, never as a side effect of the app simply launching (or
+      // of switching Xtream profiles). A profile marked active in settings is a saved *choice*
+      // for next time the user clicks Activate, not a standing instruction to auto-elevate.
     } catch (err) {
       set({ status: 'error', error: err instanceof Error ? err.message : 'Failed to connect' })
     }
@@ -543,7 +542,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (get().settings.activeVpnProfileId === id) {
       await get().deactivateVpnProfile()
     }
+    const profile = get().settings.vpnProfiles.find((p) => p.id === id)
     get().updateSettings({ vpnProfiles: get().settings.vpnProfiles.filter((p) => p.id !== id) })
+    // No-ops for a profile added before configs were imported on add (configPath still points
+    // at wherever the user originally picked it, which this deliberately never touches).
+    if (profile) void window.api.vpn.removeImportedConfig(profile.configPath)
   },
 
   // Only one tunnel can ever actually be connected — this app only ever spawns a single openvpn
