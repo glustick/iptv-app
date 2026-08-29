@@ -1,9 +1,17 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
-import { mkdtemp, rm, readFile } from 'fs/promises'
+import { mkdtemp, rm, readFile, writeFile } from 'fs/promises'
 import { existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, extname } from 'path'
 import type { ServerResponse } from 'http'
+
+// Matches ffmpeg's own "Input #0 ... Stream #0:N: Subtitle: ..." line, printed once it's opened
+// and probed the source container — the same point that already costs 25-90s on this app's
+// single-connection test account (see startTranscode's deadline comment below). Detecting
+// subtitle presence from output ffmpeg produces anyway, instead of a separate up-front probe,
+// is what makes this free: no second connection, no risk of doubling that wait for the (likely
+// more common) case of a title with no subtitle track at all.
+const SUBTITLE_STREAM_PATTERN = /Stream #\d+:\d+(?:\[[^\]]*\])?(?:\([a-zA-Z-]+\))?: Subtitle:/
 
 /**
  * Some providers' live channels carry EC-3/E-AC-3 (Dolby Digital Plus) audio inside their
@@ -23,16 +31,18 @@ export interface TranscodeSession {
   proc: ChildProcessWithoutNullStreams
   dir: string
   stderrTail: string[]
+  subtitleDetected: boolean
 }
 
 export interface TranscodeServiceDeps {
   resolveFfmpegPath: () => Promise<string | null>
-  // All four below have real production defaults (see createTranscodeService) — overridable
-  // purely so tests don't have to wait out a real 20s/240s/2s deadline to exercise them.
+  // All five below have real production defaults (see createTranscodeService) — overridable
+  // purely so tests don't have to wait out a real 20s/240s/2s/5s deadline to exercise them.
   liveDeadlineMs?: number
   vodDeadlineMs?: number
   pollIntervalMs?: number
   stopGraceMs?: number
+  subtitleGraceMs?: number
 }
 
 export interface TranscodeService {
@@ -62,6 +72,7 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
   const vodDeadlineMs = deps.vodDeadlineMs ?? 240000
   const pollIntervalMs = deps.pollIntervalMs ?? 300
   const stopGraceMs = deps.stopGraceMs ?? 2000
+  const subtitleGraceMs = deps.subtitleGraceMs ?? 5000
 
   const transcodeSessions = new Map<string, TranscodeSession>()
 
@@ -114,18 +125,25 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
       '-i',
       sourceUrl,
       // Movies/series routinely carry an embedded subtitle track alongside the audio this fix
-      // targets. Left unmapped, ffmpeg auto-selects it and the HLS muxer treats it as a second
-      // WebVTT rendition — which defers writing the main playlist.m3u8 until the *entire* input
-      // has been processed, not incrementally per segment (confirmed live: ffmpeg fully
-      // transcoded a 76-minute movie at 19x realtime, writing hundreds of segments the whole
-      // time, yet playlist.m3u8 itself never appeared until the process was killed at the very
-      // end — every prior timeout in this investigation was this, not a network/connection
-      // problem). Excluding subtitles avoids that rendition entirely; there's no reason to carry
-      // them through here anyway, since fixing silent audio is the only thing this path is for.
+      // targets. An early version of this fallback left it unmapped, on the theory that ffmpeg
+      // auto-selecting it made the HLS muxer treat it as a second WebVTT rendition, which
+      // deferred writing the main playlist.m3u8 until the *entire* input had been processed
+      // (confirmed live: a 76-minute movie fully transcoded at 19x realtime, writing hundreds of
+      // segments the whole time, yet playlist.m3u8 itself never appeared until the process was
+      // killed at the very end). Investigated further (see ROADMAP.md): that deferred-write
+      // behavior turns out to be specific to `-var_stream_map`-driven master-playlist generation,
+      // not to mapping a subtitle stream at all — a flat output (this one) with `0:s:0?`'s
+      // optional-map syntax writes both the video/audio playlist AND the subtitle rendition
+      // incrementally, and is a no-op (nothing mapped, no extra rendition, no behavior change
+      // from before) when the source has no subtitle track. VOD/series opt in below; Live TV
+      // still excludes subtitles entirely — its segment window constantly evicts old segments,
+      // a shape this hasn't been tested against, and the timing/latency concerns that already
+      // motivate keeping Live TV's fallback minimal apply here too.
       '-map',
       '0:v:0',
       '-map',
       '0:a:0',
+      ...(isVod ? ['-map', '0:s:0?'] : []),
       '-c:v',
       'copy',
       '-c:a',
@@ -134,6 +152,7 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
       '192k',
       '-ac',
       '2',
+      ...(isVod ? ['-c:s', 'webvtt'] : []),
       '-f',
       'hls',
       '-hls_time',
@@ -172,7 +191,7 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
       await rm(dir, { recursive: true, force: true }).catch(() => {})
       throw new Error('Transcode cancelled')
     }
-    const session: TranscodeSession = { proc, dir, stderrTail: [] }
+    const session: TranscodeSession = { proc, dir, stderrTail: [], subtitleDetected: false }
     transcodeSessions.set(sessionId, session)
 
     // A stall-detection scheme keyed on "time since ffmpeg last wrote to stderr" was tried here
@@ -184,10 +203,19 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
     // killing on it destroyed transcodes that were actually about to succeed. A single generous
     // deadline (below) doesn't have that false-positive problem.
     proc.stderr.on('data', (chunk: Buffer) => {
+      const lines = chunk.toString('utf8').split('\n').filter(Boolean)
       // Keep only a rolling tail — ffmpeg is chatty, but the last few lines are what actually
       // explain a failure to start (bad input, unsupported option, etc).
-      session.stderrTail.push(...chunk.toString('utf8').split('\n').filter(Boolean))
+      session.stderrTail.push(...lines)
       if (session.stderrTail.length > 40) session.stderrTail.splice(0, session.stderrTail.length - 40)
+      // ffmpeg prints the source's full stream list right after opening/probing it — the same
+      // point that already costs 25-90s on this account (see the deadline comment below) — well
+      // before it writes a single output segment. Catching it here means startTranscode knows
+      // whether a subtitle rendition is coming before playlist.m3u8 even exists, with no separate
+      // probe and no second connection.
+      if (!session.subtitleDetected && lines.some((line) => SUBTITLE_STREAM_PATTERN.test(line))) {
+        session.subtitleDetected = true
+      }
     })
     proc.on('error', (err) => {
       console.error('[transcode] failed to spawn ffmpeg:', err.message)
@@ -211,6 +239,13 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
     // entirely how long this account's connection takes to start delivering data, which varies
     // enough attempt-to-attempt that the deadline needs real headroom rather than being tuned to
     // the common case.
+    const subtitlePlaylistFile = join(dir, 'playlist_vtt.m3u8')
+    const masterPlaylistFile = join(dir, 'master.m3u8')
+    // Set the moment the video/audio playlist exists — from then on, if a subtitle rendition
+    // was also detected, this bounds how much *extra* time to give just that before giving up
+    // on it and serving video alone. Never lets a broken/slow subtitle rendition hold up or
+    // fail a video that's otherwise already playable.
+    let videoReadyAt: number | null = null
     const deadline = Date.now() + (isVod ? vodDeadlineMs : liveDeadlineMs)
     while (Date.now() < deadline) {
       if (cancelledSessions.has(sessionId)) {
@@ -218,12 +253,48 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
         await stopTranscode(sessionId)
         throw new Error('Transcode cancelled')
       }
-      if (existsSync(playlistFile)) return { sessionId, playlistPath: playlistFile }
+      if (videoReadyAt === null && existsSync(playlistFile)) {
+        // subtitleDetected reflects the *source's* stream list (ffmpeg logs it regardless of
+        // what's actually mapped) — Live's argv never requests a subtitle stream at all, so it
+        // must be checked here too, not just isVod's effect on argv above, or a Live source that
+        // happens to carry embedded subtitles would wait out subtitleGraceMs for a rendition
+        // that was never going to be produced.
+        if (!isVod || !session.subtitleDetected) return { sessionId, playlistPath: playlistFile }
+        videoReadyAt = Date.now()
+      }
+      if (videoReadyAt !== null) {
+        if (existsSync(subtitlePlaylistFile)) {
+          // No `-var_stream_map` involved (see the argv comment above for why: it hard-fails
+          // outright when the source turns out to have no subtitle stream, even with `?`'s
+          // optional-map syntax), so ffmpeg itself never writes a master playlist tying the two
+          // renditions together — nothing in the flat playlist.m3u8 it does write references the
+          // sidecar file at all. This one, written directly rather than by ffmpeg, is what makes
+          // the subtitle rendition discoverable.
+          await writeFile(
+            masterPlaylistFile,
+            [
+              '#EXTM3U',
+              '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="Subtitles",DEFAULT=YES,AUTOSELECT=YES,URI="playlist_vtt.m3u8"',
+              '#EXT-X-STREAM-INF:BANDWIDTH=5000000,SUBTITLES="subs"',
+              'playlist.m3u8',
+              ''
+            ].join('\n'),
+            'utf8'
+          )
+          return { sessionId, playlistPath: masterPlaylistFile }
+        }
+        if (Date.now() - videoReadyAt > subtitleGraceMs) return { sessionId, playlistPath: playlistFile }
+      }
       if (proc.exitCode !== null) {
+        // ffmpeg can legitimately exit clean (code 0, e.g. a very short clip) after writing the
+        // video/audio playlist but before the subtitle rendition catches up — that's still a
+        // successful transcode, just one that isn't getting subtitles, not a failure.
+        if (videoReadyAt !== null) return { sessionId, playlistPath: playlistFile }
         throw new Error(`ffmpeg exited before producing output: ${session.stderrTail.slice(-10).join('\n')}`)
       }
       await sleep(pollIntervalMs)
     }
+    if (videoReadyAt !== null) return { sessionId, playlistPath: playlistFile }
     await stopTranscode(sessionId)
     throw new Error('Timed out waiting for ffmpeg to produce transcoded output')
   }

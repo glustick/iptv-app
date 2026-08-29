@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { chmodSync, existsSync, readFileSync, mkdtempSync, rmSync } from 'fs'
+import { chmodSync, existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
@@ -88,6 +88,48 @@ describe('startTranscode', () => {
     await expect(
       withFakeFfmpegMode('hang_forever', () => service.startTranscode('irrelevant-source', false, 's1'))
     ).rejects.toThrow('Timed out waiting for ffmpeg')
+  })
+
+  it('returns the master playlist once both it and the subtitle rendition exist', async () => {
+    const service = track(makeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG), subtitleGraceMs: 2000 }))
+
+    const result = await withFakeFfmpegMode('success_with_subtitles', () =>
+      service.startTranscode('irrelevant-source', true, 's1')
+    )
+
+    expect(result.playlistPath.endsWith('master.m3u8')).toBe(true)
+    const master = readFileSync(result.playlistPath, 'utf8')
+    expect(master).toContain('TYPE=SUBTITLES')
+    expect(master).toContain('URI="playlist_vtt.m3u8"')
+    expect(master).toContain('playlist.m3u8')
+    await service.stopTranscode('s1')
+  })
+
+  it('falls back to the plain video playlist if the subtitle rendition never actually appears', async () => {
+    const service = track(makeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG), subtitleGraceMs: 200 }))
+
+    const result = await withFakeFfmpegMode('subtitle_detected_but_rendition_never_written', () =>
+      service.startTranscode('irrelevant-source', true, 's1')
+    )
+
+    expect(result.playlistPath.endsWith('playlist.m3u8')).toBe(true)
+    await service.stopTranscode('s1')
+  })
+
+  it('ignores a detected subtitle stream on a Live TV session and returns the plain playlist immediately', async () => {
+    // Live's argv never requests a subtitle stream (see startTranscode) — this confirms the
+    // source having one (which the fake ffmpeg's stderr line simulates regardless of argv,
+    // matching how ffmpeg logs a source's real stream list either way) doesn't make a Live
+    // session wait around for a rendition its own ffmpeg invocation was never going to produce.
+    const service = track(makeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG), subtitleGraceMs: 5000 }))
+
+    const result = await withFakeFfmpegMode('success_with_subtitles', () =>
+      service.startTranscode('irrelevant-source', false, 's1')
+    )
+
+    expect(result.playlistPath.endsWith('playlist.m3u8')).toBe(true)
+    expect(result.playlistPath.endsWith('master.m3u8')).toBe(false)
+    await service.stopTranscode('s1')
   })
 
   it('cleans up the temp directory once ffmpeg is stopped after producing output', async () => {
@@ -296,4 +338,88 @@ describe('real ffmpeg integration', () => {
       rmSync(fixtureDir, { recursive: true, force: true })
     }
   }, 20000)
+
+  // The subtitle-mapping change this covers was added after a real, if less severe, prior
+  // failure in this exact fallback (a deferred-write bug caused by a different ffmpeg command
+  // shape — see ROADMAP.md) — so this validates the actual muxer behavior against the real
+  // bundled binary rather than trusting the fake-ffmpeg fixture's hand-shaped stderr line alone.
+  it('produces a master playlist with a working subtitle rendition from a real input that has one', async () => {
+    if (!ffmpegStaticPath) throw new Error('ffmpeg-static did not resolve a binary for this platform')
+
+    const fixtureDir = mkdtempSync(join(tmpdir(), 'allisoniptv-test-fixture-'))
+    const srtPath = join(fixtureDir, 'subs.srt')
+    // Several short cues spread across the clip, not one long one — confirmed the hard way
+    // (an isolated, non-live, real-time-paced `-re` ffmpeg run, no test-suite race involved):
+    // a single cue spanning nearly the whole clip stalls ffmpeg's webvtt HLS segmenter, which
+    // reproduces the exact deferred-playlist-write bug this whole feature exists to avoid —
+    // not because subtitles-in-general trigger it, but because that shape isn't how a real
+    // movie's subtitle track looks (a line every few seconds, same as this fixture now has).
+    const pad = (n: number): string => String(n).padStart(2, '0')
+    writeFileSync(
+      srtPath,
+      Array.from(
+        { length: 6 },
+        (_, i) => `${i + 1}\n00:00:${pad(i * 2)},000 --> 00:00:${pad(i * 2 + 2)},000\nLine ${i + 1}\n`
+      ).join('\n')
+    )
+    const inputPath = join(fixtureDir, 'synthetic-subtitled-input.mkv')
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn(ffmpegStaticPath as string, [
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        'testsrc=duration=12:size=320x240:rate=10',
+        '-f',
+        'lavfi',
+        '-i',
+        'sine=frequency=440:duration=12',
+        '-i',
+        srtPath,
+        '-c:v',
+        'libx264',
+        '-preset',
+        'ultrafast',
+        '-g',
+        '10',
+        '-keyint_min',
+        '10',
+        '-c:a',
+        'ac3',
+        '-c:s',
+        'srt',
+        inputPath
+      ])
+      proc.on('error', reject)
+      proc.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`fixture build exited ${code}`))))
+    })
+
+    const { url: originUrl, server } = await startSyntheticOrigin(inputPath)
+    try {
+      const service = track(
+        createTranscodeService({
+          resolveFfmpegPath: resolverFor(ffmpegStaticPath as string),
+          vodDeadlineMs: 30000,
+          pollIntervalMs: 200,
+          subtitleGraceMs: 15000
+        })
+      )
+
+      const result = await service.startTranscode(originUrl, true, 'real-2')
+
+      expect(result.playlistPath.endsWith('master.m3u8')).toBe(true)
+      const master = readFileSync(result.playlistPath, 'utf8')
+      expect(master).toContain('TYPE=SUBTITLES')
+      expect(master).toContain('URI="playlist_vtt.m3u8"')
+      const dir = join(result.playlistPath, '..')
+      expect(readFileSync(join(dir, 'playlist.m3u8'), 'utf8')).toContain('#EXTM3U')
+      const vtt = readFileSync(join(dir, 'playlist_vtt.m3u8'), 'utf8')
+      expect(vtt).toContain('#EXTM3U')
+
+      await service.stopTranscode('real-2')
+    } finally {
+      server.close()
+      rmSync(fixtureDir, { recursive: true, force: true })
+    }
+  }, 30000)
 })

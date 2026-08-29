@@ -12,6 +12,17 @@ case "${FAKE_FFMPEG_MODE:-}" in
     printf '#EXTM3U\n#EXT-X-ENDLIST\n' > "$last_arg"
     sleep 5
     ;;
+  success_with_subtitles)
+    echo "Stream #0:2(eng): Subtitle: subrip" >&2
+    printf '#EXTM3U\n#EXT-X-ENDLIST\n' > "$last_arg"
+    printf '#EXTM3U\n#EXT-X-ENDLIST\n' > "$(dirname "$last_arg")/playlist_vtt.m3u8"
+    sleep 5
+    ;;
+  subtitle_detected_but_rendition_never_written)
+    echo "Stream #0:2(eng): Subtitle: subrip" >&2
+    printf '#EXTM3U\n#EXT-X-ENDLIST\n' > "$last_arg"
+    sleep 5
+    ;;
   fail_immediately)
     echo "fake ffmpeg: simulated fatal error" >&2
     exit 1

@@ -776,8 +776,11 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('transcode:start', async (_event, sourceUrl: string, isVod: boolean, sessionId: string) => {
-    await transcodeService.startTranscode(sourceUrl, isVod, sessionId)
-    return { sessionId, url: `http://127.0.0.1:${proxyPort}/__transcode/${sessionId}/playlist.m3u8` }
+    // playlistPath's filename varies: usually playlist.m3u8, but master.m3u8 when startTranscode
+    // detected and included a subtitle rendition (see transcodeService.ts) — basename() rather
+    // than a hardcoded name is what makes that switch actually reach the player.
+    const { playlistPath } = await transcodeService.startTranscode(sourceUrl, isVod, sessionId)
+    return { sessionId, url: `http://127.0.0.1:${proxyPort}/__transcode/${sessionId}/${basename(playlistPath)}` }
   })
   ipcMain.handle('transcode:stop', (_event, sessionId: string) => transcodeService.stopTranscode(sessionId))
 
