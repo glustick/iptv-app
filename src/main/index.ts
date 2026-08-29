@@ -687,7 +687,8 @@ async function startVpn(
 
     // --script-security 2 is required for OpenVPN to run the route-up/route-pre-down scripts
     // at all — the default (1) only allows built-in executables, not user-defined scripts.
-    const command = [
+    const isWindows = process.platform === 'win32'
+    const openvpnInvocation = [
       quoteArg(openvpnPath),
       '--config',
       quoteArg(importedConfigPath),
@@ -708,10 +709,22 @@ async function startVpn(
       '127.0.0.1',
       String(managementPort),
       '--management-query-passwords',
-      '--daemon',
+      // OpenVPN's Windows build has no --daemon support at all (confirmed live: "daemon()
+      // failed or unsupported: Bad address", immediate fatal exit) — there's no fork()/
+      // daemonize model on Windows to begin with. --daemon is POSIX-only here; on Windows
+      // the whole invocation is instead wrapped in `start /B` below, which is what actually
+      // detaches the process there.
+      ...(isWindows ? [] : ['--daemon']),
       '--log',
       quoteArg(logPath)
     ].join(' ')
+    // sudo-prompt's Windows elevation path runs our command inside a .bat file and waits for
+    // it to exit before ever reporting back — with no --daemon to make openvpn.exe return
+    // immediately, that wait would never end. `start "" /B` launches it as a genuinely separate
+    // process (not one cmd.exe blocks on) so the .bat completes right away while openvpn.exe
+    // keeps running. The empty "" is required: start's first quoted argument is always taken
+    // as a window title, not the command, if omitted.
+    const command = isWindows ? `start "" /B ${openvpnInvocation}` : openvpnInvocation
 
     await new Promise<void>((resolve, reject) => {
       // sudo-prompt's callback is (error, stdout, stderr) — a bad OpenVPN flag or a config
