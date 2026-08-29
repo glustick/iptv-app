@@ -29,8 +29,11 @@ const SILENT_AUDIO_MAX_CHECK_ATTEMPTS = 90
 // actually recognized that connection as closed by the time ffmpeg tries to open a new one.
 // Racing that gap produced a real net::ERR_HTTP2_PROTOCOL_ERROR and, worse, a transcode request
 // that hung indefinitely with zero output on this exact account. This delay gives the origin a
-// moment to actually release the slot first.
-const CONNECTION_RELEASE_DELAY_MS = 2000
+// moment to actually release the slot first. Bumped from 2s to 8s after reproducing that exact
+// "hung indefinitely, zero output" failure live again on a real single-connection account's VOD
+// title — 2s evidently isn't always enough for this provider's origin to notice the old
+// connection is gone before ffmpeg tries to open a new one to the same account.
+const CONNECTION_RELEASE_DELAY_MS = 8000
 
 // webkitVideoDecodedByteCount/webkitAudioDecodedByteCount are real, long-standing Chromium
 // extensions, not in the standard DOM lib types — same ones PlayerStatsOverlay.tsx already
@@ -348,31 +351,57 @@ export function Player(): JSX.Element | null {
       // check that lands before video decoding has even begun looks identical to a genuinely
       // silent title and never gets a second chance. Polling instead: wait for video to
       // definitely be decoding, then require two consecutive ticks of "video yes, audio no"
-      // before concluding it's the codec failure rather than a brief startup race, and give up
-      // after a while if video decoding never gets going at all (a different problem).
+      // before concluding it's the codec failure rather than a brief startup race.
+      //
+      // A second, distinct failure shape shares this same detection loop, added defensively —
+      // NOT yet confirmed live the way the silent-audio case below was (an initial live
+      // reproduction attempt on a real .mkv title looked like this at first with a short
+      // sampling window, but a longer one showed video *did* briefly start decoding, meaning
+      // that specific title actually hit the ordinary silent-audio path below, not this one).
+      // Still worth having: if a title's video genuinely never decodes at all (Chromium's
+      // <video> element has no demuxer for some container/codec entirely, as opposed to a
+      // supported container with one specifically unsupported track), the *original* logic
+      // here only ever counted consecutive "video yes, audio no" ticks, which that case would
+      // never satisfy (video permanently 0) — it would poll for the full
+      // SILENT_AUDIO_MAX_CHECK_ATTEMPTS budget and then give up *silently*, leaving the player
+      // stuck on an endless buffering spinner forever with no error and no fallback ever
+      // attempted. The same ffmpeg remux this path already runs for silent-audio titles would
+      // fix that too, since it produces a fresh HLS output regardless of the source container —
+      // the gap was ever detecting the case instead of quietly giving up on it.
       let consecutiveSilentAudioTicks = 0
       let silentAudioCheckAttempts = 0
+      let everDecodedVideo = false
       silentAudioCheckTimer = setInterval(() => {
         silentAudioCheckAttempts += 1
         const chromiumVideo = video as ChromiumVideoElement
         const videoBytes = chromiumVideo.webkitVideoDecodedByteCount ?? 0
         const audioBytes = chromiumVideo.webkitAudioDecodedByteCount ?? 0
+        if (videoBytes > 0) everDecodedVideo = true
         consecutiveSilentAudioTicks = videoBytes > 0 && audioBytes === 0 ? consecutiveSilentAudioTicks + 1 : 0
 
-        if (consecutiveSilentAudioTicks < 2 && silentAudioCheckAttempts < SILENT_AUDIO_MAX_CHECK_ATTEMPTS) return
+        const confirmedSilentAudio = consecutiveSilentAudioTicks >= 2
+        const timedOut = silentAudioCheckAttempts >= SILENT_AUDIO_MAX_CHECK_ATTEMPTS
+        // Nothing ever decoded despite the full timeout window this account's slower titles
+        // already need (see startTranscode's own 25-90s observed input-open times) — treated
+        // as "unplayable format," not "still starting up."
+        const confirmedUnplayableFormat = timedOut && !everDecodedVideo
+
+        if (!confirmedSilentAudio && !timedOut) return
         if (silentAudioCheckTimer) clearInterval(silentAudioCheckTimer)
         silentAudioCheckTimer = null
-        if (consecutiveSilentAudioTicks < 2) return
+        if (!confirmedSilentAudio && !confirmedUnplayableFormat) return
 
         // Unlike live TV (where the hls.js source triggering tryFallback is already broken and
-        // has mostly stopped pulling data by the time it fires), this video is playing fine —
-        // it just has no sound — so left alone it keeps aggressively buffering ahead from the
-        // original URL for the entire time ffmpeg is also reading that same URL through the
-        // same local proxy. Two concurrent requests for the same resource that way was enough
-        // to trip a real net::ERR_HTTP2_PROTOCOL_ERROR against this provider — pausing and
-        // detaching the source first, before asking for the transcode, avoids the contention
-        // instead of hoping the origin tolerates it. See CONNECTION_RELEASE_DELAY_MS for why
-        // starting the transcode itself is also delayed, not just the detach.
+        // has mostly stopped pulling data by the time it fires), this video is otherwise
+        // healthy — either playing fine with no sound, or still pulling real bytes over the
+        // network despite never decoding any of them — so left alone it keeps aggressively
+        // buffering ahead from the original URL for the entire time ffmpeg is also reading
+        // that same URL through the same local proxy. Two concurrent requests for the same
+        // resource that way was enough to trip a real net::ERR_HTTP2_PROTOCOL_ERROR against
+        // this provider — pausing and detaching the source first, before asking for the
+        // transcode, avoids the contention instead of hoping the origin tolerates it. See
+        // CONNECTION_RELEASE_DELAY_MS for why starting the transcode itself is also delayed,
+        // not just the detach.
         video.pause()
         video.removeAttribute('src')
         video.load()
@@ -384,7 +413,7 @@ export function Player(): JSX.Element | null {
             () => setReloadTick((t) => t + 1),
             (message) =>
               setPlaybackError(
-                `Audio codec not supported by this player, and automatic transcoding failed: ${message}` +
+                `${confirmedUnplayableFormat ? "This title's format isn't supported by this player" : 'Audio codec not supported by this player'}, and automatic transcoding failed: ${message}` +
                   (singleConnectionAccount
                     ? ' (this account only allows one connection at a time, which can cause exactly this)'
                     : '')
@@ -774,7 +803,11 @@ export function Player(): JSX.Element | null {
             <span>
               {nowPlaying.kind === 'live'
                 ? 'Fixing audio for this channel…'
-                : `Fixing audio for this title… this can take a minute or two on a slow connection (${formatElapsed(transcodeElapsedSeconds)})`}
+                : // "Fixing playback," not "fixing audio" — this same fallback also covers a
+                  // title Chromium's <video> element can't make sense of at all (e.g. an .mkv
+                  // container), not just a silent-audio-only codec problem, and the wording
+                  // shouldn't imply audio is specifically what's wrong for the other case.
+                  `Fixing playback for this title… this can take a minute or two on a slow connection (${formatElapsed(transcodeElapsedSeconds)})`}
               {nowPlaying.kind !== 'live' &&
                 singleConnectionAccount &&
                 transcodeElapsedSeconds >= SINGLE_CONNECTION_HINT_AFTER_SECONDS && (
