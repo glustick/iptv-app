@@ -29,6 +29,9 @@ export function SettingsPage(): JSX.Element | null {
   // encrypting/writing to disk on every keystroke), just one draft per saved VPN profile
   // instead of a single global one.
   const [vpnDrafts, setVpnDrafts] = useState<Record<string, VpnDraft>>({})
+  // Only one profile's edit form is ever open at a time — rows are compact by default so a
+  // list of many saved configs doesn't turn into a wall of always-expanded forms.
+  const [editingProfileId, setEditingProfileId] = useState<string | null>(null)
 
   if (!settingsOpen) return null
 
@@ -66,6 +69,16 @@ export function SettingsPage(): JSX.Element | null {
     await addVpnProfile({ name: configName, configPath: path, configName, username: null, password: null })
   }
 
+  function startEditingVpnProfile(profile: VpnProfile): void {
+    // Reset to the profile's actual saved values rather than whatever draft might be left
+    // over from a previous edit that was cancelled without saving.
+    setVpnDrafts((prev) => ({
+      ...prev,
+      [profile.id]: { name: profile.name, username: profile.username ?? '', password: profile.password ?? '' }
+    }))
+    setEditingProfileId(profile.id)
+  }
+
   function saveVpnProfileDraft(profile: VpnProfile): void {
     const draft = draftFor(profile)
     void updateVpnProfile(profile.id, {
@@ -73,6 +86,7 @@ export function SettingsPage(): JSX.Element | null {
       username: draft.username.trim() || null,
       password: draft.password.trim() || null
     })
+    setEditingProfileId(null)
   }
 
   return (
@@ -187,54 +201,69 @@ export function SettingsPage(): JSX.Element | null {
             <ul className="vpn-profile-list">
               {settings.vpnProfiles.map((profile) => {
                 const isActive = settings.activeVpnProfileId === profile.id
+                const isEditing = editingProfileId === profile.id
                 const draft = draftFor(profile)
                 return (
                   <li key={profile.id} className="vpn-profile-row">
-                    <div className="vpn-profile-header">
+                    <div className="vpn-profile-compact">
                       {isActive && (
                         <span
                           className={`vpn-dot vpn-dot--${vpnStatus}`}
                           title={vpnStatus === 'error' ? (vpnErrorMessage ?? 'Error') : vpnStatus}
                         />
                       )}
-                      <input
-                        className="vpn-profile-name"
-                        value={draft.name}
-                        onChange={(e) => setDraft(profile.id, { name: e.target.value }, profile)}
-                        onBlur={() => saveVpnProfileDraft(profile)}
-                      />
-                      <span className="vpn-config-name">{profile.configName}</span>
-                    </div>
-                    <div className="pin-set-row">
-                      <input
-                        type="text"
-                        placeholder="Username (if required)"
-                        value={draft.username}
-                        onChange={(e) => setDraft(profile.id, { username: e.target.value }, profile)}
-                      />
-                      <input
-                        type="password"
-                        placeholder="Password (if required)"
-                        value={draft.password}
-                        onChange={(e) => setDraft(profile.id, { password: e.target.value }, profile)}
-                      />
-                      <button onClick={() => saveVpnProfileDraft(profile)}>Save</button>
+                      <span className="vpn-profile-name-label" title={profile.configName}>
+                        {profile.name}
+                      </span>
+                      <div className="vpn-profile-actions">
+                        {isActive ? (
+                          <button className="secondary-button" onClick={() => void deactivateVpnProfile()}>
+                            Deactivate
+                          </button>
+                        ) : (
+                          <button className="secondary-button" onClick={() => void activateVpnProfile(profile.id)}>
+                            Activate
+                          </button>
+                        )}
+                        <button
+                          className="secondary-button"
+                          onClick={() => (isEditing ? setEditingProfileId(null) : startEditingVpnProfile(profile))}
+                        >
+                          {isEditing ? 'Close' : 'Edit'}
+                        </button>
+                        <button className="danger-link" onClick={() => void removeVpnProfile(profile.id)}>
+                          Remove
+                        </button>
+                      </div>
                     </div>
                     {isActive && vpnStatus === 'error' && <p className="settings-hint">Error: {vpnErrorMessage}</p>}
-                    <div className="vpn-profile-actions">
-                      {isActive ? (
-                        <button className="secondary-button" onClick={() => void deactivateVpnProfile()}>
-                          Deactivate
-                        </button>
-                      ) : (
-                        <button className="secondary-button" onClick={() => void activateVpnProfile(profile.id)}>
-                          Activate
-                        </button>
-                      )}
-                      <button className="danger-link" onClick={() => void removeVpnProfile(profile.id)}>
-                        Remove
-                      </button>
-                    </div>
+                    {isEditing && (
+                      <div className="vpn-profile-edit">
+                        <label>
+                          Name
+                          <input
+                            value={draft.name}
+                            onChange={(e) => setDraft(profile.id, { name: e.target.value }, profile)}
+                          />
+                        </label>
+                        <span className="vpn-config-name">{profile.configName}</span>
+                        <div className="pin-set-row">
+                          <input
+                            type="text"
+                            placeholder="Username (if required)"
+                            value={draft.username}
+                            onChange={(e) => setDraft(profile.id, { username: e.target.value }, profile)}
+                          />
+                          <input
+                            type="password"
+                            placeholder="Password (if required)"
+                            value={draft.password}
+                            onChange={(e) => setDraft(profile.id, { password: e.target.value }, profile)}
+                          />
+                          <button onClick={() => saveVpnProfileDraft(profile)}>Save</button>
+                        </div>
+                      </div>
+                    )}
                   </li>
                 )
               })}

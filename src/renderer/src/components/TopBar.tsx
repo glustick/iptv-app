@@ -18,7 +18,7 @@ export function TopBar(): JSX.Element {
   const disconnect = useAppStore((s) => s.disconnect)
   const openSettings = useAppStore((s) => s.openSettings)
   const isOnline = useAppStore((s) => s.isOnline)
-  const vpnActiveProfileId = useAppStore((s) => s.settings.activeVpnProfileId)
+  const vpnHasProfiles = useAppStore((s) => s.settings.vpnProfiles.length > 0)
   const vpnStatus = useAppStore((s) => s.vpnStatus)
 
   return (
@@ -57,7 +57,10 @@ export function TopBar(): JSX.Element {
 
       {!isOnline && <span className="offline-badge">Offline</span>}
 
-      {vpnActiveProfileId && (
+      {/* Stays visible whenever a VPN profile exists, even deactivated — a deliberate warning
+          that traffic isn't tunneled right now, not just a "currently connecting" indicator
+          that disappears the moment you're not actively using it. */}
+      {vpnHasProfiles && (
         <span
           className={`vpn-dot vpn-dot--${vpnStatus}`}
           title={
@@ -67,7 +70,7 @@ export function TopBar(): JSX.Element {
                 ? 'VPN connecting…'
                 : vpnStatus === 'error'
                   ? 'VPN error — check Settings'
-                  : 'VPN disconnected'
+                  : 'VPN not connected'
           }
         />
       )}

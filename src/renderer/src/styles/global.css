@@ -1570,32 +1570,24 @@ body.resizing-col {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 12px;
+  padding: 10px 12px;
 }
 
-.vpn-profile-header {
+.vpn-profile-compact {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 10px;
 }
 
-.vpn-profile-name {
-  background: transparent;
-  border: none;
+.vpn-profile-name-label {
   color: var(--text);
   font-size: 14px;
   font-weight: 600;
   flex: 1;
   min-width: 0;
-  padding: 2px 4px;
-  border-radius: 6px;
-}
-
-.vpn-profile-name:hover,
-.vpn-profile-name:focus {
-  background: var(--bg-hover);
-  outline: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .vpn-config-name {
@@ -1610,7 +1602,28 @@ body.resizing-col {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-shrink: 0;
+}
+
+.vpn-profile-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.vpn-profile-edit label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.vpn-profile-edit input {
+  font-size: 13px;
 }
 
 .danger-link {
