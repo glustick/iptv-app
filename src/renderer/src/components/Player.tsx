@@ -216,6 +216,19 @@ export function Player(): JSX.Element | null {
 
     if (isM3u8 && Hls.isSupported()) {
       const smooth = bufferProfile === 'smooth'
+      // hls.js only knows a playlist is genuinely finished once it sees #EXT-X-ENDLIST — until
+      // then, it treats it as "live" regardless of *why* the tag is absent. The audio-fix
+      // transcode's own output (movies/series, never real Live TV) has no ENDLIST for as long
+      // as ffmpeg is still working through the source, which for a slow connection can be most
+      // or all of a viewing session — so without this check, this hls.js instance would apply
+      // real Live TV's "jump forward if you fall behind the live edge" logic to a movie, using
+      // ffmpeg's own transcode progress as the "live edge". Confirmed live: since ffmpeg often
+      // encodes at 19-50x realtime (-c:v copy is barely CPU-bound), a normal 1x viewer falls
+      // behind that "edge" by more than the live-latency threshold within under a minute,
+      // triggering repeated forced seeks forward with no user input — exactly the "video skips
+      // ahead" symptom reported live. Real Live TV still wants the live-edge behavior (that's
+      // what "Live" TV is), so this only disables it for the fallback's own on-demand content.
+      const isLiveContent = nowPlaying.kind === 'live'
       const hls = new Hls({
         enableWorker: true,
         // "Smooth" favors stutter-free playback over sitting right on the live edge: a
@@ -224,8 +237,8 @@ export function Player(): JSX.Element | null {
         maxBufferLength: smooth ? 60 : 20,
         maxMaxBufferLength: smooth ? 120 : 40,
         backBufferLength: smooth ? 90 : 30,
-        liveSyncDurationCount: smooth ? 5 : 3,
-        liveMaxLatencyDurationCount: smooth ? 10 : 6,
+        liveSyncDurationCount: isLiveContent ? (smooth ? 5 : 3) : 1_000_000,
+        liveMaxLatencyDurationCount: isLiveContent ? (smooth ? 10 : 6) : 1_000_000,
         fragLoadingMaxRetry: 6,
         levelLoadingMaxRetry: 6,
         manifestLoadingMaxRetry: 6
