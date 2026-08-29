@@ -2,6 +2,8 @@
 
 A desktop IPTV client (Electron + React) for Xtream Codes providers, with live TV, movies, series, and an EPG guide. Also supports raw M3U playlists (live TV only) for providers that don't hand out Xtream credentials.
 
+**[Download the latest release](../../releases/latest)** — prebuilt installers for Windows, macOS, and Linux.
+
 ## Features
 
 - Connect to any Xtream Codes panel with server URL, username, and password — or a bare M3U playlist URL (plus an optional separate EPG XML URL) for providers that only offer that
