@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import { XtreamClient } from '../lib/xtream'
+import { M3uClient } from '../lib/m3uClient'
+import type { IptvClient } from '../lib/iptvClient'
 import { parseXmltv, type EpgData } from '../lib/epg'
 import {
   loadProfiles,
@@ -73,7 +75,7 @@ export interface NowPlaying {
 interface AppState {
   profiles: XtreamProfile[]
   activeProfile: XtreamProfile | null
-  client: XtreamClient | null
+  client: IptvClient | null
   status: ConnectionStatus
   error: string | null
   isOnline: boolean
@@ -298,8 +300,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   addProfile: async (profile) => {
     // Retrying "Connect" after a failed attempt re-submits the same form — reuse the
     // matching saved profile instead of stacking up duplicates on every retry.
-    const existing = get().profiles.find(
-      (p) => p.server === profile.server && p.username === profile.username && p.password === profile.password
+    const existing = get().profiles.find((p) =>
+      profile.kind === 'm3u'
+        ? p.kind === 'm3u' && p.m3uUrl === profile.m3uUrl && p.epgUrl === profile.epgUrl
+        : p.kind !== 'm3u' && p.server === profile.server && p.username === profile.username && p.password === profile.password
     )
     if (existing) {
       await get().connect(existing.id)
@@ -330,11 +334,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (!window.api?.proxy) {
         throw new Error('This app must run inside Electron to reach Xtream servers.')
       }
-      // Route every request through the local CORS-proxy (see src/main/index.ts) instead
-      // of the real server, since Xtream panels don't send CORS headers for browsers.
-      await window.api.proxy.setTarget(profile.server)
       const proxyBase = await window.api.proxy.getBaseUrl()
-      const client = new XtreamClient(proxyBase, profile.username, profile.password)
+      let client: IptvClient
+      if (profile.kind === 'm3u') {
+        // M3uClient routes every request (playlist, EPG, and every channel's own stream URL)
+        // through the proxy's /__fetch/ passthrough itself — unlike Xtream, a playlist can
+        // reference a different host per channel, so there's no single base for setTarget's
+        // path-relative proxying to resolve against.
+        client = new M3uClient(proxyBase, profile.m3uUrl ?? '', profile.epgUrl ?? null)
+      } else {
+        // Route every request through the local CORS-proxy (see src/main/index.ts) instead
+        // of the real server, since Xtream panels don't send CORS headers for browsers.
+        await window.api.proxy.setTarget(profile.server ?? '')
+        client = new XtreamClient(proxyBase, profile.username ?? '', profile.password ?? '')
+      }
       const auth = await client.authenticate()
       set({ client, status: 'ready', singleConnectionAccount: auth.user_info.max_connections === '1' })
       await saveActiveProfileId(profileId)

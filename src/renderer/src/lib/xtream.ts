@@ -8,6 +8,7 @@ import type {
   ShortEpgProgram,
   MediaKind
 } from './types'
+import type { IptvClient } from './iptvClient'
 
 function decodeBase64Maybe(value: string | undefined | null): string {
   if (!value) return ''
@@ -19,7 +20,7 @@ function decodeBase64Maybe(value: string | undefined | null): string {
   }
 }
 
-export class XtreamClient {
+export class XtreamClient implements IptvClient {
   private readonly baseUrl: string
   private readonly username: string
   private readonly password: string

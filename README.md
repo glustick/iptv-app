@@ -1,10 +1,10 @@
 # IPTV
 
-A desktop IPTV client (Electron + React) for Xtream Codes providers, with live TV, movies, series, and an EPG guide.
+A desktop IPTV client (Electron + React) for Xtream Codes providers, with live TV, movies, series, and an EPG guide. Also supports raw M3U playlists (live TV only) for providers that don't hand out Xtream credentials.
 
 ## Features
 
-- Connect to any Xtream Codes panel with server URL, username, and password
+- Connect to any Xtream Codes panel with server URL, username, and password — or a bare M3U playlist URL (plus an optional separate EPG XML URL) for providers that only offer that
 - Save multiple provider profiles locally
 - Browse Live TV, Movies, and Series by category, with search
 - Clicking a live channel opens a preview first — current programme, progress bar, and a "coming up" list, all in your local timezone — before jumping into fullscreen playback
@@ -45,7 +45,7 @@ src/
   main/           Electron main process (window creation, credential storage via electron-store, CORS-proxy)
   preload/        contextBridge API exposed to the renderer
   renderer/       React app
-    src/lib/      Xtream Codes API client (xtream.ts) and XMLTV EPG parser (epg.ts)
+    src/lib/      Xtream Codes API client (xtream.ts), M3U parser/client (m3u.ts, m3uClient.ts), the shared IptvClient interface (iptvClient.ts), and an XMLTV EPG parser (epg.ts)
     src/store/    Zustand store wiring auth, categories, content lists, EPG, and playback
     src/components/  UI: login, top bar, sidebar, channel/movie/series list, player, channel preview, series modal
 ```
@@ -58,6 +58,10 @@ src/
 - **CORS proxy**: Xtream panels are built for native players (VLC, set-top boxes) and never send CORS headers, so the renderer can't talk to them directly. The main process runs a small reverse proxy ([`src/main/index.ts`](src/main/index.ts)) that re-issues every request via Electron's `net` module (Chromium's network stack, honoring the OS certificate trust store) and stamps the response with permissive CORS headers.
 
 Credentials are stored locally via `electron-store` (a JSON file in the app's user-data directory) — nothing is sent anywhere except the Xtream server you configure.
+
+## How the M3U integration works
+
+For providers that only offer a bare playlist: `m3u.ts` parses the extended-M3U format (`#EXTINF` lines' `tvg-id`/`tvg-logo`/`group-title` attributes, plus `#EXTM3U`'s own `url-tvg`/`x-tvg-url` for EPG auto-discovery), and `m3uClient.ts` implements the same [`IptvClient`](src/renderer/src/lib/iptvClient.ts) interface `XtreamClient` does, so the rest of the app (store, EPG grid, player) never needs to know which backend a given profile actually came from. It's live-TV only — a flat M3U has no structured equivalent of Xtream's separate movie/series catalogs. Unlike Xtream (where every request shares one base URL the proxy resolves paths against), an M3U playlist can reference a different host per channel, so the proxy has a second route, `/__fetch/<url-encoded absolute URL>`, that proxies to any destination directly.
 
 ## Roadmap
 

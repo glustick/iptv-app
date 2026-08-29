@@ -1,9 +1,21 @@
+export type ProfileKind = 'xtream' | 'm3u'
+
+// A saved connection — either full Xtream Codes credentials or a bare M3U playlist (see
+// lib/m3uClient.ts). `kind` is optional so profiles saved before M3U support existed still load
+// correctly: undefined has always meant "xtream" for every profile that predates this field.
 export interface XtreamProfile {
   id: string
   name: string
-  server: string
-  username: string
-  password: string
+  kind?: ProfileKind
+  // Xtream fields — set when kind is 'xtream' or unset, absent for 'm3u'.
+  server?: string
+  username?: string
+  password?: string
+  // M3U fields — set when kind is 'm3u', absent for 'xtream'. epgUrl can stay unset even then:
+  // a playlist's own #EXTM3U url-tvg/x-tvg-url attribute can supply it instead (see parseM3u),
+  // and a playlist with neither just has no per-channel guide data.
+  m3uUrl?: string
+  epgUrl?: string
 }
 
 export interface XtreamUserInfo {

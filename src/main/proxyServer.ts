@@ -82,23 +82,39 @@ export function createProxyServer(deps: ProxyServerDeps): Server {
       return
     }
 
-    const proxyTargetBase = deps.getProxyTargetBase()
-    if (!proxyTargetBase) {
-      res.writeHead(502)
-      res.end('No upstream Xtream server configured')
-      return
-    }
-
-    // `new URL()` throws synchronously on a malformed base (e.g. a server address typed
-    // without "http://", such as "myprovider.com:8080") — left uncaught, that exception
-    // would propagate out of this request handler and crash the whole main process.
+    // Unlike Xtream (where every request — API, EPG, every stream — shares one base URL this
+    // proxy can resolve a path against), an M3U playlist can reference a completely different
+    // host per channel, and the playlist/EPG URLs themselves can differ from every one of those
+    // too. /__fetch/<url-encoded absolute URL> lets a caller (see lib/m3uClient.ts) proxy to
+    // any destination directly, bypassing getProxyTargetBase() entirely, while still getting
+    // the same CORS/retry/timeout/redirect handling as the Xtream path below.
     let target: URL
-    try {
-      target = new URL(req.url ?? '/', proxyTargetBase)
-    } catch {
-      res.writeHead(502)
-      res.end(`Invalid Xtream server address: ${proxyTargetBase}`)
-      return
+    if (req.url?.startsWith('/__fetch/')) {
+      try {
+        target = new URL(decodeURIComponent(req.url.slice('/__fetch/'.length)))
+      } catch {
+        res.writeHead(502)
+        res.end('Invalid proxied URL')
+        return
+      }
+    } else {
+      const proxyTargetBase = deps.getProxyTargetBase()
+      if (!proxyTargetBase) {
+        res.writeHead(502)
+        res.end('No upstream Xtream server configured')
+        return
+      }
+
+      // `new URL()` throws synchronously on a malformed base (e.g. a server address typed
+      // without "http://", such as "myprovider.com:8080") — left uncaught, that exception
+      // would propagate out of this request handler and crash the whole main process.
+      try {
+        target = new URL(req.url ?? '/', proxyTargetBase)
+      } catch {
+        res.writeHead(502)
+        res.end(`Invalid Xtream server address: ${proxyTargetBase}`)
+        return
+      }
     }
 
     // Xtream auth is entirely via query-string params, not headers, so there's no need to

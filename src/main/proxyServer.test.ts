@@ -239,6 +239,34 @@ describe('createProxyServer', () => {
     expect(res.body).toBe('segment data')
   })
 
+  describe('/__fetch/ passthrough (M3U/EPG support)', () => {
+    it('proxies to the URL encoded in the path instead of resolving against getProxyTargetBase', async () => {
+      const { url: originUrl, server: origin } = await startMockOrigin((req, res) => {
+        res.writeHead(200, { 'content-type': 'text/plain' })
+        res.end(`you asked for ${req.url}`)
+      })
+      openServers.push(origin)
+      // getProxyTargetBase intentionally returns null — /__fetch/ must work without any
+      // Xtream target ever having been configured, which is the whole point of the route.
+      const proxy = await startProxy(makeDeps({ getProxyTargetBase: () => null }))
+
+      const res = await fetchViaProxy(proxy, `/__fetch/${encodeURIComponent(`${originUrl}/channel.ts?token=abc`)}`)
+
+      expect(res.statusCode).toBe(200)
+      expect(res.body).toBe('you asked for /channel.ts?token=abc')
+      expect(res.headers['access-control-allow-origin']).toBe('*')
+    })
+
+    it('returns 502 instead of crashing on an unparseable encoded URL', async () => {
+      const proxy = await startProxy(makeDeps())
+
+      const res = await fetchViaProxy(proxy, '/__fetch/not-a-url-at-all')
+
+      expect(res.statusCode).toBe(502)
+      expect(res.body).toContain('Invalid proxied URL')
+    })
+  })
+
   describe('off-tunnel redirect detection', () => {
     it('reports a redirect that lands on a different host while the VPN is connected', async () => {
       const { url: originUrl, server: origin } = await startMockOrigin((req, res) => {

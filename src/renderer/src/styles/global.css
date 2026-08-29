@@ -69,6 +69,31 @@ input {
   margin: 0 0 24px;
 }
 
+.login-kind-toggle {
+  display: flex;
+  gap: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  margin-bottom: 16px;
+}
+
+.login-kind-toggle button {
+  flex: 1;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  padding: 8px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.login-kind-toggle button.active {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
 .login-form {
   display: flex;
   flex-direction: column;
