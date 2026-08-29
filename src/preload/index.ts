@@ -42,6 +42,7 @@ const api = {
       ipcRenderer.invoke('vpn:removeImportedConfig', configPath) as Promise<void>,
     getStatus: () =>
       ipcRenderer.invoke('vpn:getStatus') as Promise<{ status: string; errorMessage: string | null }>,
+    openLog: () => ipcRenderer.invoke('vpn:openLog') as Promise<{ ok: boolean; message?: string }>,
     onStatusChange: (callback: (status: { status: string; errorMessage: string | null }) => void) => {
       const listener = (_event: unknown, status: { status: string; errorMessage: string | null }): void =>
         callback(status)

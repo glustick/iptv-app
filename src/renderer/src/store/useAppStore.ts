@@ -32,6 +32,7 @@ import type {
   VpnProfile
 } from '../lib/types'
 import { DEFAULT_SETTINGS, favoriteKey } from '../lib/types'
+import { shouldWarnOnVpnDisconnect } from '../lib/vpnStatus'
 
 export type ViewMode = 'live' | 'movies' | 'series' | 'favorites'
 export type ConnectionStatus = 'idle' | 'connecting' | 'ready' | 'error'
@@ -110,6 +111,16 @@ interface AppState {
 
   vpnStatus: VpnStatus
   vpnErrorMessage: string | null
+  // Set only while a connected tunnel drops unexpectedly (never for a deliberate Deactivate or
+  // profile switch, which tear down the old tunnel on purpose) — surfaced as a dismissible
+  // warning wherever the user is, including inside a fullscreen player. null when there's
+  // nothing to warn about.
+  vpnDisconnectWarning: string | null
+  // Distinguishes an intentional teardown (Deactivate, or activateVpnProfile switching away
+  // from a different profile) from a genuine unexpected drop — both look identical from the
+  // outside as a "connected" -> "disconnected" transition, so intent has to be tracked
+  // explicitly rather than inferred from the status change alone.
+  vpnDisconnectingIntentionally: boolean
 
   init: () => Promise<void>
   addProfile: (profile: Omit<XtreamProfile, 'id'>) => Promise<void>
@@ -160,6 +171,7 @@ interface AppState {
   removeVpnProfile: (id: string) => Promise<void>
   activateVpnProfile: (id: string) => Promise<void>
   deactivateVpnProfile: () => Promise<void>
+  dismissVpnDisconnectWarning: () => void
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -203,6 +215,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   vpnStatus: 'disconnected',
   vpnErrorMessage: null,
+  vpnDisconnectWarning: null,
+  vpnDisconnectingIntentionally: false,
 
   init: async () => {
     const [profiles, favorites, recentlyWatched, episodeProgress, settings] = await Promise.all([
@@ -225,7 +239,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     // in real time — polling would mean either missing transitions between polls or hammering
     // an IPC round-trip just to notice a state that already changed.
     window.api?.vpn?.onStatusChange((payload) => {
-      set({ vpnStatus: payload.status as VpnStatus, vpnErrorMessage: payload.errorMessage })
+      const newStatus = payload.status as VpnStatus
+      const { vpnStatus: prevStatus, vpnDisconnectingIntentionally } = get()
+      const droppedUnexpectedly = shouldWarnOnVpnDisconnect(prevStatus, newStatus, vpnDisconnectingIntentionally)
+      set({
+        vpnStatus: newStatus,
+        vpnErrorMessage: payload.errorMessage,
+        ...(droppedUnexpectedly && {
+          vpnDisconnectWarning:
+            "The VPN has disconnected — this app's connection is no longer tunneled. Reactivate it from Settings if you need it back."
+        })
+      })
     })
 
     const active = profiles.find((p) => p.id === activeId) ?? profiles[0]
@@ -567,7 +591,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!profile) return
     const currentActiveId = get().settings.activeVpnProfileId
     if (currentActiveId && currentActiveId !== id) {
+      set({ vpnDisconnectingIntentionally: true })
       await window.api.vpn.disconnect()
+      set({ vpnDisconnectingIntentionally: false })
     }
     get().updateSettings({ activeVpnProfileId: id })
     try {
@@ -578,7 +604,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   deactivateVpnProfile: async () => {
+    set({ vpnDisconnectingIntentionally: true })
     await window.api.vpn.disconnect()
+    set({ vpnDisconnectingIntentionally: false })
     get().updateSettings({ activeVpnProfileId: null })
-  }
+  },
+
+  dismissVpnDisconnectWarning: () => set({ vpnDisconnectWarning: null })
 }))

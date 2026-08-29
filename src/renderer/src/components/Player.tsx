@@ -4,6 +4,7 @@ import { useAppStore } from '../store/useAppStore'
 import { PlayerChannelBar } from './PlayerChannelBar'
 import { PlayerStatsOverlay } from './PlayerStatsOverlay'
 import { PlayerSeekBar } from './PlayerSeekBar'
+import { VpnDisconnectWarning } from './VpnDisconnectWarning'
 import { useTranscodeFallback } from '../lib/useTranscodeFallback'
 
 const MAX_NETWORK_RETRIES = 4
@@ -72,6 +73,9 @@ export function Player(): JSX.Element | null {
   const isOnline = useAppStore((s) => s.isOnline)
   const showChannelBar = useAppStore((s) => s.channelBarOpen)
   const setShowChannelBar = useAppStore((s) => s.setChannelBarOpen)
+  const vpnHasProfiles = useAppStore((s) => s.settings.vpnProfiles.length > 0)
+  const vpnStatus = useAppStore((s) => s.vpnStatus)
+  const openSettings = useAppStore((s) => s.openSettings)
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const hlsRef = useRef<Hls | null>(null)
@@ -578,6 +582,17 @@ export function Player(): JSX.Element | null {
     }
   }
 
+  // The Settings modal renders at App's root, outside this player's own DOM subtree — while
+  // truly fullscreen (the Fullscreen API only paints the fullscreened element and its
+  // descendants), opening it without exiting first would set the store's settingsOpen flag with
+  // nothing actually visible on screen to show for it.
+  async function openVpnSettingsFromPlayer(): Promise<void> {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen().catch(() => {})
+    }
+    openSettings()
+  }
+
   function togglePlayPause(): void {
     const video = videoRef.current
     if (!video) return
@@ -656,7 +671,27 @@ export function Player(): JSX.Element | null {
           setFullscreenHeaderVisible(false)
         }}
       >
-        <span className="player-title">{nowPlaying.name}</span>
+        <span className="player-title">
+          {nowPlaying.name}
+          {/* Same persistent warning-while-not-connected indicator as the top bar — visible
+              here too since the player can cover the whole screen, including in fullscreen,
+              where the top bar itself is never reachable. */}
+          {vpnHasProfiles && (
+            <button
+              className={`vpn-dot-button vpn-dot vpn-dot--${vpnStatus} player-title-vpn-dot`}
+              onClick={() => void openVpnSettingsFromPlayer()}
+              title={
+                (vpnStatus === 'connected'
+                  ? 'VPN connected'
+                  : vpnStatus === 'connecting'
+                    ? 'VPN connecting…'
+                    : vpnStatus === 'error'
+                      ? 'VPN error — check Settings'
+                      : 'VPN not connected') + ' — click to open VPN settings'
+              }
+            />
+          )}
+        </span>
         <div className="player-header-actions">
           {// Play/pause and skip are only added here for live TV — VOD/series already have full
           // scrubbing via the native <video controls> bar below, and duplicating a second set
@@ -763,6 +798,10 @@ export function Player(): JSX.Element | null {
         {showChannelBar && <PlayerChannelBar />}
         {statsVisible && <PlayerStatsOverlay videoRef={videoRef} hlsRef={hlsRef} />}
       </div>
+      {/* Rendered here too (App.tsx also mounts one) since .player-overlay is a fixed,
+          full-viewport layer that covers everything else, fullscreen or not — without this,
+          an unexpected VPN drop while actively watching would show no warning at all. */}
+      <VpnDisconnectWarning />
     </div>
   )
 }

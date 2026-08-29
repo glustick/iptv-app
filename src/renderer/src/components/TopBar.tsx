@@ -61,16 +61,17 @@ export function TopBar(): JSX.Element {
           that traffic isn't tunneled right now, not just a "currently connecting" indicator
           that disappears the moment you're not actively using it. */}
       {vpnHasProfiles && (
-        <span
-          className={`vpn-dot vpn-dot--${vpnStatus}`}
+        <button
+          className={`vpn-dot-button vpn-dot vpn-dot--${vpnStatus}`}
+          onClick={openSettings}
           title={
-            vpnStatus === 'connected'
+            (vpnStatus === 'connected'
               ? 'VPN connected'
               : vpnStatus === 'connecting'
                 ? 'VPN connecting…'
                 : vpnStatus === 'error'
                   ? 'VPN error — check Settings'
-                  : 'VPN not connected'
+                  : 'VPN not connected') + ' — click to open VPN settings'
           }
         />
       )}

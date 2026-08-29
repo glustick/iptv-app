@@ -1147,6 +1147,19 @@ app.whenReady().then(async () => {
   )
   ipcMain.handle('vpn:disconnect', () => stopVpn())
   ipcMain.handle('vpn:getStatus', () => ({ status: vpnRuntime.status, errorMessage: vpnRuntime.errorMessage }))
+  ipcMain.handle('vpn:openLog', async () => {
+    // vpnRuntime.tempDir (and the log file in it) only exists for the current connection
+    // attempt — cleaned up on disconnect or on a startVpn() failure, so there's nothing to open
+    // once the attempt is fully over. Genuinely useful mid-attempt though: a tunnel stuck
+    // reconnecting (e.g. the real DNS-sinkhole case found during testing) keeps its process —
+    // and its live-growing log — running the whole time, which the error message alone doesn't
+    // capture since there's no terminal error yet to attach it to.
+    if (!vpnRuntime.tempDir) return { ok: false, message: 'No active VPN connection to show a log for.' }
+    const logPath = join(vpnRuntime.tempDir, 'openvpn.log')
+    if (!existsSync(logPath)) return { ok: false, message: 'Log file not written yet — try again in a moment.' }
+    const error = await shell.openPath(logPath)
+    return error ? { ok: false, message: error } : { ok: true }
+  })
   ipcMain.handle('vpn:removeImportedConfig', async (_event, configPath: string) => {
     // Only ever delete inside our own vpn-profiles import directory — a profile added before
     // this import-on-add behavior existed can still have configPath pointing anywhere the user

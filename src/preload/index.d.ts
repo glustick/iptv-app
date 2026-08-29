@@ -38,6 +38,7 @@ interface VpnAPI {
   disconnect: () => Promise<void>
   removeImportedConfig: (configPath: string) => Promise<void>
   getStatus: () => Promise<VpnStatusPayload>
+  openLog: () => Promise<{ ok: boolean; message?: string }>
   onStatusChange: (callback: (status: VpnStatusPayload) => void) => () => void
 }
 

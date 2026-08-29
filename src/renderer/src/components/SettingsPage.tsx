@@ -25,6 +25,10 @@ export function SettingsPage(): JSX.Element | null {
   const deactivateVpnProfile = useAppStore((s) => s.deactivateVpnProfile)
 
   const [pinDraft, setPinDraft] = useState('')
+  // Only set when opening the log fails (no active connection, or the file hasn't been written
+  // yet) — shell.openPath() handles the success case itself by opening the OS's default viewer,
+  // so there's nothing to show here when it works.
+  const [vpnLogMessage, setVpnLogMessage] = useState<string | null>(null)
   // Keyed by profile id — mirrors the PIN's own draft-then-explicit-save pattern (avoids
   // encrypting/writing to disk on every keystroke), just one draft per saved VPN profile
   // instead of a single global one.
@@ -58,6 +62,11 @@ export function SettingsPage(): JSX.Element | null {
 
   function clearPin(): void {
     updateSettings({ parentalPin: null, lockedCategoryIds: [] })
+  }
+
+  async function viewVpnLog(): Promise<void> {
+    const result = await window.api.vpn.openLog()
+    setVpnLogMessage(result.ok ? null : (result.message ?? 'Could not open the log file.'))
   }
 
   async function addVpnConfigFile(): Promise<void> {
@@ -225,6 +234,13 @@ export function SettingsPage(): JSX.Element | null {
                             Activate
                           </button>
                         )}
+                        {/* Only the active profile has a live temp dir (and log file) to show —
+                            cleaned up as soon as it's deactivated or a connection attempt fails. */}
+                        {isActive && (
+                          <button className="secondary-button" onClick={() => void viewVpnLog()}>
+                            View Log
+                          </button>
+                        )}
                         <button
                           className="secondary-button"
                           onClick={() => (isEditing ? setEditingProfileId(null) : startEditingVpnProfile(profile))}
@@ -237,6 +253,7 @@ export function SettingsPage(): JSX.Element | null {
                       </div>
                     </div>
                     {isActive && vpnStatus === 'error' && <p className="settings-hint">Error: {vpnErrorMessage}</p>}
+                    {isActive && vpnLogMessage && <p className="settings-hint">{vpnLogMessage}</p>}
                     {isEditing && (
                       <div className="vpn-profile-edit">
                         <label>
