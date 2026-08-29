@@ -202,6 +202,32 @@ describe('serveTranscodeFile', () => {
     await service.stopTranscode('s1')
   })
 
+  // A real live test against a real subtitle-carrying title caught this the hard way: without
+  // a MIME entry for .vtt, every webvtt cue file ffmpeg writes (playlistN.vtt, referenced from
+  // playlist_vtt.m3u8) 404s, and hls.js doesn't just play without captions — it treats that as
+  // fatal and abandons the whole session (fragLoadError, gave up after retries), breaking
+  // playback entirely for any title that happens to have subtitles.
+  it('serves a WebVTT subtitle cue file with the right content type', async () => {
+    const service = track(makeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG), subtitleGraceMs: 2000 }))
+    const result = await withFakeFfmpegMode('success_with_subtitles', () =>
+      service.startTranscode('irrelevant-source', true, 's1')
+    )
+    const dir = join(result.playlistPath, '..')
+    writeFileSync(join(dir, 'playlist0.vtt'), 'WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nLine one\n')
+    let headers: Record<string, string> = {}
+    const res = {
+      writeHead: (_code: number, h: Record<string, string>) => {
+        headers = h
+      },
+      end: () => {}
+    } as unknown as ServerResponse
+
+    await service.serveTranscodeFile('/__transcode/s1/playlist0.vtt', res)
+
+    expect(headers['content-type']).toBe('text/vtt')
+    await service.stopTranscode('s1')
+  })
+
   it('returns 404 for a known session but a filename with an unsupported extension', async () => {
     const service = track(makeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG) }))
     await withFakeFfmpegMode('success', () => service.startTranscode('irrelevant-source', false, 's1'))

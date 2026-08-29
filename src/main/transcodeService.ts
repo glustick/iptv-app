@@ -60,7 +60,12 @@ export interface TranscodeService {
 
 const TRANSCODE_MIME_TYPES: Record<string, string> = {
   '.m3u8': 'application/vnd.apple.mpegurl',
-  '.ts': 'video/mp2t'
+  '.ts': 'video/mp2t',
+  // ffmpeg's webvtt HLS muxer writes per-segment subtitle cue files (playlistN.vtt) referenced
+  // from playlist_vtt.m3u8 — missing this entry 404s every one of them, which a live test
+  // against a real subtitle-carrying title showed cascades into hls.js abandoning the whole
+  // session (fragLoadError, gave up after retries) rather than just playing without captions.
+  '.vtt': 'text/vtt'
 }
 
 function sleep(ms: number): Promise<void> {
