@@ -1064,14 +1064,18 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    shell.openExternal(details.url).catch((err) => console.error('[main] failed to open external URL:', err))
     return { action: 'deny' }
   })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+    mainWindow
+      .loadURL(process.env['ELECTRON_RENDERER_URL'])
+      .catch((err) => console.error('[main] failed to load dev server URL:', err))
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    mainWindow
+      .loadFile(join(__dirname, '../renderer/index.html'))
+      .catch((err) => console.error('[main] failed to load packaged renderer:', err))
   }
 }
 
@@ -1230,6 +1234,8 @@ app.whenReady().then(async () => {
       console.error('[auto-update] check failed:', err)
     })
   }
+}).catch((err) => {
+  console.error('[main] app initialization failed:', err)
 })
 
 app.on('window-all-closed', () => {

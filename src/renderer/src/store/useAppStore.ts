@@ -43,7 +43,11 @@ export type ConnectionStatus = 'idle' | 'connecting' | 'ready' | 'error'
 // level (not store state) since it's plumbing, not something any component needs to render.
 const MAX_CONCURRENT_SHORT_EPG_FETCHES = 4
 let activeShortEpgFetches = 0
-const shortEpgQueue: Array<() => void> = []
+// `| Promise<void>` reflects reality (every entry pushed below is actually async) rather than
+// being a workaround — runNextShortEpgFetch() calling one is deliberately fire-and-forget, since
+// each entry's own try/finally (see loadShortEpg) already handles its completion and chains the
+// next queued fetch itself.
+const shortEpgQueue: Array<() => void | Promise<void>> = []
 const shortEpgInFlight = new Set<number>()
 
 function runNextShortEpgFetch(): void {
@@ -51,7 +55,7 @@ function runNextShortEpgFetch(): void {
   const next = shortEpgQueue.shift()
   if (!next) return
   activeShortEpgFetches++
-  next()
+  void next()
 }
 
 export interface NowPlaying {
@@ -73,6 +77,13 @@ interface AppState {
   status: ConnectionStatus
   error: string | null
   isOnline: boolean
+  // From authenticate()'s own user_info.max_connections (already fetched at login, no extra
+  // request) — an account capped at a single connection puts Live TV's and VOD's audio-fix
+  // transcode fallbacks (see useTranscodeFallback.ts) in the same failure class: ffmpeg opening
+  // a second connection to remux audio has nothing to share the account's one slot with
+  // whatever's already playing. Surfaced in Player.tsx so a slow or failed transcode says why,
+  // instead of just a flat timeout/error message that looks identical to any other cause.
+  singleConnectionAccount: boolean
 
   viewMode: ViewMode
   categories: Category[]
@@ -187,6 +198,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   status: 'idle',
   error: null,
   isOnline: typeof navigator === 'undefined' ? true : navigator.onLine,
+  singleConnectionAccount: false,
 
   viewMode: 'live',
   categories: [],
@@ -225,50 +237,61 @@ export const useAppStore = create<AppState>((set, get) => ({
   vpnDisconnectingIntentionally: false,
   vpnStreamRouteWarning: null,
 
+  // Wrapped in its own try/catch (unlike most of this store's other async actions, which rely
+  // on the caller to handle rejection) because App.tsx calls this fire-and-forget from a mount
+  // effect — a useEffect callback can't itself be async, so there's no caller-side await to
+  // reject into. Without this, a storage read failing here (before connect()'s own try/catch
+  // is ever reached) would leave the app silently stuck on whatever the initial screen is,
+  // with nothing but a console error to say why.
   init: async () => {
-    const [profiles, favorites, recentlyWatched, episodeProgress, settings] = await Promise.all([
-      loadProfiles(),
-      loadFavorites(),
-      loadRecentlyWatched(),
-      loadEpisodeProgress(),
-      loadSettings()
-    ])
-    const activeId = await loadActiveProfileId()
-    set({ profiles, favorites, recentlyWatched, episodeProgress, settings })
+    try {
+      const [profiles, favorites, recentlyWatched, episodeProgress, settings] = await Promise.all([
+        loadProfiles(),
+        loadFavorites(),
+        loadRecentlyWatched(),
+        loadEpisodeProgress(),
+        loadSettings()
+      ])
+      const activeId = await loadActiveProfileId()
+      set({ profiles, favorites, recentlyWatched, episodeProgress, settings })
 
-    if (typeof window !== 'undefined') {
-      window.addEventListener('online', () => set({ isOnline: true }))
-      window.addEventListener('offline', () => set({ isOnline: false }))
-    }
+      if (typeof window !== 'undefined') {
+        window.addEventListener('online', () => set({ isOnline: true }))
+        window.addEventListener('offline', () => set({ isOnline: false }))
+      }
 
-    // Pushed from main (see src/main/index.ts's vpn:status-changed) rather than polled, since
-    // OpenVPN's own management-interface connection is what actually knows the tunnel's state
-    // in real time — polling would mean either missing transitions between polls or hammering
-    // an IPC round-trip just to notice a state that already changed.
-    window.api?.vpn?.onStatusChange((payload) => {
-      const newStatus = payload.status as VpnStatus
-      const { vpnStatus: prevStatus, vpnDisconnectingIntentionally } = get()
-      const droppedUnexpectedly = shouldWarnOnVpnDisconnect(prevStatus, newStatus, vpnDisconnectingIntentionally)
-      set({
-        vpnStatus: newStatus,
-        vpnErrorMessage: payload.errorMessage,
-        ...(droppedUnexpectedly && {
-          vpnDisconnectWarning:
-            "The VPN has disconnected — this app's connection is no longer tunneled. Reactivate it from Settings if you need it back."
+      // Pushed from main (see src/main/index.ts's vpn:status-changed) rather than polled, since
+      // OpenVPN's own management-interface connection is what actually knows the tunnel's state
+      // in real time — polling would mean either missing transitions between polls or hammering
+      // an IPC round-trip just to notice a state that already changed.
+      window.api?.vpn?.onStatusChange((payload) => {
+        const newStatus = payload.status as VpnStatus
+        const { vpnStatus: prevStatus, vpnDisconnectingIntentionally } = get()
+        const droppedUnexpectedly = shouldWarnOnVpnDisconnect(prevStatus, newStatus, vpnDisconnectingIntentionally)
+        set({
+          vpnStatus: newStatus,
+          vpnErrorMessage: payload.errorMessage,
+          ...(droppedUnexpectedly && {
+            vpnDisconnectWarning:
+              "The VPN has disconnected — this app's connection is no longer tunneled. Reactivate it from Settings if you need it back."
+          })
         })
       })
-    })
 
-    // See vpn:stream-route-warning in src/main/index.ts — pushed the same way as vpn:status-
-    // changed, since the main process is what actually sees each proxied request's redirect
-    // chain and can tell whether a hop landed outside the tunneled host.
-    window.api?.vpn?.onStreamRouteWarning((payload) => {
-      set({ vpnStreamRouteWarning: payload.message })
-    })
+      // See vpn:stream-route-warning in src/main/index.ts — pushed the same way as vpn:status-
+      // changed, since the main process is what actually sees each proxied request's redirect
+      // chain and can tell whether a hop landed outside the tunneled host.
+      window.api?.vpn?.onStreamRouteWarning((payload) => {
+        set({ vpnStreamRouteWarning: payload.message })
+      })
 
-    const active = profiles.find((p) => p.id === activeId) ?? profiles[0]
-    if (active) {
-      await get().connect(active.id)
+      const active = profiles.find((p) => p.id === activeId) ?? profiles[0]
+      if (active) {
+        await get().connect(active.id)
+      }
+    } catch (err) {
+      console.error('[init] failed to load local app state:', err)
+      set({ status: 'error', error: err instanceof Error ? err.message : 'Failed to start the app' })
     }
   },
 
@@ -312,8 +335,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       await window.api.proxy.setTarget(profile.server)
       const proxyBase = await window.api.proxy.getBaseUrl()
       const client = new XtreamClient(proxyBase, profile.username, profile.password)
-      await client.authenticate()
-      set({ client, status: 'ready' })
+      const auth = await client.authenticate()
+      set({ client, status: 'ready', singleConnectionAccount: auth.user_info.max_connections === '1' })
       await saveActiveProfileId(profileId)
       await get().setViewMode('live')
       // Deliberately does NOT auto-reconnect the VPN here, even if a profile was left active
@@ -340,6 +363,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       client: null,
       activeProfile: null,
       status: 'idle',
+      singleConnectionAccount: false,
       categories: [],
       liveStreams: [],
       vodStreams: [],
@@ -391,7 +415,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ pinPromptCategoryId: categoryId, pinPromptError: null })
       return
     }
-    get().selectCategory(categoryId)
+    // selectCategory catches its own errors internally (sets `error` in the store).
+    void get().selectCategory(categoryId)
   },
 
   selectCategory: async (categoryId) => {
@@ -471,7 +496,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const withoutDupe = recentlyWatched.filter((e) => !(e.kind === kind && e.streamId === streamId))
     const updated = [entry, ...withoutDupe].slice(0, 30)
     set({ recentlyWatched: updated })
-    saveRecentlyWatched(updated)
+    saveRecentlyWatched(updated).catch((err) => console.error('[store] failed to save recently-watched:', err))
   },
 
   playTimeshift: (channel, program) => {
@@ -511,7 +536,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   openChannelPreview: (channel) => {
     set({ previewChannel: channel })
-    get().loadShortEpg(channel.stream_id)
+    // loadShortEpg catches its own errors internally (EPG is best-effort) and always resolves.
+    void get().loadShortEpg(channel.stream_id)
   },
 
   closeChannelPreview: () => set({ previewChannel: null }),
@@ -522,7 +548,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const exists = favorites.some((f) => favoriteKey(f) === key)
     const updated = exists ? favorites.filter((f) => favoriteKey(f) !== key) : [entry, ...favorites]
     set({ favorites: updated })
-    saveFavorites(updated)
+    saveFavorites(updated).catch((err) => console.error('[store] failed to save favorites:', err))
   },
 
   isFavorited: (kind, id) => get().favorites.some((f) => favoriteKey(f) === `${kind}:${id}`),
@@ -533,13 +559,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       [key]: { positionSeconds, durationSeconds, updatedAt: Date.now() }
     }
     set({ episodeProgress: updated })
-    saveEpisodeProgress(updated)
+    saveEpisodeProgress(updated).catch((err) => console.error('[store] failed to save episode progress:', err))
   },
 
   updateSettings: (patch) => {
     const updated = { ...get().settings, ...patch }
     set({ settings: updated })
-    saveSettings(updated)
+    saveSettings(updated).catch((err) => console.error('[store] failed to save settings:', err))
   },
 
   setCategoryLocked: (categoryId, locked) => {
@@ -562,7 +588,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         pinPromptCategoryId: null,
         pinPromptError: null
       })
-      get().selectCategory(pinPromptCategoryId)
+      // selectCategory catches its own errors internally (sets `error` in the store).
+      void get().selectCategory(pinPromptCategoryId)
     } else {
       set({ pinPromptError: 'Incorrect PIN' })
     }

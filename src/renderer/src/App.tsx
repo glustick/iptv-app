@@ -21,7 +21,10 @@ function App(): JSX.Element {
   const retryConnection = useAppStore((s) => s.retryConnection)
 
   useEffect(() => {
-    init()
+    // init() catches its own errors internally (see useAppStore.ts) and always resolves —
+    // nothing here needs to react to rejection, just to mark that intentionally for the
+    // no-floating-promises lint rule.
+    void init()
   }, [init])
 
   useEffect(() => window.api.app.onOpenAbout(openAbout), [openAbout])

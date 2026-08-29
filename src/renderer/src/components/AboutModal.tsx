@@ -15,7 +15,7 @@ export function AboutModal(): JSX.Element | null {
 
   useEffect(() => {
     if (!aboutOpen) return
-    window.api.app.getInfo().then(setInfo)
+    window.api.app.getInfo().then(setInfo).catch((err) => console.error('[about] failed to load app info:', err))
   }, [aboutOpen])
 
   if (!aboutOpen) return null

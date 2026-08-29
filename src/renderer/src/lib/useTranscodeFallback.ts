@@ -55,7 +55,11 @@ export function useTranscodeFallback(): {
     transcodedUrlRef.current = null
     const staleSessionId = transcodeSessionIdRef.current
     transcodeSessionIdRef.current = null
-    if (staleSessionId) window.api.transcode.stop(staleSessionId)
+    if (staleSessionId) {
+      window.api.transcode
+        .stop(staleSessionId)
+        .catch((err) => console.error('[transcode] failed to stop abandoned session:', err))
+    }
   }, [])
 
   // Call at the top of every hls-(re)attach run — a fresh attempt (first try, or the reload

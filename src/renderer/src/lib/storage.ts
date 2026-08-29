@@ -145,7 +145,9 @@ export async function loadSettings(): Promise<AppSettings> {
   // Migrate immediately rather than waiting for some unrelated setting to change next —
   // otherwise a user who never opens Settings again keeps existing plaintext secrets on disk
   // indefinitely even after upgrading to a build that knows how to encrypt them.
-  if (needsMigration) saveSettings(result)
+  if (needsMigration) {
+    saveSettings(result).catch((err) => console.error('[storage] failed to migrate legacy plaintext secrets:', err))
+  }
   return result
 }
 

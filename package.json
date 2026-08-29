@@ -1,8 +1,8 @@
 {
   "name": "iptv-app",
   "productName": "AllisonIPTV",
-  "version": "0.7.8",
-  "buildNumber": 21,
+  "version": "0.7.9",
+  "buildNumber": 22,
   "description": "Desktop IPTV client for Xtream Codes providers with live TV, VOD, series and EPG guide support",
   "main": "./out/main/index.js",
   "author": "",
@@ -14,6 +14,7 @@
     "preview": "electron-vite preview",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "lint": "eslint .",
     "test": "vitest run",
     "build:mac": "electron-vite build && electron-builder --mac",
     "build:win": "electron-vite build && electron-builder --win",
@@ -42,7 +43,9 @@
     "electron": "^31.3.1",
     "electron-builder": "^24.13.3",
     "electron-vite": "^2.3.0",
+    "eslint": "^10.9.1",
     "typescript": "^5.5.4",
+    "typescript-eslint": "^8.68.0",
     "vite": "^5.4.0",
     "vitest": "^4.1.11"
   },

@@ -1192,6 +1192,7 @@ body.resizing-col {
 }
 
 .epg-grid {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -1241,7 +1242,10 @@ body.resizing-col {
 }
 
 .epg-grid-nav {
-  width: 128px;
+  /* Kept in lockstep with .epg-row-channel's width (both read the same custom property, set
+     inline by EpgGrid.tsx from the drag-resizable epgChannelColumnWidth setting) so the time
+     header's nav buttons stay aligned with where each row's timeline actually starts. */
+  width: var(--epg-channel-col-width, 128px);
   flex-shrink: 0;
   display: flex;
   gap: 4px;
@@ -1299,7 +1303,7 @@ body.resizing-col {
 }
 
 .epg-row-channel {
-  width: 128px;
+  width: var(--epg-channel-col-width, 128px);
   flex-shrink: 0;
   display: flex;
   align-items: center;

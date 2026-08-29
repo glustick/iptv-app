@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { List, useListRef } from 'react-window'
 import { useAppStore } from '../store/useAppStore'
+import { useResizableWidth } from '../lib/useResizableWidth'
 import { pct } from '../lib/epgTime'
 import type { LiveStream, ShortEpgProgram, ClockFormat } from '../lib/types'
 
@@ -8,6 +9,11 @@ const HOUR_MS = 3_600_000
 const WINDOW_HOURS = 3
 const MS_PER_SCROLL_UNIT = 30_000 // 30 seconds of time-shift per wheel delta unit
 const MAX_WINDOW_OFFSET_MS = 24 * HOUR_MS // soft clamp — get_short_epg's own window is far narrower than this anyway
+// Lower bound still fits the icon + a few characters of ellipsized name; upper bound leaves at
+// least some width for the timeline itself in the narrowest real layout (the fullscreen channel
+// bar, which shares this same column width — see epgChannelColumnWidth in lib/types.ts).
+const CHANNEL_COLUMN_MIN_WIDTH = 90
+const CHANNEL_COLUMN_MAX_WIDTH = 320
 
 function formatHour(t: number, clockFormat: ClockFormat): string {
   return new Date(t).toLocaleTimeString([], { hour: 'numeric', hour12: clockFormat === '12h' })
@@ -57,7 +63,8 @@ function EpgRow({
   // that block the full multi-channel xmltv.php guide (this app's own test account 403s
   // on it): get_short_epg is per-channel and part of the core Xtream API instead.
   useEffect(() => {
-    loadShortEpg(channel.stream_id)
+    // loadShortEpg catches its own errors internally (EPG is best-effort) and always resolves.
+    void loadShortEpg(channel.stream_id)
   }, [channel.stream_id, loadShortEpg])
 
   const listings = shortEpgByStream[channel.stream_id]
@@ -158,6 +165,21 @@ export function EpgGrid({
   const listRef = useListRef(null)
   const rootRef = useRef<HTMLDivElement>(null)
 
+  // Shared by the main docked guide and the fullscreen channel-swap overlay (both render this
+  // same component) — persisted so a name that was clipped once stays legible everywhere this
+  // grid shows up, not just in whichever context it was resized from.
+  const epgChannelColumnWidth = useAppStore((s) => s.settings.epgChannelColumnWidth)
+  const updateSettings = useAppStore((s) => s.updateSettings)
+  const { width: channelColumnWidth, startDrag: startChannelColumnDrag } = useResizableWidth(
+    epgChannelColumnWidth,
+    1,
+    {
+      min: CHANNEL_COLUMN_MIN_WIDTH,
+      max: CHANNEL_COLUMN_MAX_WIDTH,
+      onCommit: (w) => updateSettings({ epgChannelColumnWidth: w })
+    }
+  )
+
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 30_000)
     return () => clearInterval(interval)
@@ -170,7 +192,6 @@ export function EpgGrid({
   // is the reliable way to get the same effect for a dynamically-mounted element.
   useEffect(() => {
     if (autoFocus) rootRef.current?.focus()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // Keeps the focused row in range as the channel list itself changes (a search filter
@@ -234,7 +255,19 @@ export function EpgGrid({
       tabIndex={0}
       onWheel={handleWheel}
       onKeyDown={handleKeyDown}
+      style={{ '--epg-channel-col-width': `${channelColumnWidth}px` } as CSSProperties}
     >
+      {/* Spans the header and every row at once (rather than a per-row handle) since they all
+          share this one width — dragging from any point along the column boundary resizes all
+          of them together. Positioned like Sidebar's own resize-handle--right, just with a
+          dynamic offset instead of a fixed one since this column's width isn't a static CSS
+          value. */}
+      <div
+        className="resize-handle"
+        style={{ left: channelColumnWidth - 4 }}
+        onMouseDown={startChannelColumnDrag}
+        title="Drag to resize the channel column"
+      />
       <div className="epg-time-header">
         <div className="epg-grid-nav">
           <button onClick={() => setWindowOffsetMs((o) => Math.max(-MAX_WINDOW_OFFSET_MS, o - HOUR_MS))} title="Earlier">

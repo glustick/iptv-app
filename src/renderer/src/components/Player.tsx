@@ -45,6 +45,12 @@ function formatElapsed(seconds: number): string {
   if (seconds < 60) return `${seconds}s`
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
 }
+// Real observed probe times against a single-connection test account (0.6.3) ranged 25-90s just
+// to open the source, before ffmpeg writes a frame — well within that range isn't yet unusual.
+// 60s sits past the common case but still comfortably inside the 240s deadline, so this fires
+// while there's genuinely still time left for the account-cap explanation to be useful, rather
+// than only once the wait is already effectively over.
+const SINGLE_CONNECTION_HINT_AFTER_SECONDS = 60
 // Click-zone thresholds for fullscreen mode, in pixels from the respective screen edge —
 // roughly matched to the header's own height and the channel bar's (see CHANNEL_BAR height in
 // global.css) so each zone lines up with the chrome it reveals rather than an arbitrary split.
@@ -76,6 +82,7 @@ export function Player(): JSX.Element | null {
   const vpnHasProfiles = useAppStore((s) => s.settings.vpnProfiles.length > 0)
   const vpnStatus = useAppStore((s) => s.vpnStatus)
   const openSettings = useAppStore((s) => s.openSettings)
+  const singleConnectionAccount = useAppStore((s) => s.singleConnectionAccount)
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const hlsRef = useRef<Hls | null>(null)
@@ -375,7 +382,13 @@ export function Player(): JSX.Element | null {
           tryFallbackForSilentAudio(
             nowPlaying.url,
             () => setReloadTick((t) => t + 1),
-            (message) => setPlaybackError(`Audio codec not supported by this player, and automatic transcoding failed: ${message}`)
+            (message) =>
+              setPlaybackError(
+                `Audio codec not supported by this player, and automatic transcoding failed: ${message}` +
+                  (singleConnectionAccount
+                    ? ' (this account only allows one connection at a time, which can cause exactly this)'
+                    : '')
+              )
           )
         }, CONNECTION_RELEASE_DELAY_MS)
       }, SILENT_AUDIO_CHECK_INTERVAL_MS)
@@ -396,7 +409,6 @@ export function Player(): JSX.Element | null {
         hlsRef.current = null
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nowPlaying, bufferProfile, reloadTick])
 
   // The channel bar auto-hides after a few seconds of inactivity, like a real set-top
@@ -763,6 +775,15 @@ export function Player(): JSX.Element | null {
               {nowPlaying.kind === 'live'
                 ? 'Fixing audio for this channel…'
                 : `Fixing audio for this title… this can take a minute or two on a slow connection (${formatElapsed(transcodeElapsedSeconds)})`}
+              {nowPlaying.kind !== 'live' &&
+                singleConnectionAccount &&
+                transcodeElapsedSeconds >= SINGLE_CONNECTION_HINT_AFTER_SECONDS && (
+                  <>
+                    <br />
+                    This account only allows one connection at a time — if something else is using it, this fix
+                    can take longer than usual, or fail.
+                  </>
+                )}
             </span>
           </div>
         )}

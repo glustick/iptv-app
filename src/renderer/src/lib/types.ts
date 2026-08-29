@@ -166,6 +166,10 @@ export interface AppSettings {
   sidebarWidth: number
   detailPanelWidth: number
   epgRowDensity: EpgRowDensity
+  // Width of the EPG grid's channel-name column (both the main docked guide and the fullscreen
+  // channel-swap overlay share this — same EpgGrid component, same setting) — drag-resizable so
+  // a long channel name isn't clipped by ellipsis at the default width.
+  epgChannelColumnWidth: number
   playerVolume: number
   playerMuted: boolean
   vpnProfiles: VpnProfile[]
@@ -180,6 +184,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   sidebarWidth: 220,
   detailPanelWidth: 560,
   epgRowDensity: 'comfortable',
+  epgChannelColumnWidth: 128,
   playerVolume: 1,
   playerMuted: false,
   vpnProfiles: [],
