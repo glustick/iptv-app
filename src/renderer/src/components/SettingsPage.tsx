@@ -1,6 +1,12 @@
 import { useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
-import type { BufferProfile, ClockFormat } from '../lib/types'
+import type { BufferProfile, ClockFormat, VpnProfile } from '../lib/types'
+
+interface VpnDraft {
+  name: string
+  username: string
+  password: string
+}
 
 export function SettingsPage(): JSX.Element | null {
   const settingsOpen = useAppStore((s) => s.settingsOpen)
@@ -10,10 +16,29 @@ export function SettingsPage(): JSX.Element | null {
   const categories = useAppStore((s) => s.categories)
   const viewMode = useAppStore((s) => s.viewMode)
   const setCategoryLocked = useAppStore((s) => s.setCategoryLocked)
+  const vpnStatus = useAppStore((s) => s.vpnStatus)
+  const vpnErrorMessage = useAppStore((s) => s.vpnErrorMessage)
+  const addVpnProfile = useAppStore((s) => s.addVpnProfile)
+  const updateVpnProfile = useAppStore((s) => s.updateVpnProfile)
+  const removeVpnProfile = useAppStore((s) => s.removeVpnProfile)
+  const activateVpnProfile = useAppStore((s) => s.activateVpnProfile)
+  const deactivateVpnProfile = useAppStore((s) => s.deactivateVpnProfile)
 
   const [pinDraft, setPinDraft] = useState('')
+  // Keyed by profile id — mirrors the PIN's own draft-then-explicit-save pattern (avoids
+  // encrypting/writing to disk on every keystroke), just one draft per saved VPN profile
+  // instead of a single global one.
+  const [vpnDrafts, setVpnDrafts] = useState<Record<string, VpnDraft>>({})
 
   if (!settingsOpen) return null
+
+  function draftFor(profile: VpnProfile): VpnDraft {
+    return vpnDrafts[profile.id] ?? { name: profile.name, username: profile.username ?? '', password: profile.password ?? '' }
+  }
+
+  function setDraft(id: string, patch: Partial<VpnDraft>, profile: VpnProfile): void {
+    setVpnDrafts((prev) => ({ ...prev, [id]: { ...draftFor(profile), ...patch } }))
+  }
 
   function setBufferProfile(bufferProfile: BufferProfile): void {
     updateSettings({ bufferProfile })
@@ -30,6 +55,24 @@ export function SettingsPage(): JSX.Element | null {
 
   function clearPin(): void {
     updateSettings({ parentalPin: null, lockedCategoryIds: [] })
+  }
+
+  async function addVpnConfigFile(): Promise<void> {
+    const path = await window.api.vpn.selectConfigFile()
+    if (!path) return
+    // Not a filesystem call — just the last path segment for display/default naming, so the
+    // settings form shows a readable filename instead of the full absolute path.
+    const configName = path.split(/[/\\]/).pop() ?? path
+    await addVpnProfile({ name: configName, configPath: path, configName, username: null, password: null })
+  }
+
+  function saveVpnProfileDraft(profile: VpnProfile): void {
+    const draft = draftFor(profile)
+    void updateVpnProfile(profile.id, {
+      name: draft.name.trim() || profile.configName,
+      username: draft.username.trim() || null,
+      password: draft.password.trim() || null
+    })
   }
 
   return (
@@ -125,6 +168,77 @@ export function SettingsPage(): JSX.Element | null {
                 Set PIN
               </button>
             </div>
+          )}
+        </section>
+
+        <section className="settings-section">
+          <h3>VPN</h3>
+          <p className="settings-hint">
+            Requires OpenVPN installed on this machine — this app doesn't bundle it. Only this app's own
+            connection to your Xtream server uses the tunnel; everything else on this computer keeps using
+            your normal connection. Connecting prompts for your OS password or admin approval, since creating a
+            tunnel requires elevated privileges. Only one VPN configuration can be active at a time — activating
+            a different one disconnects whichever is currently running first.
+          </p>
+          <button className="secondary-button" onClick={() => void addVpnConfigFile()}>
+            + Add VPN configuration
+          </button>
+          {settings.vpnProfiles.length > 0 && (
+            <ul className="vpn-profile-list">
+              {settings.vpnProfiles.map((profile) => {
+                const isActive = settings.activeVpnProfileId === profile.id
+                const draft = draftFor(profile)
+                return (
+                  <li key={profile.id} className="vpn-profile-row">
+                    <div className="vpn-profile-header">
+                      {isActive && (
+                        <span
+                          className={`vpn-dot vpn-dot--${vpnStatus}`}
+                          title={vpnStatus === 'error' ? (vpnErrorMessage ?? 'Error') : vpnStatus}
+                        />
+                      )}
+                      <input
+                        className="vpn-profile-name"
+                        value={draft.name}
+                        onChange={(e) => setDraft(profile.id, { name: e.target.value }, profile)}
+                        onBlur={() => saveVpnProfileDraft(profile)}
+                      />
+                      <span className="vpn-config-name">{profile.configName}</span>
+                    </div>
+                    <div className="pin-set-row">
+                      <input
+                        type="text"
+                        placeholder="Username (if required)"
+                        value={draft.username}
+                        onChange={(e) => setDraft(profile.id, { username: e.target.value }, profile)}
+                      />
+                      <input
+                        type="password"
+                        placeholder="Password (if required)"
+                        value={draft.password}
+                        onChange={(e) => setDraft(profile.id, { password: e.target.value }, profile)}
+                      />
+                      <button onClick={() => saveVpnProfileDraft(profile)}>Save</button>
+                    </div>
+                    {isActive && vpnStatus === 'error' && <p className="settings-hint">Error: {vpnErrorMessage}</p>}
+                    <div className="vpn-profile-actions">
+                      {isActive ? (
+                        <button className="secondary-button" onClick={() => void deactivateVpnProfile()}>
+                          Deactivate
+                        </button>
+                      ) : (
+                        <button className="secondary-button" onClick={() => void activateVpnProfile(profile.id)}>
+                          Activate
+                        </button>
+                      )}
+                      <button className="danger-link" onClick={() => void removeVpnProfile(profile.id)}>
+                        Remove
+                      </button>
+                    </div>
+                  </li>
+                )
+              })}
+            </ul>
           )}
         </section>
       </div>

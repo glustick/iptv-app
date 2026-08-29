@@ -27,7 +27,9 @@ import type {
   FavoriteEntry,
   RecentlyWatchedEntry,
   EpisodeProgress,
-  AppSettings
+  AppSettings,
+  VpnStatus,
+  VpnProfile
 } from '../lib/types'
 import { DEFAULT_SETTINGS, favoriteKey } from '../lib/types'
 
@@ -106,6 +108,9 @@ interface AppState {
   settingsOpen: boolean
   aboutOpen: boolean
 
+  vpnStatus: VpnStatus
+  vpnErrorMessage: string | null
+
   init: () => Promise<void>
   addProfile: (profile: Omit<XtreamProfile, 'id'>) => Promise<void>
   removeProfile: (id: string) => Promise<void>
@@ -148,6 +153,12 @@ interface AppState {
   closeSettings: () => void
   openAbout: () => void
   closeAbout: () => void
+
+  addVpnProfile: (profile: Omit<VpnProfile, 'id'>) => Promise<void>
+  updateVpnProfile: (id: string, patch: Partial<Omit<VpnProfile, 'id'>>) => Promise<void>
+  removeVpnProfile: (id: string) => Promise<void>
+  activateVpnProfile: (id: string) => Promise<void>
+  deactivateVpnProfile: () => Promise<void>
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -189,6 +200,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   settingsOpen: false,
   aboutOpen: false,
 
+  vpnStatus: 'disconnected',
+  vpnErrorMessage: null,
+
   init: async () => {
     const [profiles, favorites, recentlyWatched, episodeProgress, settings] = await Promise.all([
       loadProfiles(),
@@ -204,6 +218,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       window.addEventListener('online', () => set({ isOnline: true }))
       window.addEventListener('offline', () => set({ isOnline: false }))
     }
+
+    // Pushed from main (see src/main/index.ts's vpn:status-changed) rather than polled, since
+    // OpenVPN's own management-interface connection is what actually knows the tunnel's state
+    // in real time — polling would mean either missing transitions between polls or hammering
+    // an IPC round-trip just to notice a state that already changed.
+    window.api?.vpn?.onStatusChange((payload) => {
+      set({ vpnStatus: payload.status as VpnStatus, vpnErrorMessage: payload.errorMessage })
+    })
 
     const active = profiles.find((p) => p.id === activeId) ?? profiles[0]
     if (active) {
@@ -255,6 +277,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ client, status: 'ready' })
       await saveActiveProfileId(profileId)
       await get().setViewMode('live')
+      // Fired in the background, not awaited — establishing a tunnel means an OS elevation
+      // prompt plus real connection time, and there's no reason to make browsing wait on that.
+      // The status dot reflects "connecting" in the meantime; playback for actual streams is
+      // what genuinely needs the tunnel up, not the catalog/EPG calls this unblocks first.
+      const { activeVpnProfileId } = get().settings
+      if (activeVpnProfileId) void get().activateVpnProfile(activeVpnProfileId)
     } catch (err) {
       set({ status: 'error', error: err instanceof Error ? err.message : 'Failed to connect' })
     }
@@ -499,5 +527,45 @@ export const useAppStore = create<AppState>((set, get) => ({
   closeSettings: () => set({ settingsOpen: false }),
 
   openAbout: () => set({ aboutOpen: true }),
-  closeAbout: () => set({ aboutOpen: false })
+  closeAbout: () => set({ aboutOpen: false }),
+
+  addVpnProfile: async (profile) => {
+    const newProfile: VpnProfile = { ...profile, id: crypto.randomUUID() }
+    get().updateSettings({ vpnProfiles: [...get().settings.vpnProfiles, newProfile] })
+  },
+
+  updateVpnProfile: async (id, patch) => {
+    const vpnProfiles = get().settings.vpnProfiles.map((p) => (p.id === id ? { ...p, ...patch } : p))
+    get().updateSettings({ vpnProfiles })
+  },
+
+  removeVpnProfile: async (id) => {
+    if (get().settings.activeVpnProfileId === id) {
+      await get().deactivateVpnProfile()
+    }
+    get().updateSettings({ vpnProfiles: get().settings.vpnProfiles.filter((p) => p.id !== id) })
+  },
+
+  // Only one tunnel can ever actually be connected — this app only ever spawns a single openvpn
+  // process (see src/main/index.ts) — so activating a different profile than whatever's
+  // currently up means tearing that one down first, not layering a second on top of it.
+  activateVpnProfile: async (id) => {
+    const profile = get().settings.vpnProfiles.find((p) => p.id === id)
+    if (!profile) return
+    const currentActiveId = get().settings.activeVpnProfileId
+    if (currentActiveId && currentActiveId !== id) {
+      await window.api.vpn.disconnect()
+    }
+    get().updateSettings({ activeVpnProfileId: id })
+    try {
+      await window.api.vpn.connect(profile.configPath, profile.username, profile.password)
+    } catch (err) {
+      set({ vpnStatus: 'error', vpnErrorMessage: err instanceof Error ? err.message : 'Failed to connect' })
+    }
+  },
+
+  deactivateVpnProfile: async () => {
+    await window.api.vpn.disconnect()
+    get().updateSettings({ activeVpnProfileId: null })
+  }
 }))

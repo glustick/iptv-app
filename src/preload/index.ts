@@ -32,6 +32,20 @@ const api = {
     isAvailable: () => ipcRenderer.invoke('safeStorage:isAvailable') as Promise<boolean>,
     encrypt: (plainText: string) => ipcRenderer.invoke('safeStorage:encrypt', plainText) as Promise<string>,
     decrypt: (base64: string) => ipcRenderer.invoke('safeStorage:decrypt', base64) as Promise<string>
+  },
+  vpn: {
+    selectConfigFile: () => ipcRenderer.invoke('vpn:selectConfigFile') as Promise<string | null>,
+    connect: (configPath: string, username: string | null, password: string | null) =>
+      ipcRenderer.invoke('vpn:connect', configPath, username, password) as Promise<void>,
+    disconnect: () => ipcRenderer.invoke('vpn:disconnect') as Promise<void>,
+    getStatus: () =>
+      ipcRenderer.invoke('vpn:getStatus') as Promise<{ status: string; errorMessage: string | null }>,
+    onStatusChange: (callback: (status: { status: string; errorMessage: string | null }) => void) => {
+      const listener = (_event: unknown, status: { status: string; errorMessage: string | null }): void =>
+        callback(status)
+      ipcRenderer.on('vpn:status-changed', listener)
+      return () => ipcRenderer.removeListener('vpn:status-changed', listener)
+    }
   }
 }
 

@@ -1,6 +1,7 @@
 import {
   app,
   shell,
+  dialog,
   BrowserWindow,
   ipcMain,
   net,
@@ -12,15 +13,19 @@ import {
 } from 'electron'
 import { join, extname } from 'path'
 import { createServer, IncomingMessage, ServerResponse } from 'http'
+import { connect as netConnect, type Socket } from 'net'
 import { URL } from 'url'
-import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
-import { mkdtemp, rm, readFile } from 'fs/promises'
+import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'child_process'
+import { promisify } from 'util'
+import { mkdtemp, rm, readFile, writeFile, chmod, readdir } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
+import { lookup as dnsLookup } from 'dns/promises'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import Store from 'electron-store'
 import { autoUpdater } from 'electron-updater'
 import ffmpegPathRaw from 'ffmpeg-static'
+import { exec as sudoExec } from 'sudo-prompt'
 
 // Electron resolves the app's name from package.json's "productName" (falling back to
 // "name") before any of this module's own code runs — by the time a line here calls
@@ -280,6 +285,345 @@ async function serveTranscodeFile(url: string, res: ServerResponse): Promise<voi
     res.writeHead(404)
     res.end('Segment not available')
   }
+}
+
+// ---------------------------------------------------------------------------
+// OpenVPN (optional, off by default): tunnels only this app's own traffic to
+// the configured Xtream server through a user-supplied .ovpn file — not the
+// whole system's traffic, so everything else on the machine keeps using the
+// normal connection. There's no maintained, bundlable cross-platform OpenVPN
+// binary the way ffmpeg-static exists for ffmpeg, and creating a TUN/TAP
+// network interface is a privileged kernel operation on every OS regardless
+// — both mean this requires a system-installed `openvpn` and one OS
+// elevation prompt each time it connects. A signed background service could
+// avoid repeating that prompt, but isn't trustworthy without code signing
+// (see ROADMAP.md); a one-shot elevated process that only exists for the
+// life of the connection is also less standing privilege than a persistent
+// root-level daemon sitting on the system indefinitely, not just simpler to
+// build.
+type VpnStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
+
+interface VpnRuntimeState {
+  status: VpnStatus
+  errorMessage: string | null
+  managementSocket: Socket | null
+  managementBuffer: string
+  tempDir: string | null
+}
+
+const vpnRuntime: VpnRuntimeState = {
+  status: 'disconnected',
+  errorMessage: null,
+  managementSocket: null,
+  managementBuffer: '',
+  tempDir: null
+}
+
+function setVpnStatus(status: VpnStatus, errorMessage: string | null = null): void {
+  vpnRuntime.status = status
+  vpnRuntime.errorMessage = errorMessage
+  mainWindowRef?.webContents.send('vpn:status-changed', { status, errorMessage })
+}
+
+function findFreeLocalPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const probe = createServer()
+    probe.on('error', reject)
+    probe.listen(0, '127.0.0.1', () => {
+      const address = probe.address()
+      const port = typeof address === 'object' && address ? address.port : 0
+      probe.close(() => resolve(port))
+    })
+  })
+}
+
+// Simple double-quote wrapping is enough here — these are always our own generated temp-file
+// paths or a user-picked .ovpn file, never arbitrary untrusted input, and this only needs to
+// survive the OS-default shell sudo-prompt runs commands through.
+function quoteArg(value: string): string {
+  return `"${value.replace(/"/g, '\\"')}"`
+}
+
+const execFileAsync = promisify(execFile)
+
+// Tunnelblick (a free, open-source OpenVPN GUI, distributed as a plain signed .dmg — no
+// package manager needed) bundles the real openvpn binary inside its own .app, under a
+// version-specific subdirectory that varies by release and openssl pairing — e.g.
+// "openvpn-2.6.9-openssl-3.0.14" — so it has to be discovered by scanning rather than a fixed
+// path the way Homebrew's install locations can be.
+async function findTunnelblickOpenvpn(): Promise<string | null> {
+  const opensslDir = '/Applications/Tunnelblick.app/Contents/Resources/openvpn'
+  try {
+    const entries = await readdir(opensslDir)
+    for (const entry of entries) {
+      const candidate = join(opensslDir, entry, 'openvpn')
+      if (existsSync(candidate)) return candidate
+    }
+  } catch {
+    // Tunnelblick isn't installed — not an error, just one option among several.
+  }
+  return null
+}
+
+// The command sudo-prompt runs executes in an elevated shell that often has a far more minimal
+// PATH than the user's own interactive shell — confirmed live: a real user had openvpn
+// reachable from their normal terminal, but the elevated command still failed with "openvpn:
+// command not found". Checking common install locations directly, then falling back to `which`
+// in the *user's* (non-elevated) environment, avoids depending on whatever PATH the elevated
+// shell happens to construct.
+async function findOpenvpnBinary(): Promise<string> {
+  const candidates =
+    process.platform === 'win32'
+      ? ['C:\\Program Files\\OpenVPN\\bin\\openvpn.exe', 'C:\\Program Files (x86)\\OpenVPN\\bin\\openvpn.exe']
+      : [
+          '/opt/homebrew/sbin/openvpn', // Homebrew on Apple Silicon
+          '/usr/local/sbin/openvpn', // Homebrew on Intel Mac / many Linux installs
+          '/usr/local/bin/openvpn',
+          '/usr/sbin/openvpn', // apt on Debian/Ubuntu
+          '/usr/bin/openvpn'
+        ]
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate
+  }
+  if (process.platform === 'darwin') {
+    const tunnelblickPath = await findTunnelblickOpenvpn()
+    if (tunnelblickPath) return tunnelblickPath
+  }
+  try {
+    const { stdout } = await execFileAsync(process.platform === 'win32' ? 'where' : 'which', ['openvpn'])
+    const resolved = stdout.split('\n')[0]?.trim()
+    if (resolved) return resolved
+  } catch {
+    // Neither a known install path nor PATH lookup found it — fall through to the error below.
+  }
+  throw new Error(
+    'OpenVPN is not installed on this machine (or not found in any common location). Install it — ' +
+      (process.platform === 'darwin'
+        ? 'via Homebrew (`brew install openvpn`) or Tunnelblick (https://tunnelblick.net/downloads.html, no Homebrew needed)'
+        : process.platform === 'win32'
+          ? 'from https://openvpn.net/community-downloads/'
+          : 'via your package manager, e.g. `apt install openvpn`') +
+      ' — then try connecting again.'
+  )
+}
+
+// `--route-nopull` only suppresses routing directives the *server* pushes during connection
+// negotiation — it does nothing about a directive like `redirect-gateway def1` written directly
+// into the client's own .ovpn file, which a real-world config confirmed doing (a "route
+// everything through the tunnel by default" config, common for consumer VPN providers, not
+// something server-push-blocking touches at all). Route-up still runs after OpenVPN has already
+// installed that full-tunnel redirect, so rather than relying on suppressing it, this actively
+// undoes it: OpenVPN's redirect-gateway conventionally installs two /1 routes (0.0.0.0/1 and
+// 128.0.0.0/1) rather than replacing the literal default route, specifically so it doesn't have
+// to touch that entry — deleting those two and re-asserting the machine's original default
+// (captured before connecting, via getDefaultGateway) restores normal system-wide routing, and
+// only then does the one narrow route to the Xtream server get added through the tunnel.
+async function getDefaultGateway(): Promise<string | null> {
+  try {
+    if (process.platform === 'darwin') {
+      const { stdout } = await execFileAsync('route', ['-n', 'get', 'default'])
+      return /gateway:\s*(\S+)/.exec(stdout)?.[1] ?? null
+    }
+    if (process.platform === 'linux') {
+      const { stdout } = await execFileAsync('ip', ['route', 'show', 'default'])
+      return /default via (\S+)/.exec(stdout)?.[1] ?? null
+    }
+    if (process.platform === 'win32') {
+      const { stdout } = await execFileAsync('route', ['print', '-4', '0.0.0.0'])
+      // Windows' `route print` table format: destination, netmask, gateway, interface, metric —
+      // the 0.0.0.0/0.0.0.0 row's third column is what we want.
+      const match = /0\.0\.0\.0\s+0\.0\.0\.0\s+(\S+)/.exec(stdout)
+      return match?.[1] ?? null
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+async function writeRouteScript(
+  dir: string,
+  name: string,
+  xtreamIp: string,
+  action: 'add' | 'delete',
+  originalGateway: string | null
+): Promise<string> {
+  const isWindows = process.platform === 'win32'
+  const path = join(dir, isWindows ? `${name}.bat` : `${name}.sh`)
+  let content: string
+  if (action === 'delete') {
+    // OpenVPN's own teardown removes whatever it installed itself (including the redirect-
+    // gateway /1 routes) once the process exits — only the narrow route this app added
+    // independently needs explicit removal here.
+    content = isWindows
+      ? `@echo off\r\nroute delete ${xtreamIp} mask 255.255.255.255 >nul 2>&1\r\n`
+      : process.platform === 'darwin'
+        ? `#!/bin/sh\n/sbin/route -n delete -host ${xtreamIp} "$route_vpn_gateway" 2>/dev/null\n`
+        : `#!/bin/sh\nip route del ${xtreamIp}/32 via "$route_vpn_gateway" 2>/dev/null || route delete -host ${xtreamIp} gw "$route_vpn_gateway" 2>/dev/null\n`
+  } else if (isWindows) {
+    const restore = originalGateway
+      ? `route delete 0.0.0.0 mask 128.0.0.0 >nul 2>&1\r\nroute delete 128.0.0.0 mask 128.0.0.0 >nul 2>&1\r\nroute add 0.0.0.0 mask 0.0.0.0 ${originalGateway} metric 1 >nul 2>&1\r\n`
+      : ''
+    content = `@echo off\r\n${restore}route add ${xtreamIp} mask 255.255.255.255 %route_vpn_gateway%\r\n`
+  } else if (process.platform === 'darwin') {
+    const restore = originalGateway
+      ? `route -n delete -net 0.0.0.0/1 2>/dev/null\nroute -n delete -net 128.0.0.0/1 2>/dev/null\nroute -n add default ${originalGateway} 2>/dev/null\n`
+      : ''
+    content = `#!/bin/sh\n${restore}/sbin/route -n add -host ${xtreamIp} "$route_vpn_gateway"\n`
+  } else {
+    const restore = originalGateway
+      ? `ip route del 0.0.0.0/1 2>/dev/null\nip route del 128.0.0.0/1 2>/dev/null\nip route replace default via ${originalGateway} 2>/dev/null\n`
+      : ''
+    content = `#!/bin/sh\n${restore}ip route add ${xtreamIp}/32 via "$route_vpn_gateway" 2>/dev/null || route add -host ${xtreamIp} gw "$route_vpn_gateway"\n`
+  }
+  await writeFile(path, content, { mode: 0o755 })
+  if (!isWindows) await chmod(path, 0o755)
+  return path
+}
+
+// OpenVPN's management interface (a local TCP socket, not privileged to connect to) is what
+// makes the one-shot elevated spawn below workable at all: sudo-prompt only ever hands back the
+// completed output of a single command, never a live process handle to signal later — but once
+// OpenVPN is up, this plain socket can both watch its real connection state (via `>STATE:`
+// notifications) and tell it to shut down cleanly (`signal SIGTERM`), without ever needing a
+// second privileged operation.
+function connectManagementInterface(port: number, username: string | null, password: string | null): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    let retriesLeft = 20 // --daemon forks to background; the management port may not be bound the instant sudo-prompt's callback fires
+    const attempt = (): void => {
+      const socket = netConnect({ host: '127.0.0.1', port }, () => {
+        vpnRuntime.managementSocket = socket
+        socket.write('state on\n')
+        if (!settled) {
+          settled = true
+          resolve()
+        }
+      })
+      socket.on('error', () => {
+        socket.destroy()
+        if (retriesLeft-- > 0) {
+          setTimeout(attempt, 500)
+        } else if (!settled) {
+          settled = true
+          reject(new Error('Could not reach the OpenVPN management interface'))
+        }
+      })
+      socket.on('data', (chunk: Buffer) => handleManagementData(chunk, username, password))
+      socket.on('close', () => {
+        vpnRuntime.managementSocket = null
+        if (vpnRuntime.status !== 'disconnected') setVpnStatus('disconnected')
+        void cleanupVpnTempDir()
+      })
+    }
+    attempt()
+  })
+}
+
+function handleManagementData(chunk: Buffer, username: string | null, password: string | null): void {
+  vpnRuntime.managementBuffer += chunk.toString('utf8')
+  const lines = vpnRuntime.managementBuffer.split('\n')
+  vpnRuntime.managementBuffer = lines.pop() ?? ''
+  for (const rawLine of lines) {
+    const line = rawLine.trim()
+    if (!line) continue
+    if (line.startsWith(">PASSWORD:Need 'Auth'")) {
+      if (username && password) {
+        vpnRuntime.managementSocket?.write(`username "Auth" ${username}\n`)
+        vpnRuntime.managementSocket?.write(`password "Auth" ${password}\n`)
+      } else {
+        setVpnStatus('error', 'This VPN configuration requires a username and password')
+      }
+    } else if (line.startsWith('>PASSWORD:Verification Failed')) {
+      setVpnStatus('error', 'VPN authentication failed — check the configured username and password')
+    } else if (line.startsWith('>STATE:')) {
+      const state = line.slice('>STATE:'.length).split(',')[1]
+      if (state === 'CONNECTED') setVpnStatus('connected')
+      else if (state === 'EXITING') setVpnStatus('disconnected')
+      else if (state) setVpnStatus('connecting')
+    } else if (line.startsWith('>FATAL:')) {
+      setVpnStatus('error', line.slice('>FATAL:'.length).trim())
+    }
+  }
+}
+
+async function cleanupVpnTempDir(): Promise<void> {
+  if (vpnRuntime.tempDir) {
+    await rm(vpnRuntime.tempDir, { recursive: true, force: true }).catch(() => {})
+    vpnRuntime.tempDir = null
+  }
+}
+
+async function startVpn(
+  configPath: string,
+  username: string | null,
+  password: string | null,
+  xtreamServerUrl: string
+): Promise<void> {
+  if (vpnRuntime.status === 'connecting' || vpnRuntime.status === 'connected') return
+  setVpnStatus('connecting')
+  try {
+    const openvpnPath = await findOpenvpnBinary()
+    const xtreamHost = new URL(xtreamServerUrl).hostname
+    const { address: xtreamIp } = await dnsLookup(xtreamHost)
+    const originalGateway = await getDefaultGateway()
+    const dir = await mkdtemp(join(tmpdir(), 'allisoniptv-vpn-'))
+    vpnRuntime.tempDir = dir
+    const routeUpScript = await writeRouteScript(dir, 'route-up', xtreamIp, 'add', originalGateway)
+    const routeDownScript = await writeRouteScript(dir, 'route-down', xtreamIp, 'delete', originalGateway)
+    const managementPort = await findFreeLocalPort()
+    const logPath = join(dir, 'openvpn.log')
+
+    // --script-security 2 is required for OpenVPN to run the route-up/route-down scripts at
+    // all — the default (1) only allows built-in executables, not user-defined scripts.
+    const command = [
+      quoteArg(openvpnPath),
+      '--config',
+      quoteArg(configPath),
+      '--route-nopull',
+      '--script-security',
+      '2',
+      '--route-up',
+      quoteArg(routeUpScript),
+      '--route-down',
+      quoteArg(routeDownScript),
+      '--management',
+      '127.0.0.1',
+      String(managementPort),
+      '--management-query-passwords',
+      '--daemon',
+      '--log',
+      quoteArg(logPath)
+    ].join(' ')
+
+    await new Promise<void>((resolve, reject) => {
+      sudoExec(command, { name: 'AllisonIPTV' }, (error) => {
+        if (error) reject(error)
+        else resolve()
+      })
+    })
+
+    await connectManagementInterface(managementPort, username, password)
+  } catch (err) {
+    setVpnStatus('error', err instanceof Error ? err.message : String(err))
+    await cleanupVpnTempDir()
+  }
+}
+
+async function stopVpn(): Promise<void> {
+  const socket = vpnRuntime.managementSocket
+  if (socket && !socket.destroyed) {
+    socket.write('signal SIGTERM\n')
+    await new Promise<void>((resolve) => {
+      const timeout = setTimeout(resolve, 3000)
+      socket.once('close', () => {
+        clearTimeout(timeout)
+        resolve()
+      })
+    })
+  }
+  setVpnStatus('disconnected')
+  await cleanupVpnTempDir()
 }
 
 /**
@@ -625,6 +969,36 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('transcode:stop', (_event, sessionId: string) => stopTranscode(sessionId))
 
+  ipcMain.handle('vpn:selectConfigFile', async () => {
+    if (!mainWindowRef) return null
+    const result = await dialog.showOpenDialog(mainWindowRef, {
+      title: 'Select OpenVPN configuration file',
+      filters: [{ name: 'OpenVPN config', extensions: ['ovpn'] }],
+      properties: ['openFile']
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return result.filePaths[0]
+  })
+  ipcMain.handle(
+    'vpn:connect',
+    async (_event, configPath: string, username: string | null, password: string | null) => {
+      if (!proxyTargetBase) throw new Error('Connect to an Xtream server before enabling the VPN')
+      // startVpn reports failure via setVpnStatus (pushed to the renderer as vpn:status-changed)
+      // rather than throwing, since most of what it does happens after this call would already
+      // need to have returned (the management interface keeps running long after). But that
+      // means this handler resolving successfully doesn't actually mean the connection
+      // succeeded — checking the resulting status and throwing here too keeps the two paths
+      // (awaiting this call vs. listening for the status event) in agreement instead of one
+      // saying "done" while the other says "failed".
+      await startVpn(configPath, username, password, proxyTargetBase)
+      if (vpnRuntime.status === 'error') {
+        throw new Error(vpnRuntime.errorMessage ?? 'Failed to connect')
+      }
+    }
+  )
+  ipcMain.handle('vpn:disconnect', () => stopVpn())
+  ipcMain.handle('vpn:getStatus', () => ({ status: vpnRuntime.status, errorMessage: vpnRuntime.errorMessage }))
+
   createWindow()
 
   app.on('activate', function () {
@@ -650,9 +1024,13 @@ app.on('window-all-closed', () => {
 
 // Without this, quitting the app while a transcode is active would leave its ffmpeg child
 // process (and temp directory) running/on-disk indefinitely — Electron doesn't kill child
-// processes it didn't spawn via its own process-management APIs on quit.
+// processes it didn't spawn via its own process-management APIs on quit. Same reasoning for an
+// active VPN connection: OpenVPN was spawned via sudo-prompt, entirely outside Electron's own
+// process tree, so quitting this app would otherwise leave the tunnel (and its route to the
+// Xtream server) running indefinitely in the background with nothing left to use it.
 app.on('before-quit', () => {
   for (const sessionId of transcodeSessions.keys()) {
     void stopTranscode(sessionId)
   }
+  if (vpnRuntime.status !== 'disconnected') void stopVpn()
 })

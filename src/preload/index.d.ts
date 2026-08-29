@@ -27,6 +27,19 @@ interface SafeStorageAPI {
   decrypt: (base64: string) => Promise<string>
 }
 
+interface VpnStatusPayload {
+  status: string
+  errorMessage: string | null
+}
+
+interface VpnAPI {
+  selectConfigFile: () => Promise<string | null>
+  connect: (configPath: string, username: string | null, password: string | null) => Promise<void>
+  disconnect: () => Promise<void>
+  getStatus: () => Promise<VpnStatusPayload>
+  onStatusChange: (callback: (status: VpnStatusPayload) => void) => () => void
+}
+
 declare global {
   interface Window {
     electron: ElectronAPI
@@ -36,6 +49,7 @@ declare global {
       proxy: ProxyAPI
       transcode: TranscodeAPI
       safeStorage: SafeStorageAPI
+      vpn: VpnAPI
     }
   }
 }

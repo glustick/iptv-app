@@ -18,6 +18,8 @@ export function TopBar(): JSX.Element {
   const disconnect = useAppStore((s) => s.disconnect)
   const openSettings = useAppStore((s) => s.openSettings)
   const isOnline = useAppStore((s) => s.isOnline)
+  const vpnActiveProfileId = useAppStore((s) => s.settings.activeVpnProfileId)
+  const vpnStatus = useAppStore((s) => s.vpnStatus)
 
   return (
     <header className="top-bar">
@@ -54,6 +56,21 @@ export function TopBar(): JSX.Element {
       )}
 
       {!isOnline && <span className="offline-badge">Offline</span>}
+
+      {vpnActiveProfileId && (
+        <span
+          className={`vpn-dot vpn-dot--${vpnStatus}`}
+          title={
+            vpnStatus === 'connected'
+              ? 'VPN connected'
+              : vpnStatus === 'connecting'
+                ? 'VPN connecting…'
+                : vpnStatus === 'error'
+                  ? 'VPN error — check Settings'
+                  : 'VPN disconnected'
+          }
+        />
+      )}
 
       <div className="profile-switcher">
         {profiles.length > 1 ? (

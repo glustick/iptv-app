@@ -144,6 +144,20 @@ export type BufferProfile = 'smooth' | 'lowLatency'
 export type ClockFormat = '12h' | '24h'
 export type EpgRowDensity = 'comfortable' | 'compact'
 
+// A saved OpenVPN configuration — a user can save more than one (different providers, or
+// different servers from the same provider), but only one can ever be the *active* tunnel at a
+// time (see AppSettings.activeVpnProfileId), since this app only ever spawns a single openvpn
+// process. username/password are optional since not every .ovpn file needs them (some rely on
+// cert-only auth) — encrypted the same way as the parental PIN, see lib/storage.ts.
+export interface VpnProfile {
+  id: string
+  name: string
+  configPath: string
+  configName: string
+  username: string | null
+  password: string | null
+}
+
 export interface AppSettings {
   bufferProfile: BufferProfile
   clockFormat: ClockFormat
@@ -154,6 +168,8 @@ export interface AppSettings {
   epgRowDensity: EpgRowDensity
   playerVolume: number
   playerMuted: boolean
+  vpnProfiles: VpnProfile[]
+  activeVpnProfileId: string | null
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -165,5 +181,14 @@ export const DEFAULT_SETTINGS: AppSettings = {
   detailPanelWidth: 560,
   epgRowDensity: 'comfortable',
   playerVolume: 1,
-  playerMuted: false
+  playerMuted: false,
+  vpnProfiles: [],
+  activeVpnProfileId: null
+}
+
+export type VpnStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
+
+export interface VpnState {
+  status: VpnStatus
+  errorMessage: string | null
 }

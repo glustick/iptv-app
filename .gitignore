@@ -4,3 +4,8 @@ dist/
 .DS_Store
 *.log
 *.tsbuildinfo
+
+# Real VPN test credentials/config, never meant to be committed
+swiss_travel_router_openvpn.zip
+swiss_travel_router_openvpn/
+user.txt
