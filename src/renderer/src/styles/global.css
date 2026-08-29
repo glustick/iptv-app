@@ -459,6 +459,25 @@ body.resizing-col {
 .banner-error--top {
   margin: 10px 20px 0;
   border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.banner-error-retry {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.banner-error-retry:hover {
+  background: rgba(255, 91, 106, 0.15);
 }
 
 .empty-state {

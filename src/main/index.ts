@@ -11,7 +11,7 @@ import {
   safeStorage,
   type MenuItemConstructorOptions
 } from 'electron'
-import { join, extname, dirname, basename, isAbsolute } from 'path'
+import { join, extname, dirname, basename, isAbsolute, sep } from 'path'
 import { createServer, IncomingMessage, ServerResponse } from 'http'
 import { connect as netConnect, type Socket } from 'net'
 import { URL } from 'url'
@@ -572,7 +572,11 @@ async function cleanupVpnTempDir(): Promise<void> {
 function safeJoin(baseDir: string, relativePath: string): string | null {
   const resolvedBase = join(baseDir)
   const target = join(baseDir, relativePath)
-  if (target !== resolvedBase && !target.startsWith(resolvedBase + '/')) return null
+  // path.join() uses backslashes on Windows — a hardcoded '/' here silently rejected every
+  // legitimate relative reference on that platform (confirmed live: ca/cert/key never got
+  // copied, OpenVPN then failed with "cannot find ca.crt" even though --cd pointed at the
+  // right directory), since the real target path never "starts with" resolvedBase + '/' there.
+  if (target !== resolvedBase && !target.startsWith(resolvedBase + sep)) return null
   return target
 }
 

@@ -17,6 +17,7 @@ function App(): JSX.Element {
   const error = useAppStore((s) => s.error)
   const viewMode = useAppStore((s) => s.viewMode)
   const openAbout = useAppStore((s) => s.openAbout)
+  const retryConnection = useAppStore((s) => s.retryConnection)
 
   useEffect(() => {
     init()
@@ -66,7 +67,14 @@ function App(): JSX.Element {
   return (
     <div className="app-shell">
       <TopBar />
-      {error && <div className="banner-error banner-error--top">{error}</div>}
+      {error && (
+        <div className="banner-error banner-error--top">
+          <span>{error}</span>
+          <button className="banner-error-retry" onClick={() => void retryConnection()}>
+            Retry
+          </button>
+        </div>
+      )}
       <div className="app-body">
         <Sidebar />
         {viewMode === 'live' ? (

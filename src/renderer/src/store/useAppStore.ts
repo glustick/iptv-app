@@ -115,6 +115,7 @@ interface AppState {
   addProfile: (profile: Omit<XtreamProfile, 'id'>) => Promise<void>
   removeProfile: (id: string) => Promise<void>
   connect: (profileId: string) => Promise<void>
+  retryConnection: () => Promise<void>
   disconnect: () => void
   setViewMode: (mode: ViewMode) => Promise<void>
   requestCategory: (categoryId: string | null) => void
@@ -285,6 +286,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (err) {
       set({ status: 'error', error: err instanceof Error ? err.message : 'Failed to connect' })
     }
+  },
+
+  // Re-runs the exact same connect flow (re-authenticates, rebuilds the proxy target, reloads
+  // Live TV) against whichever profile was last active — the one thing a broken connection
+  // (e.g. a proxy 502) previously required quitting and relaunching the whole app to recover
+  // from, since nothing in the UI re-triggered this on demand.
+  retryConnection: async () => {
+    const { activeProfile } = get()
+    if (activeProfile) await get().connect(activeProfile.id)
   },
 
   disconnect: () => {
