@@ -11,7 +11,7 @@ import {
   safeStorage,
   type MenuItemConstructorOptions
 } from 'electron'
-import { join, extname } from 'path'
+import { join, extname, dirname } from 'path'
 import { createServer, IncomingMessage, ServerResponse } from 'http'
 import { connect as netConnect, type Socket } from 'net'
 import { URL } from 'url'
@@ -570,23 +570,34 @@ async function startVpn(
     const dir = await mkdtemp(join(tmpdir(), 'allisoniptv-vpn-'))
     vpnRuntime.tempDir = dir
     const routeUpScript = await writeRouteScript(dir, 'route-up', xtreamIp, 'add', originalGateway)
-    const routeDownScript = await writeRouteScript(dir, 'route-down', xtreamIp, 'delete', originalGateway)
+    // OpenVPN has no "--route-down" option — the flag that runs a command before routes are
+    // torn down is "--route-pre-down". Using a nonexistent flag makes OpenVPN reject the whole
+    // command line at option-parsing time ("Unrecognized option... route-down") and exit
+    // immediately, which surfaces to the renderer as a content-free "Command failed" error.
+    const routePreDownScript = await writeRouteScript(dir, 'route-pre-down', xtreamIp, 'delete', originalGateway)
     const managementPort = await findFreeLocalPort()
     const logPath = join(dir, 'openvpn.log')
 
-    // --script-security 2 is required for OpenVPN to run the route-up/route-down scripts at
-    // all — the default (1) only allows built-in executables, not user-defined scripts.
+    // --script-security 2 is required for OpenVPN to run the route-up/route-pre-down scripts
+    // at all — the default (1) only allows built-in executables, not user-defined scripts.
     const command = [
       quoteArg(openvpnPath),
       '--config',
       quoteArg(configPath),
+      // Many real-world .ovpn files (this app's own test config included) reference their
+      // ca/cert/key files by bare relative filename, resolved against OpenVPN's working
+      // directory rather than the config file's own location. Without --cd, that resolves
+      // against whatever cwd the elevated shell happens to start in (not necessarily where
+      // the config lives), so cert loading fails even though --config itself was found fine.
+      '--cd',
+      quoteArg(dirname(configPath)),
       '--route-nopull',
       '--script-security',
       '2',
       '--route-up',
       quoteArg(routeUpScript),
-      '--route-down',
-      quoteArg(routeDownScript),
+      '--route-pre-down',
+      quoteArg(routePreDownScript),
       '--management',
       '127.0.0.1',
       String(managementPort),
@@ -597,15 +608,32 @@ async function startVpn(
     ].join(' ')
 
     await new Promise<void>((resolve, reject) => {
-      sudoExec(command, { name: 'AllisonIPTV' }, (error) => {
-        if (error) reject(error)
-        else resolve()
+      // sudo-prompt's callback is (error, stdout, stderr) — a bad OpenVPN flag or a config
+      // error surfaces here as a non-zero exit, and stderr is normally OpenVPN's own plain-
+      // English explanation of why. sudo-prompt's own `error.message` is just "Command
+      // failed: <the whole command line>", so without this the real reason is silently lost.
+      sudoExec(command, { name: 'AllisonIPTV' }, (error, stdout, stderr) => {
+        if (error) {
+          const detail = [stderr, stdout].map((s) => (typeof s === 'string' ? s.trim() : '')).find((s) => s.length > 0)
+          reject(detail ? new Error(detail) : error)
+        } else {
+          resolve()
+        }
       })
     })
 
     await connectManagementInterface(managementPort, username, password)
   } catch (err) {
-    setVpnStatus('error', err instanceof Error ? err.message : String(err))
+    // The --log file can hold OpenVPN's own diagnostics even when sudo-prompt's stdout/stderr
+    // came back empty (e.g. it wrote its explanation there before the process exited) — read
+    // it before cleanupVpnTempDir() deletes the whole temp directory out from under us.
+    let message = err instanceof Error ? err.message : String(err)
+    const logPath = vpnRuntime.tempDir ? join(vpnRuntime.tempDir, 'openvpn.log') : null
+    if (logPath) {
+      const log = await readFile(logPath, 'utf8').catch(() => null)
+      if (log?.trim()) message += `\n\nOpenVPN log:\n${log.trim()}`
+    }
+    setVpnStatus('error', message)
     await cleanupVpnTempDir()
   }
 }
