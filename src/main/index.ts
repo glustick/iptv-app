@@ -359,11 +359,20 @@ function startLocalProxy(): Promise<number> {
       // process's own DNS cache or pooled-connection state for that host isn't. Previously this
       // proxy had no timeout at all on the upstream request, so a hang like that was permanent —
       // nothing short of restarting the app would recover. Now: give up on the *first* attempt
-      // early enough to matter (getting response *headers* back should be fast even for a huge
-      // video file — this doesn't bound how long the body then takes to fully arrive), clear
-      // Chromium's host resolver cache for this session in case a stale DNS entry is the cause,
-      // and retry exactly once with a fresh request before actually failing.
-      const UPSTREAM_TIMEOUT_MS = 20000
+      // early enough to matter, clear Chromium's host resolver cache for this session in case a
+      // stale DNS entry is the cause, and retry exactly once with a fresh request before
+      // actually failing.
+      //
+      // 20s was the original figure here, on the assumption that getting response *headers*
+      // back should be fast even for a huge video file regardless of how slow the body then is.
+      // Confirmed live that assumption was wrong for this account on at least one real byte-
+      // range request: it timed out at 20s, the retry *also* timed out at 20s, and the origin's
+      // real response to the very first attempt then arrived anyway, just later than 20s —
+      // proof the connection wasn't dead, only slower than the timeout assumed. 45s gives a
+      // real request room to actually finish before being mistaken for a hung one, while two
+      // attempts at 45s each (90s worst case) still leaves headroom inside startTranscode's
+      // overall 240s deadline.
+      const UPSTREAM_TIMEOUT_MS = 45000
       let retried = false
 
       function attemptUpstream(): void {
@@ -419,6 +428,15 @@ function startLocalProxy(): Promise<number> {
         }, UPSTREAM_TIMEOUT_MS)
 
         upstreamReq.on('response', (upstreamRes) => {
+          // Confirmed live: Electron's net module can still deliver a 'response' event well
+          // after the timeout already gave up on this exact attempt and answered res — the
+          // origin was just slower than the timeout, not actually dead, and its real response
+          // arrived anyway, just late. Without this guard, that late arrival tried to
+          // res.writeHead() a second time on a response already ended, crashing the whole main
+          // process with ERR_HTTP_HEADERS_SENT (an uncaught exception from a level below this
+          // handler, per Electron's SimpleURLLoaderWrapper — same class of thing the global
+          // uncaughtException handler exists for, but this one's cheap to prevent outright).
+          if (settled) return
           gotResponse = true
           settled = true
           clearTimeout(timeout)
