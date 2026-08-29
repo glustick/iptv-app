@@ -962,6 +962,27 @@ body.resizing-col {
   text-align: center;
 }
 
+.player-crash-overlay {
+  position: fixed;
+  inset: 0;
+  background: black;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text);
+  text-align: center;
+  padding: 24px;
+}
+
+.player-crash-detail {
+  color: var(--text-dim);
+  font-size: 13px;
+  max-width: 480px;
+}
+
 .player-buffering {
   position: absolute;
   inset: 0;

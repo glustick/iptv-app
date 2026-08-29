@@ -5,6 +5,7 @@ import { TopBar } from './components/TopBar'
 import { Sidebar } from './components/Sidebar'
 import { ChannelList } from './components/ChannelList'
 import { Player } from './components/Player'
+import { PlayerErrorBoundary } from './components/PlayerErrorBoundary'
 import { SeriesModal } from './components/SeriesModal'
 import { EpgGridPanel } from './components/EpgGridPanel'
 import { PinPrompt } from './components/PinPrompt'
@@ -98,7 +99,9 @@ function App(): JSX.Element {
           </>
         )}
       </div>
-      <Player />
+      <PlayerErrorBoundary>
+        <Player />
+      </PlayerErrorBoundary>
       <SeriesModal />
       <PinPrompt />
       <SettingsPage />

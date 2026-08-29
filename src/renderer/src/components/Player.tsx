@@ -251,8 +251,11 @@ export function Player(): JSX.Element | null {
         maxBufferLength: smooth ? 60 : 20,
         maxMaxBufferLength: smooth ? 120 : 40,
         backBufferLength: smooth ? 90 : 30,
+        // hls.js requires liveMaxLatencyDurationCount to be strictly greater than
+        // liveSyncDurationCount (it throws synchronously from the constructor otherwise) — so
+        // the non-live "effectively infinite" values below must differ, not just both be huge.
         liveSyncDurationCount: isLiveContent ? (smooth ? 5 : 3) : 1_000_000,
-        liveMaxLatencyDurationCount: isLiveContent ? (smooth ? 10 : 6) : 1_000_000,
+        liveMaxLatencyDurationCount: isLiveContent ? (smooth ? 10 : 6) : 2_000_000,
         fragLoadingMaxRetry: 6,
         levelLoadingMaxRetry: 6,
         manifestLoadingMaxRetry: 6
