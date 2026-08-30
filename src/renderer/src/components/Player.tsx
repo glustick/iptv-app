@@ -69,6 +69,11 @@ const FULLSCREEN_TOP_ZONE_PX = 80
 // bar above) — a fraction of the player's own height rather than a fixed pixel count so it
 // scales sensibly whether the player is windowed or truly fullscreen.
 const SEEKBAR_REVEAL_ZONE_FRACTION = 0.2
+// VOD/series' fullscreen header (unlike Live's, which stays click-toggled — see
+// handlePlayAreaClick) reveals purely on cursor position, the same hover-driven shape as the
+// seek bar above rather than FULLSCREEN_TOP_ZONE_PX's fixed pixel count, since it's meant to
+// track "top 10% of the screen" regardless of window size.
+const HEADER_REVEAL_ZONE_FRACTION = 0.1
 
 export function Player(): JSX.Element | null {
   const nowPlaying = useAppStore((s) => s.nowPlaying)
@@ -573,9 +578,12 @@ export function Player(): JSX.Element | null {
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange)
   }, [])
 
-  // The header starts hidden every time fullscreen is entered (revealed only by clicking the
-  // top edge — see handlePlayAreaClick) and is simply always visible again once fullscreen
-  // ends, matching its normal in-flow, always-on windowed-mode appearance.
+  // The header starts hidden every time fullscreen is entered and is simply always visible
+  // again once fullscreen ends, matching its normal in-flow, always-on windowed-mode appearance.
+  // How it's *revealed* while fullscreen differs by content kind: Live keeps the original
+  // click-the-top-edge toggle (see handlePlayAreaClick); VOD/series instead follows cursor
+  // position purely (see the next effect below), the mousemove effect after that immediately
+  // overriding this starting value the moment the cursor actually moves.
   useEffect(() => {
     setFullscreenHeaderVisible(!isFullscreen)
   }, [isFullscreen])
@@ -594,6 +602,21 @@ export function Player(): JSX.Element | null {
     container.addEventListener('mousemove', onMouseMove)
     return () => container.removeEventListener('mousemove', onMouseMove)
   }, [nowPlaying])
+
+  // VOD/series' fullscreen header: purely hover-driven, unlike Live's click-toggle (see
+  // handlePlayAreaClick) — cursor in the top 10% of the player reveals it, moving away
+  // instantly hides it again, no click needed. Only wired up in fullscreen; windowed mode's
+  // header stays permanently visible regardless of content kind, unchanged from before.
+  useEffect(() => {
+    const container = playerRef.current
+    if (!container || !isFullscreen || nowPlaying?.kind === 'live') return
+    function onMouseMove(e: MouseEvent): void {
+      const rect = container!.getBoundingClientRect()
+      setFullscreenHeaderVisible(e.clientY < rect.top + rect.height * HEADER_REVEAL_ZONE_FRACTION)
+    }
+    container.addEventListener('mousemove', onMouseMove)
+    return () => container.removeEventListener('mousemove', onMouseMove)
+  }, [nowPlaying, isFullscreen])
 
   // Picture-in-Picture opens a genuine floating OS window (confirmed: it renders on top of
   // other apps, not just inside this one) tied to this video element — closing the player or
@@ -730,7 +753,9 @@ export function Player(): JSX.Element | null {
   // so it's reachable without a mouse ever leaving the video.
   function handlePlayAreaClick(e: React.MouseEvent<HTMLVideoElement>): void {
     if (isFullscreen) {
-      if (e.clientY < FULLSCREEN_TOP_ZONE_PX) {
+      // VOD/series' header is purely hover-driven now (see the mousemove effect above) — a
+      // click here would just fight that, immediately re-hiding what hovering just revealed.
+      if (e.clientY < FULLSCREEN_TOP_ZONE_PX && nowPlaying?.kind === 'live') {
         setFullscreenHeaderVisible((v) => !v)
         return
       }
