@@ -21,10 +21,11 @@ const api = {
     setTarget: (baseUrl: string) => ipcRenderer.invoke('proxy:setTarget', baseUrl) as Promise<void>
   },
   transcode: {
-    start: (sourceUrl: string, isVod: boolean, sessionId: string) =>
-      ipcRenderer.invoke('transcode:start', sourceUrl, isVod, sessionId) as Promise<{
+    start: (sourceUrl: string, isVod: boolean, sessionId: string, subtitleStreamIndex?: number) =>
+      ipcRenderer.invoke('transcode:start', sourceUrl, isVod, sessionId, subtitleStreamIndex) as Promise<{
         sessionId: string
         url: string
+        subtitleTracks: { index: number; language: string | null; supported: boolean }[]
       }>,
     stop: (sessionId: string) => ipcRenderer.invoke('transcode:stop', sessionId) as Promise<void>
   },

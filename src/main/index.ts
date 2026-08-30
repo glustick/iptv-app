@@ -123,6 +123,11 @@ interface VpnRuntimeState {
   // handler can tell whether a given redirect target is one of the hosts this connection
   // promised to route, without threading it through as a parameter.
   tunneledHost: string | null
+  // The single IP address actually written into the OS route (see writeRouteScript) — resolved
+  // once, at connect time, via this app's own dns.lookup, entirely independent of Chromium's own
+  // DNS resolution for the proxy's actual requests. Kept so the proxy can tell whether a *fresh*
+  // resolution of the same tunneled host later returns something the route no longer covers.
+  tunneledIp: string | null
 }
 
 const vpnRuntime: VpnRuntimeState = {
@@ -131,20 +136,27 @@ const vpnRuntime: VpnRuntimeState = {
   managementSocket: null,
   managementBuffer: '',
   tempDir: null,
-  tunneledHost: null
+  tunneledHost: null,
+  tunneledIp: null
 }
 
 // Redirect targets already reported for the current connection — reset on every new connect
 // attempt (see setVpnStatus below) so a channel that keeps redirecting to the same off-tunnel
 // CDN host doesn't repost the same warning on every segment request.
 const warnedOffTunnelHosts = new Set<string>()
+// Same de-dup rationale as warnedOffTunnelHosts, but keyed on the specific IP that turned up —
+// a provider whose DNS keeps returning the same alternate IP shouldn't repost the same warning
+// on every retry either.
+const warnedTunnelIpChanges = new Set<string>()
 
 function setVpnStatus(status: VpnStatus, errorMessage: string | null = null): void {
   vpnRuntime.status = status
   vpnRuntime.errorMessage = errorMessage
   if (status !== 'connected' && status !== 'connecting') {
     vpnRuntime.tunneledHost = null
+    vpnRuntime.tunneledIp = null
     warnedOffTunnelHosts.clear()
+    warnedTunnelIpChanges.clear()
   }
   mainWindowRef?.webContents.send('vpn:status-changed', { status, errorMessage })
 }
@@ -493,6 +505,7 @@ async function startVpn(
     const xtreamHost = new URL(xtreamServerUrl).hostname
     vpnRuntime.tunneledHost = xtreamHost.toLowerCase()
     const { address: xtreamIp } = await dnsLookup(xtreamHost)
+    vpnRuntime.tunneledIp = xtreamIp
     const originalGateway = await getDefaultGateway()
     const dir = await mkdtemp(join(tmpdir(), 'allisoniptv-vpn-'))
     vpnRuntime.tempDir = dir
@@ -635,6 +648,22 @@ function startLocalProxy(): Promise<number> {
           message: `A request was redirected to ${redirectHost}, which isn't routed through the VPN — only ${tunneledHost} is. That traffic may be bypassing the tunnel.`
         })
       },
+      getVpnTunneledIp: () => vpnRuntime.tunneledIp,
+      resolveHostIp: async (hostname) => {
+        try {
+          return (await dnsLookup(hostname)).address
+        } catch {
+          return null
+        }
+      },
+      onTunneledHostIpChanged: (tunneledHost, tunneledIp, resolvedIp) => {
+        if (warnedTunnelIpChanges.has(resolvedIp)) return
+        warnedTunnelIpChanges.add(resolvedIp)
+        console.warn(`[vpn] ${tunneledHost} now resolves to ${resolvedIp}, but the VPN route only covers ${tunneledIp}`)
+        mainWindowRef?.webContents.send('vpn:stream-route-warning', {
+          message: `${tunneledHost} now resolves to a different address (${resolvedIp}) than the one the VPN is routing (${tunneledIp}). Traffic to it may be bypassing the tunnel.`
+        })
+      },
       handleTranscodeRequest: (url, res) => void transcodeService.serveTranscodeFile(url, res)
     })
     server.on('error', reject)
@@ -775,13 +804,27 @@ app.whenReady().then(async () => {
     proxyTargetBase = baseUrl
   })
 
-  ipcMain.handle('transcode:start', async (_event, sourceUrl: string, isVod: boolean, sessionId: string) => {
-    // playlistPath's filename varies: usually playlist.m3u8, but master.m3u8 when startTranscode
-    // detected and included a subtitle rendition (see transcodeService.ts) — basename() rather
-    // than a hardcoded name is what makes that switch actually reach the player.
-    const { playlistPath } = await transcodeService.startTranscode(sourceUrl, isVod, sessionId)
-    return { sessionId, url: `http://127.0.0.1:${proxyPort}/__transcode/${sessionId}/${basename(playlistPath)}` }
-  })
+  ipcMain.handle(
+    'transcode:start',
+    async (_event, sourceUrl: string, isVod: boolean, sessionId: string, subtitleStreamIndex?: number) => {
+      // playlistPath's filename varies: usually playlist.m3u8, but master.m3u8 when
+      // startTranscode detected and included a subtitle rendition (see transcodeService.ts) —
+      // basename() rather than a hardcoded name is what makes that switch actually reach the
+      // player. subtitleTracks passes through so the renderer can offer switching to a
+      // different one (see useTranscodeFallback.ts's switchSubtitleTrack).
+      const { playlistPath, subtitleTracks } = await transcodeService.startTranscode(
+        sourceUrl,
+        isVod,
+        sessionId,
+        subtitleStreamIndex
+      )
+      return {
+        sessionId,
+        url: `http://127.0.0.1:${proxyPort}/__transcode/${sessionId}/${basename(playlistPath)}`,
+        subtitleTracks
+      }
+    }
+  )
   ipcMain.handle('transcode:stop', (_event, sessionId: string) => transcodeService.stopTranscode(sessionId))
 
   ipcMain.handle('vpn:selectConfigFile', async () => {

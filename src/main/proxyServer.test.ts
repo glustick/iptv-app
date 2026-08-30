@@ -115,6 +115,9 @@ function makeDeps(overrides: Partial<ProxyServerDeps> = {}): ProxyServerDeps {
     isVpnConnected: () => false,
     getVpnTunneledHost: () => null,
     onOffTunnelRedirect: () => {},
+    getVpnTunneledIp: () => null,
+    resolveHostIp: () => Promise.resolve(null),
+    onTunneledHostIpChanged: () => {},
     handleTranscodeRequest: () => {},
     ...overrides
   }
@@ -375,6 +378,98 @@ describe('createProxyServer', () => {
     expect(clearHostResolverCache).toHaveBeenCalledTimes(1)
     expect(res.statusCode).toBe(200)
     expect(res.body).toBe('recovered on retry')
+  })
+
+  // A retry forces a fresh DNS lookup (clearHostResolverCache) — if that now resolves the
+  // tunneled host to a different IP than the one the VPN's OS route actually covers, this and
+  // every later request would silently bypass the tunnel. onOffTunnelRedirect can't catch this
+  // (same hostname, not a redirect at all), so this is its own dedicated check.
+  it('warns when a retry resolves the tunneled host to a different IP than the VPN route covers', async () => {
+    let attempts = 0
+    const { url: originUrl, server: origin } = await startMockOrigin((_req, res) => {
+      attempts += 1
+      if (attempts === 1) return // hang, forcing the retry path
+      res.writeHead(200)
+      res.end('recovered on retry')
+    })
+    openServers.push(origin)
+    const onTunneledHostIpChanged = vi.fn()
+    const proxy = await startProxy(
+      makeDeps({
+        getProxyTargetBase: () => originUrl,
+        upstreamTimeoutMs: 150,
+        isVpnConnected: () => true,
+        getVpnTunneledHost: () => '127.0.0.1',
+        getVpnTunneledIp: () => '127.0.0.1',
+        resolveHostIp: () => Promise.resolve('10.0.0.99'),
+        onTunneledHostIpChanged
+      })
+    )
+
+    await fetchViaProxy(proxy, '/slow')
+    // onTunneledHostIpChanged fires from a fire-and-forget .then(), not awaited by the
+    // response path — give it a moment to actually run before asserting.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(onTunneledHostIpChanged).toHaveBeenCalledWith('127.0.0.1', '127.0.0.1', '10.0.0.99')
+  })
+
+  it('does not warn when the retry resolves the same IP the VPN route already covers', async () => {
+    let attempts = 0
+    const { url: originUrl, server: origin } = await startMockOrigin((_req, res) => {
+      attempts += 1
+      if (attempts === 1) return
+      res.writeHead(200)
+      res.end('recovered on retry')
+    })
+    openServers.push(origin)
+    const onTunneledHostIpChanged = vi.fn()
+    const proxy = await startProxy(
+      makeDeps({
+        getProxyTargetBase: () => originUrl,
+        upstreamTimeoutMs: 150,
+        isVpnConnected: () => true,
+        getVpnTunneledHost: () => '127.0.0.1',
+        getVpnTunneledIp: () => '127.0.0.1',
+        resolveHostIp: () => Promise.resolve('127.0.0.1'),
+        onTunneledHostIpChanged
+      })
+    )
+
+    await fetchViaProxy(proxy, '/slow')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(onTunneledHostIpChanged).not.toHaveBeenCalled()
+  })
+
+  it('does not check IP resolution while the VPN is not connected', async () => {
+    let attempts = 0
+    const { url: originUrl, server: origin } = await startMockOrigin((_req, res) => {
+      attempts += 1
+      if (attempts === 1) return
+      res.writeHead(200)
+      res.end('recovered on retry')
+    })
+    openServers.push(origin)
+    const resolveHostIp = vi.fn(() => Promise.resolve('10.0.0.99'))
+    const onTunneledHostIpChanged = vi.fn()
+    const proxy = await startProxy(
+      makeDeps({
+        getProxyTargetBase: () => originUrl,
+        upstreamTimeoutMs: 150,
+        isVpnConnected: () => false,
+        getVpnTunneledHost: () => '127.0.0.1',
+        getVpnTunneledIp: () => '127.0.0.1',
+        resolveHostIp,
+        onTunneledHostIpChanged
+      })
+    )
+
+    await fetchViaProxy(proxy, '/slow')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(resolveHostIp).not.toHaveBeenCalled()
+    expect(onTunneledHostIpChanged).not.toHaveBeenCalled()
   })
 
   it('fails with a 502 after both attempts time out', async () => {

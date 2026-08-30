@@ -101,13 +101,15 @@ export function Player(): JSX.Element | null {
   const [fullscreenHeaderVisible, setFullscreenHeaderVisible] = useState(false)
   const [statsVisible, setStatsVisible] = useState(false)
   const [cursorNearBottom, setCursorNearBottom] = useState(false)
-  // Only ever populated for VOD/series titles whose audio-fix transcode fallback detected and
-  // carried through an embedded subtitle track (see transcodeService.ts) — Live TV never has
-  // one, and most VOD/series never need the fallback at all. At most one entry today (this
-  // app's own ffmpeg invocation only ever maps a single subtitle stream), but tracked as a list
-  // rather than a boolean so a source with more than one wouldn't need this reworked later.
-  const [subtitleTracks, setSubtitleTracks] = useState<{ id: number; name: string }[]>([])
-  const [activeSubtitleTrack, setActiveSubtitleTrack] = useState(-1)
+  // hls.js's own on/off state for whichever single subtitle rendition the CURRENT transcode
+  // session carries (see subtitleTracks/switchSubtitleTrack below for the different, ffmpeg-
+  // level notion of "which language is this" — this is just "is it showing right now," and is
+  // free/instant, unlike switching languages which restarts the whole transcode). Only ever
+  // populated for VOD/series titles whose audio-fix fallback detected and carried through an
+  // embedded subtitle track — Live TV never has one, and most VOD/series never need the
+  // fallback at all.
+  const [hlsSubtitleTracks, setHlsSubtitleTracks] = useState<{ id: number; name: string }[]>([])
+  const [activeHlsSubtitleTrack, setActiveHlsSubtitleTrack] = useState(-1)
   const wasOffline = useRef(false)
   const autoHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastStreamKeyRef = useRef<string | null>(null)
@@ -119,7 +121,10 @@ export function Player(): JSX.Element | null {
     tryFallback,
     tryFallbackForSilentAudio,
     reset: resetTranscodeFallback,
-    beginRun: beginTranscodeRun
+    beginRun: beginTranscodeRun,
+    subtitleTracks,
+    activeSubtitleTrackIndex,
+    switchSubtitleTrack
   } = useTranscodeFallback()
 
   // Channel identity changing (including to nothing, i.e. the player closing) is the only
@@ -176,8 +181,8 @@ export function Player(): JSX.Element | null {
 
     setPlaybackError(null)
     setBuffering(true)
-    setSubtitleTracks([])
-    setActiveSubtitleTrack(-1)
+    setHlsSubtitleTracks([])
+    setActiveHlsSubtitleTrack(-1)
     beginTranscodeRun()
     let networkRetryCount = 0
     let mediaErrorRecoveryCount = 0
@@ -278,10 +283,10 @@ export function Player(): JSX.Element | null {
       // (the master playlist's own DEFAULT=YES marks the fallback's track that way), which is
       // why subtitles already showed up with no explicit code enabling them.
       hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, (_event, data) => {
-        setSubtitleTracks(data.subtitleTracks.map((t) => ({ id: t.id, name: t.name || `Track ${t.id + 1}` })))
+        setHlsSubtitleTracks(data.subtitleTracks.map((t) => ({ id: t.id, name: t.name || `Track ${t.id + 1}` })))
       })
       hls.on(Hls.Events.SUBTITLE_TRACK_SWITCH, (_event, data) => {
-        setActiveSubtitleTrack(data.id)
+        setActiveHlsSubtitleTrack(data.id)
       })
       hls.on(Hls.Events.ERROR, (_event, data) => {
         // Try transcoding once for the EC-3/AC-3-shaped failure (see useTranscodeFallback)
@@ -619,6 +624,11 @@ export function Player(): JSX.Element | null {
 
   if (!nowPlaying) return null
 
+  // A bitmap subtitle codec (PGS, VobSub, ...) can never be switched to — confirmed live to
+  // crash the whole transcode if attempted (see switchSubtitleTrack's own comment) — so the
+  // language button's visibility and its cycling both key off this, not the raw track count.
+  const switchableSubtitleTracks = subtitleTracks.filter((t) => t.supported)
+
   async function togglePip(): Promise<void> {
     const video = videoRef.current
     if (!video) return
@@ -693,17 +703,16 @@ export function Player(): JSX.Element | null {
     video.muted = !video.muted
   }
 
-  // Cycles rather than a plain on/off toggle so this doesn't need reworking if this app's own
-  // transcode fallback ever starts carrying more than one subtitle track through — today it
-  // never does (see subtitleTracks' own comment), so in practice this only ever has one track
-  // to cycle to before landing back on "off".
-  function cycleSubtitleTrack(): void {
+  // A plain on/off toggle, not a picker: confirmed directly (see useTranscodeFallback.ts's
+  // switchSubtitleTrack) that this app's ffmpeg build can only ever carry one subtitle
+  // rendition per transcode session, so hls.js itself never has more than one track to choose
+  // between here — picking a *different* language means restarting the whole transcode, not
+  // switching among tracks already loaded, which is what the separate language button below
+  // (driven by subtitleTracks/switchSubtitleTrack) is for.
+  function toggleHlsSubtitleTrack(): void {
     const hls = hlsRef.current
-    if (!hls || subtitleTracks.length === 0) return
-    const ids = subtitleTracks.map((t) => t.id)
-    const currentIndex = ids.indexOf(hls.subtitleTrack)
-    const nextIndex = currentIndex + 1
-    hls.subtitleTrack = nextIndex < ids.length ? ids[nextIndex] : -1
+    if (!hls || hlsSubtitleTracks.length === 0) return
+    hls.subtitleTrack = hls.subtitleTrack === -1 ? hlsSubtitleTracks[0].id : -1
   }
 
   function handleVolumeChange(e: React.ChangeEvent<HTMLInputElement>): void {
@@ -810,18 +819,37 @@ export function Player(): JSX.Element | null {
               title="Volume"
             />
           </div>
-          {subtitleTracks.length > 0 && (
+          {hlsSubtitleTracks.length > 0 && (
             <button
               className="player-control-btn"
-              onClick={cycleSubtitleTrack}
-              title={activeSubtitleTrack === -1 ? 'Turn subtitles on' : 'Turn subtitles off'}
+              onClick={toggleHlsSubtitleTrack}
+              title={activeHlsSubtitleTrack === -1 ? 'Turn subtitles on' : 'Turn subtitles off'}
             >
-              💬{' '}
-              {activeSubtitleTrack === -1
-                ? 'CC Off'
-                : subtitleTracks.length > 1
-                  ? (subtitleTracks.find((t) => t.id === activeSubtitleTrack)?.name ?? 'CC On')
-                  : 'CC On'}
+              💬 {activeHlsSubtitleTrack === -1 ? 'CC Off' : 'CC On'}
+            </button>
+          )}
+          {// Only ever shown when this title's source genuinely has more than one *convertible*
+          // subtitle track (see SubtitleTrackInfo.supported — a bitmap codec like PGS can't be
+          // switched to at all, confirmed live to crash the whole transcode if attempted) —
+          // switching means restarting the whole transcode fallback (see switchSubtitleTrack's
+          // own comment for why this app's ffmpeg build can't just carry every language at
+          // once), so this is deliberately a separate, clearly-labeled action from the free/
+          // instant CC on/off toggle above.
+          switchableSubtitleTracks.length > 1 && (
+            <button
+              className="player-control-btn"
+              onClick={() =>
+                switchSubtitleTrack(
+                  nowPlaying.url,
+                  () => setReloadTick((t) => t + 1),
+                  (message) => setPlaybackError(`Failed to switch subtitle language: ${message}`)
+                )
+              }
+              title="Switch subtitle language (restarts the audio/playback fix, can take a minute or two)"
+            >
+              🌐{' '}
+              {subtitleTracks.find((t) => t.index === activeSubtitleTrackIndex)?.language?.toUpperCase() ??
+                `Track ${activeSubtitleTrackIndex + 1}`}
             </button>
           )}
           <button

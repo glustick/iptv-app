@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { chmodSync, existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'fs'
+import { chmodSync, existsSync, readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
@@ -32,6 +32,17 @@ function withFakeFfmpegMode<T>(mode: string, fn: () => Promise<T>): Promise<T> {
   return fn().finally(() => {
     if (previous === undefined) delete process.env.FAKE_FFMPEG_MODE
     else process.env.FAKE_FFMPEG_MODE = previous
+  })
+}
+
+function withEnv<T>(vars: Record<string, string>, fn: () => Promise<T>): Promise<T> {
+  const previous = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]))
+  Object.assign(process.env, vars)
+  return fn().finally(() => {
+    for (const [k, v] of Object.entries(previous)) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
   })
 }
 
@@ -98,11 +109,92 @@ describe('startTranscode', () => {
     )
 
     expect(result.playlistPath.endsWith('master.m3u8')).toBe(true)
+    expect(result.subtitleTracks).toEqual([{ index: 0, language: 'eng', supported: true }])
     const master = readFileSync(result.playlistPath, 'utf8')
     expect(master).toContain('TYPE=SUBTITLES')
     expect(master).toContain('URI="playlist_vtt.m3u8"')
     expect(master).toContain('playlist.m3u8')
     await service.stopTranscode('s1')
+  })
+
+  // Selecting which language to carry through is the whole point of exposing subtitleTracks —
+  // see ROADMAP.md for why this app's ffmpeg build can only ever map one at a time (every
+  // attempt at more than one, via -var_stream_map or separate outputs, fails identically).
+  it('reports every subtitle track found, in the source order ffmpeg\'s own -map specifier addresses them by', async () => {
+    const service = track(makeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG), subtitleGraceMs: 2000 }))
+
+    const result = await withFakeFfmpegMode('success_with_multiple_subtitles', () =>
+      service.startTranscode('irrelevant-source', true, 's1')
+    )
+
+    expect(result.subtitleTracks).toEqual([
+      { index: 0, language: 'eng', supported: true },
+      { index: 1, language: 'fre', supported: true }
+    ])
+    await service.stopTranscode('s1')
+  })
+
+  it('maps the requested subtitleStreamIndex, not just the first track', async () => {
+    const service = track(makeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG), subtitleGraceMs: 2000 }))
+
+    const result = await withFakeFfmpegMode('success_with_multiple_subtitles', () =>
+      service.startTranscode('irrelevant-source', true, 's1', 1)
+    )
+
+    // The fake ffmpeg's argv is fixed regardless of subtitleStreamIndex (see the fixture's own
+    // comment) — what this actually confirms is that a *non-default* requested index doesn't
+    // break the "does the mapped track exist" check that decides whether to wait for and build
+    // the master playlist. The real -map argv wiring (0:s:{index}) is confirmed separately
+    // against the genuine bundled ffmpeg binary, below.
+    expect(result.playlistPath.endsWith('master.m3u8')).toBe(true)
+    await service.stopTranscode('s1')
+  })
+
+  it('falls back to the plain playlist when the requested subtitleStreamIndex does not exist in the source', async () => {
+    const service = track(makeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG), subtitleGraceMs: 2000 }))
+
+    // Only track 0 exists in this fixture — requesting index 5 should behave exactly like "no
+    // subtitle track" rather than hanging around waiting for a rendition that can't exist.
+    const result = await withFakeFfmpegMode('success_with_subtitles', () =>
+      service.startTranscode('irrelevant-source', true, 's1', 5)
+    )
+
+    expect(result.playlistPath.endsWith('playlist.m3u8')).toBe(true)
+    expect(result.playlistPath.endsWith('master.m3u8')).toBe(false)
+    await service.stopTranscode('s1')
+  })
+
+  // Confirmed live against a real Blu-ray-sourced movie (see ROADMAP.md): a bitmap subtitle
+  // codec (PGS) crashes ffmpeg entirely — video and audio included — before it writes a single
+  // frame, because its webvtt encoder can only convert text-to-text or bitmap-to-bitmap. This is
+  // the safety net for that: retry once with no subtitle mapped at all rather than letting a
+  // subtitle-format incompatibility take down the audio fix this whole fallback exists for.
+  it('retries without any subtitle mapped when ffmpeg fails on an incompatible (bitmap) subtitle codec', async () => {
+    const markerFile = join(mkdtempSync(join(tmpdir(), 'allisoniptv-marker-')), 'attempted')
+    const service = track(makeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG) }))
+
+    const result = await withEnv({ FAKE_FFMPEG_MARKER_FILE: markerFile }, () =>
+      withFakeFfmpegMode('subtitle_codec_incompatible_then_succeeds', () =>
+        service.startTranscode('irrelevant-source', true, 's1', 0)
+      )
+    )
+
+    expect(result.playlistPath.endsWith('playlist.m3u8')).toBe(true)
+    expect(existsSync(markerFile)).toBe(true)
+    await service.stopTranscode('s1')
+  })
+
+  it('does not retry forever if the identical incompatible-codec failure recurs on the retry itself', async () => {
+    // Real ffmpeg genuinely can't hit this exact message twice in a row here — the retry maps
+    // no subtitle at all — but this confirms the guard (subtitleStreamIndex >= 0) is what
+    // actually prevents runaway recursion, not just "it happens not to recur in practice."
+    const service = track(makeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG) }))
+
+    await expect(
+      withFakeFfmpegMode('subtitle_codec_incompatible_always', () =>
+        service.startTranscode('irrelevant-source', true, 's1', 0)
+      )
+    ).rejects.toThrow(/ffmpeg exited before producing output/)
   })
 
   it('falls back to the plain video playlist if the subtitle rendition never actually appears', async () => {
@@ -443,6 +535,99 @@ describe('real ffmpeg integration', () => {
       expect(vtt).toContain('#EXTM3U')
 
       await service.stopTranscode('real-2')
+    } finally {
+      server.close()
+      rmSync(fixtureDir, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  // Confirms subtitleStreamIndex genuinely selects a *specific* track from a source with more
+  // than one, not just "a" subtitle track — by checking the actual cue text that comes through,
+  // not just that some master playlist got built. This is the strongest possible check that the
+  // requested index threads correctly into the real `-map 0:s:N?` argv against genuine ffmpeg.
+  it('selects the requested language track, not just the first one, from a real multi-subtitle input', async () => {
+    if (!ffmpegStaticPath) throw new Error('ffmpeg-static did not resolve a binary for this platform')
+
+    const fixtureDir = mkdtempSync(join(tmpdir(), 'allisoniptv-test-fixture-'))
+    const pad = (n: number): string => String(n).padStart(2, '0')
+    const buildSrt = (lines: string[]): string =>
+      lines.map((text, i) => `${i + 1}\n00:00:${pad(i * 2)},000 --> 00:00:${pad(i * 2 + 2)},000\n${text}\n`).join('\n')
+    const engSrtPath = join(fixtureDir, 'eng.srt')
+    const freSrtPath = join(fixtureDir, 'fre.srt')
+    writeFileSync(engSrtPath, buildSrt(['Hello', 'World', 'Line three', 'Line four', 'Line five', 'Line six']))
+    writeFileSync(freSrtPath, buildSrt(['Bonjour', 'Monde', 'Ligne trois', 'Ligne quatre', 'Ligne cinq', 'Ligne six']))
+    const inputPath = join(fixtureDir, 'synthetic-multi-subtitle-input.mkv')
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn(ffmpegStaticPath as string, [
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        'testsrc=duration=12:size=320x240:rate=10',
+        '-f',
+        'lavfi',
+        '-i',
+        'sine=frequency=440:duration=12',
+        '-i',
+        engSrtPath,
+        '-i',
+        freSrtPath,
+        '-map',
+        '0:v',
+        '-map',
+        '1:a',
+        '-map',
+        '2:s',
+        '-map',
+        '3:s',
+        '-c:v',
+        'libx264',
+        '-preset',
+        'ultrafast',
+        '-g',
+        '10',
+        '-keyint_min',
+        '10',
+        '-c:a',
+        'ac3',
+        '-c:s',
+        'srt',
+        '-metadata:s:s:0',
+        'language=eng',
+        '-metadata:s:s:1',
+        'language=fre',
+        inputPath
+      ])
+      proc.on('error', reject)
+      proc.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`fixture build exited ${code}`))))
+    })
+
+    const { url: originUrl, server } = await startSyntheticOrigin(inputPath)
+    try {
+      const service = track(
+        createTranscodeService({
+          resolveFfmpegPath: resolverFor(ffmpegStaticPath as string),
+          vodDeadlineMs: 30000,
+          pollIntervalMs: 200,
+          subtitleGraceMs: 15000
+        })
+      )
+
+      // Index 1 == the second subtitle stream == French, in source order.
+      const result = await service.startTranscode(originUrl, true, 'real-3', 1)
+
+      expect(result.subtitleTracks).toEqual([
+        { index: 0, language: 'eng', supported: true },
+        { index: 1, language: 'fre', supported: true }
+      ])
+      expect(result.playlistPath.endsWith('master.m3u8')).toBe(true)
+      const dir = join(result.playlistPath, '..')
+      const cueFiles = readdirSync(dir).filter((f) => f.endsWith('.vtt') && f !== 'playlist_vtt.m3u8')
+      const cueText = cueFiles.map((f) => readFileSync(join(dir, f), 'utf8')).join('\n')
+      expect(cueText).toContain('Bonjour')
+      expect(cueText).not.toContain('Hello')
+
+      await service.stopTranscode('real-3')
     } finally {
       server.close()
       rmSync(fixtureDir, { recursive: true, force: true })

@@ -54,6 +54,18 @@ export interface ProxyServerDeps {
   // is connected — the caller owns deciding what to do with that (dedup, logging, IPC to the
   // renderer), this module only ever detects it.
   onOffTunnelRedirect: (tunneledHost: string, redirectHost: string) => void
+  // The IP address actually written into the OS route for getVpnTunneledHost() (see
+  // writeRouteScript in index.ts) — resolved once, at connect time, independent of Chromium's
+  // own DNS resolution for this proxy's actual requests.
+  getVpnTunneledIp: () => string | null
+  // Node's dns.lookup in production — deliberately separate from Electron's own resolver (and
+  // from clearHostResolverCache, which only clears Chromium's cache) so this reflects a genuinely
+  // fresh, independent answer to compare against getVpnTunneledIp().
+  resolveHostIp: (hostname: string) => Promise<string | null>
+  // Called when a retry's fresh DNS lookup resolves the tunneled host to a different IP than
+  // getVpnTunneledIp() — distinct from onOffTunnelRedirect: same hostname, different underlying
+  // address, not a redirect at all, so the hostname-based check above can't catch it.
+  onTunneledHostIpChanged: (tunneledHost: string, tunneledIp: string, resolvedIp: string) => void
   // Transcoded HLS output lives on local disk, not upstream — index.ts wires this to
   // serveTranscodeFile so /__transcode/ requests never get treated as something to proxy.
   handleTranscodeRequest: (url: string, res: ServerResponse) => void
@@ -220,6 +232,27 @@ export function createProxyServer(deps: ProxyServerDeps): Server {
           // dialog. Best-effort only: whether or not it succeeds, the retry itself is what
           // matters, so failure here just means the retry runs without a fresh DNS lookup.
           deps.clearHostResolverCache().catch(() => {})
+          // The line above deliberately forces a *fresh* DNS answer for this retry — if that
+          // now differs from the one IP the VPN's OS route actually covers (see
+          // getVpnTunneledIp's own comment), this and every request after it would silently
+          // use the normal, non-tunneled route instead. onOffTunnelRedirect can't catch this:
+          // it only compares hostnames on an HTTP redirect, and this is the *same* hostname
+          // resolving to a *different* address, not a redirect at all. Warning-only, and never
+          // lets this delay the retry itself — fire-and-forget, same as the line above.
+          if (deps.isVpnConnected()) {
+            const tunneledHost = deps.getVpnTunneledHost()
+            const tunneledIp = deps.getVpnTunneledIp()
+            if (tunneledHost && tunneledIp && target.hostname.toLowerCase() === tunneledHost) {
+              deps
+                .resolveHostIp(target.hostname)
+                .then((resolvedIp) => {
+                  if (resolvedIp && resolvedIp !== tunneledIp) {
+                    deps.onTunneledHostIpChanged(tunneledHost, tunneledIp, resolvedIp)
+                  }
+                })
+                .catch(() => {})
+            }
+          }
           attemptUpstream()
           return
         }

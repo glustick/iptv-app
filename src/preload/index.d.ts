@@ -16,8 +16,19 @@ interface ProxyAPI {
   setTarget: (baseUrl: string) => Promise<void>
 }
 
+interface SubtitleTrackInfo {
+  index: number
+  language: string | null
+  supported: boolean
+}
+
 interface TranscodeAPI {
-  start: (sourceUrl: string, isVod: boolean, sessionId: string) => Promise<{ sessionId: string; url: string }>
+  start: (
+    sourceUrl: string,
+    isVod: boolean,
+    sessionId: string,
+    subtitleStreamIndex?: number
+  ) => Promise<{ sessionId: string; url: string; subtitleTracks: SubtitleTrackInfo[] }>
   stop: (sessionId: string) => Promise<void>
 }
 
