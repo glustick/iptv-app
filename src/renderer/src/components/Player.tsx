@@ -105,15 +105,21 @@ export function Player(): JSX.Element | null {
   const [headerVisible, setHeaderVisible] = useState(true)
   const [statsVisible, setStatsVisible] = useState(false)
   const [cursorNearBottom, setCursorNearBottom] = useState(false)
-  // hls.js's own on/off state for whichever single subtitle rendition the CURRENT transcode
-  // session carries (see subtitleTracks/switchSubtitleTrack below for the different, ffmpeg-
-  // level notion of "which language is this" — this is just "is it showing right now," and is
-  // free/instant, unlike switching languages which restarts the whole transcode). Only ever
-  // populated for VOD/series titles whose audio-fix fallback detected and carried through an
-  // embedded subtitle track — Live TV never has one, and most VOD/series never need the
-  // fallback at all.
+  // hls.js's own, free/instant notion of "which renditions does the CURRENT source's playlist
+  // carry" — populated from Hls.Events.SUBTITLE_TRACKS_UPDATED, which fires for *any* m3u8 with
+  // #EXT-X-MEDIA:TYPE=SUBTITLES entries, live or not: a genuinely multi-language live channel's
+  // own master playlist works exactly the same way here as the transcode fallback's own
+  // (VOD/series-only, always exactly one track) generated one does — hls.js doesn't distinguish
+  // the two. (See subtitleTracks/switchSubtitleTrack below for the separate, ffmpeg-level notion
+  // of "which language could this be transcoded with" — that one restarts the whole transcode to
+  // switch; this one is just picking among renditions the current source already offers.)
   const [hlsSubtitleTracks, setHlsSubtitleTracks] = useState<{ id: number; name: string }[]>([])
   const [activeHlsSubtitleTrack, setActiveHlsSubtitleTrack] = useState(-1)
+  // Same idea as hlsSubtitleTracks above, but for #EXT-X-MEDIA:TYPE=AUDIO — unlike subtitles
+  // there's no "off" state (a source with alternate audio renditions still always has exactly
+  // one active), so this only ever needs a track to cycle through, never an on/off toggle.
+  const [hlsAudioTracks, setHlsAudioTracks] = useState<{ id: number; name: string }[]>([])
+  const [activeHlsAudioTrack, setActiveHlsAudioTrack] = useState(-1)
   const wasOffline = useRef(false)
   const autoHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastStreamKeyRef = useRef<string | null>(null)
@@ -187,6 +193,8 @@ export function Player(): JSX.Element | null {
     setBuffering(true)
     setHlsSubtitleTracks([])
     setActiveHlsSubtitleTrack(-1)
+    setHlsAudioTracks([])
+    setActiveHlsAudioTrack(-1)
     beginTranscodeRun()
     let networkRetryCount = 0
     let mediaErrorRecoveryCount = 0
@@ -282,15 +290,24 @@ export function Player(): JSX.Element | null {
       hls.loadSource(sourceUrl)
       hls.attachMedia(video)
       // Fires once hls.js has parsed the (master or flat) playlist and knows what subtitle
-      // renditions, if any, it references — a no-op for every stream except a VOD/series title
-      // whose transcode fallback carried one through. Defaults to whatever hls.js auto-selected
-      // (the master playlist's own DEFAULT=YES marks the fallback's track that way), which is
-      // why subtitles already showed up with no explicit code enabling them.
+      // renditions, if any, it references — a genuinely multi-language live channel's own master
+      // playlist populates this the same way the transcode fallback's single-track one does.
+      // Defaults to whatever hls.js auto-selected (a master playlist's own DEFAULT=YES), which is
+      // why subtitles can already show up with no explicit code enabling them.
       hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, (_event, data) => {
-        setHlsSubtitleTracks(data.subtitleTracks.map((t) => ({ id: t.id, name: t.name || `Track ${t.id + 1}` })))
+        setHlsSubtitleTracks(data.subtitleTracks.map((t) => ({ id: t.id, name: t.name || t.lang?.toUpperCase() || `Track ${t.id + 1}` })))
       })
       hls.on(Hls.Events.SUBTITLE_TRACK_SWITCH, (_event, data) => {
         setActiveHlsSubtitleTrack(data.id)
+      })
+      // Same shape as subtitles above, for #EXT-X-MEDIA:TYPE=AUDIO — confirmed live on real
+      // multi-language channels this provider serves (0.6.1's "single flat rendition per
+      // channel" finding held for the 4 channels sampled then, but evidently not universally).
+      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, (_event, data) => {
+        setHlsAudioTracks(data.audioTracks.map((t) => ({ id: t.id, name: t.name || t.lang?.toUpperCase() || `Track ${t.id + 1}` })))
+      })
+      hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_event, data) => {
+        setActiveHlsAudioTrack(data.id)
       })
       hls.on(Hls.Events.ERROR, (_event, data) => {
         // Try transcoding once for the EC-3/AC-3-shaped failure (see useTranscodeFallback)
@@ -712,16 +729,30 @@ export function Player(): JSX.Element | null {
     video.muted = !video.muted
   }
 
-  // A plain on/off toggle, not a picker: confirmed directly (see useTranscodeFallback.ts's
-  // switchSubtitleTrack) that this app's ffmpeg build can only ever carry one subtitle
-  // rendition per transcode session, so hls.js itself never has more than one track to choose
-  // between here — picking a *different* language means restarting the whole transcode, not
-  // switching among tracks already loaded, which is what the separate language button below
-  // (driven by subtitleTracks/switchSubtitleTrack) is for.
-  function toggleHlsSubtitleTrack(): void {
+  // Cycles Off -> first language -> second -> ... -> Off, entirely client-side and free/instant
+  // — every track this cycles through is already loaded in the current source's own playlist,
+  // unlike the separate 🌐 button below (driven by subtitleTracks/switchSubtitleTrack), which
+  // picks a *different* language to transcode with and restarts the whole transcode to do it.
+  // A single-track source degrades to a plain on/off toggle automatically (cycling past the one
+  // track lands back on Off either way), so this replaces what used to be a separate, simpler
+  // toggle-only function without needing two code paths for the two cases.
+  function cycleHlsSubtitleTrack(): void {
     const hls = hlsRef.current
     if (!hls || hlsSubtitleTracks.length === 0) return
-    hls.subtitleTrack = hls.subtitleTrack === -1 ? hlsSubtitleTracks[0].id : -1
+    const currentIndex = hlsSubtitleTracks.findIndex((t) => t.id === hls.subtitleTrack)
+    const nextIndex = currentIndex + 1
+    hls.subtitleTrack = nextIndex >= hlsSubtitleTracks.length ? -1 : hlsSubtitleTracks[nextIndex].id
+  }
+
+  // Unlike subtitles there's no "off" state for audio — a source with alternate audio renditions
+  // still always has exactly one active — so this only ever cycles forward and wraps, never
+  // lands on an explicit off.
+  function cycleHlsAudioTrack(): void {
+    const hls = hlsRef.current
+    if (!hls || hlsAudioTracks.length < 2) return
+    const currentIndex = hlsAudioTracks.findIndex((t) => t.id === hls.audioTrack)
+    const nextIndex = (currentIndex + 1) % hlsAudioTracks.length
+    hls.audioTrack = hlsAudioTracks[nextIndex].id
   }
 
   function handleVolumeChange(e: React.ChangeEvent<HTMLInputElement>): void {
@@ -815,13 +846,24 @@ export function Player(): JSX.Element | null {
               title="Volume"
             />
           </div>
+          {hlsAudioTracks.length > 1 && (
+            <button className="player-control-btn" onClick={cycleHlsAudioTrack} title="Switch audio language">
+              🗣 {hlsAudioTracks.find((t) => t.id === activeHlsAudioTrack)?.name ?? 'Audio'}
+            </button>
+          )}
           {hlsSubtitleTracks.length > 0 && (
             <button
               className="player-control-btn"
-              onClick={toggleHlsSubtitleTrack}
-              title={activeHlsSubtitleTrack === -1 ? 'Turn subtitles on' : 'Turn subtitles off'}
+              onClick={cycleHlsSubtitleTrack}
+              title={
+                hlsSubtitleTracks.length > 1
+                  ? 'Cycle subtitle language (or off)'
+                  : activeHlsSubtitleTrack === -1
+                    ? 'Turn subtitles on'
+                    : 'Turn subtitles off'
+              }
             >
-              💬 {activeHlsSubtitleTrack === -1 ? 'CC Off' : 'CC On'}
+              💬 {activeHlsSubtitleTrack === -1 ? 'CC Off' : (hlsSubtitleTracks.find((t) => t.id === activeHlsSubtitleTrack)?.name ?? 'CC On')}
             </button>
           )}
           {// Only ever shown when this title's source genuinely has more than one *convertible*

@@ -29,7 +29,25 @@ function App(): JSX.Element {
     void init()
   }, [init])
 
-  useEffect(() => window.api.app.onOpenAbout(openAbout), [openAbout])
+  // The About modal renders at App's root, outside the fullscreen player's own DOM subtree —
+  // while truly fullscreen (the Fullscreen API only paints the fullscreened element and its
+  // descendants, regardless of z-index — see .modal-overlay's own comment for the separate,
+  // already-fixed windowed-mode stacking issue), opening it without exiting first would set
+  // aboutOpen with nothing actually visible on screen to show for it. Reachable from the native
+  // Help/App menu at any time, including mid-playback, unlike Settings (only ever opened via an
+  // in-app button that isn't even rendered while fullscreen).
+  useEffect(
+    () =>
+      window.api.app.onOpenAbout(() => {
+        void (async () => {
+          if (document.fullscreenElement) {
+            await document.exitFullscreen().catch(() => {})
+          }
+          openAbout()
+        })()
+      }),
+    [openAbout]
+  )
 
   // The ONE place Escape is handled for every overlay, front-to-back — including the
   // fullscreen player and its channel-swap bar, both of which used to have their own

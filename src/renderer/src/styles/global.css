@@ -1020,7 +1020,14 @@ body.resizing-col {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 40;
+  /* Above .player-overlay's own z-index: 50 — the player is a fixed, full-viewport layer
+     whenever anything is playing at all (not just true OS fullscreen — see global.css's own
+     .player-overlay comment), so a lower z-index here left every one of these modals invisible,
+     painted behind the player's opaque black background, any time something was playing. Doesn't
+     fix true OS fullscreen on its own (the Fullscreen API only paints the fullscreened element's
+     own DOM descendants, regardless of z-index, and this modal renders as a sibling at App's
+     root) — see App.tsx's onOpenAbout for that half of the fix. */
+  z-index: 60;
 }
 
 .modal-card {
