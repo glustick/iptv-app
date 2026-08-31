@@ -122,6 +122,10 @@ export function Player(): JSX.Element | null {
   const [activeHlsAudioTrack, setActiveHlsAudioTrack] = useState(-1)
   const wasOffline = useRef(false)
   const autoHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Read by the auto-hide effect below, not a dependency of it — a ref rather than state
+  // specifically so hovering doesn't re-run that effect (and thus needlessly reset/rearm the
+  // timer) on every mouseenter/mouseleave; the handlers below manage the timer directly instead.
+  const channelBarHovered = useRef(false)
   const lastStreamKeyRef = useRef<string | null>(null)
   const [transcodeElapsedSeconds, setTranscodeElapsedSeconds] = useState(0)
 
@@ -489,11 +493,15 @@ export function Player(): JSX.Element | null {
     }
   }, [nowPlaying, bufferProfile, reloadTick])
 
-  // The channel bar auto-hides after a few seconds of inactivity, like a real set-top
-  // box's channel banner. Re-armed whenever it's shown or a channel is picked from it.
+  // The channel bar auto-hides after a few seconds of inactivity, like a real set-top box's
+  // channel banner — but not while the cursor is actually sitting on it (see
+  // handleChannelBarMouseEnter/Leave below), so browsing it doesn't get cut off mid-read. Skips
+  // arming the timer at all if the cursor is already there the moment this effect runs (e.g. the
+  // bar reopening under a cursor that never left the bottom of the screen); mouseleave is what
+  // (re)starts it from then on.
   useEffect(() => {
     if (autoHideTimer.current) clearTimeout(autoHideTimer.current)
-    if (!showChannelBar) return
+    if (!showChannelBar || channelBarHovered.current) return
     autoHideTimer.current = setTimeout(() => setShowChannelBar(false), CHANNEL_BAR_AUTO_HIDE_MS)
     return () => {
       if (autoHideTimer.current) clearTimeout(autoHideTimer.current)
@@ -727,6 +735,26 @@ export function Player(): JSX.Element | null {
     const video = videoRef.current
     if (!video) return
     video.muted = !video.muted
+  }
+
+  // Pauses the auto-hide countdown entirely while the cursor is sitting on the channel bar
+  // (see the auto-hide effect above), rather than just repeatedly re-arming a fixed delay on
+  // every mouse move the way the header/seek bar's own hover-reveal effects do — this bar can
+  // have real content to read (a channel's whole programme timeline), so a moving cursor
+  // shouldn't still be racing a countdown against it.
+  function handleChannelBarMouseEnter(): void {
+    channelBarHovered.current = true
+    if (autoHideTimer.current) {
+      clearTimeout(autoHideTimer.current)
+      autoHideTimer.current = null
+    }
+  }
+
+  function handleChannelBarMouseLeave(): void {
+    channelBarHovered.current = false
+    if (showChannelBar) {
+      autoHideTimer.current = setTimeout(() => setShowChannelBar(false), CHANNEL_BAR_AUTO_HIDE_MS)
+    }
   }
 
   // Cycles Off -> first language -> second -> ... -> Off, entirely client-side and free/instant
@@ -967,7 +995,9 @@ export function Player(): JSX.Element | null {
         // channel bar already shows its own sense of "when" via the EPG grid's now-line) and
         // unless the cursor is actually near the bottom edge — see the mousemove effect above.
         nowPlaying.kind === 'live' && !showChannelBar && cursorNearBottom && <PlayerSeekBar videoRef={videoRef} />}
-        {showChannelBar && <PlayerChannelBar />}
+        {showChannelBar && (
+          <PlayerChannelBar onMouseEnter={handleChannelBarMouseEnter} onMouseLeave={handleChannelBarMouseLeave} />
+        )}
         {statsVisible && <PlayerStatsOverlay videoRef={videoRef} hlsRef={hlsRef} />}
       </div>
       {/* Rendered here too (App.tsx also mounts one) since .player-overlay is a fixed,
