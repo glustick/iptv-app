@@ -186,6 +186,12 @@ export interface AppSettings {
   playerMuted: boolean
   vpnProfiles: VpnProfile[]
   activeVpnProfileId: string | null
+  // Unlike activeVpnProfileId (cleared to null the moment the tunnel is deliberately
+  // deactivated), this is set whenever a profile is activated and never cleared by
+  // deactivation — it's what "reconnect to the last VPN configuration" (the VPN dot's own
+  // click-to-toggle) reads once activeVpnProfileId is already null. Only cleared if that exact
+  // profile is later deleted, so it doesn't dangle pointing at a config that no longer exists.
+  lastVpnProfileId: string | null
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -200,7 +206,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   playerVolume: 1,
   playerMuted: false,
   vpnProfiles: [],
-  activeVpnProfileId: null
+  activeVpnProfileId: null,
+  lastVpnProfileId: null
 }
 
 export type VpnStatus = 'disconnected' | 'connecting' | 'connected' | 'error'

@@ -88,7 +88,7 @@ export function Player(): JSX.Element | null {
   const setShowChannelBar = useAppStore((s) => s.setChannelBarOpen)
   const vpnHasProfiles = useAppStore((s) => s.settings.vpnProfiles.length > 0)
   const vpnStatus = useAppStore((s) => s.vpnStatus)
-  const openSettings = useAppStore((s) => s.openSettings)
+  const toggleVpnTunnel = useAppStore((s) => s.toggleVpnTunnel)
   const singleConnectionAccount = useAppStore((s) => s.singleConnectionAccount)
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -676,17 +676,6 @@ export function Player(): JSX.Element | null {
     }
   }
 
-  // The Settings modal renders at App's root, outside this player's own DOM subtree — while
-  // truly fullscreen (the Fullscreen API only paints the fullscreened element and its
-  // descendants), opening it without exiting first would set the store's settingsOpen flag with
-  // nothing actually visible on screen to show for it.
-  async function openVpnSettingsFromPlayer(): Promise<void> {
-    if (document.fullscreenElement) {
-      await document.exitFullscreen().catch(() => {})
-    }
-    openSettings()
-  }
-
   function togglePlayPause(): void {
     const video = videoRef.current
     if (!video) return
@@ -766,19 +755,21 @@ export function Player(): JSX.Element | null {
           {nowPlaying.name}
           {/* Same persistent warning-while-not-connected indicator as the top bar — visible
               here too since the player can cover the whole screen, including in fullscreen,
-              where the top bar itself is never reachable. */}
+              where the top bar itself is never reachable. Same click-to-toggle behavior too
+              (toggleVpnTunnel in the store) — reachable without leaving playback, including
+              fullscreen, unlike the Settings modal this used to open instead. */}
           {vpnHasProfiles && (
             <button
               className={`vpn-dot-button vpn-dot vpn-dot--${vpnStatus} player-title-vpn-dot`}
-              onClick={() => void openVpnSettingsFromPlayer()}
+              onClick={() => void toggleVpnTunnel()}
               title={
-                (vpnStatus === 'connected'
-                  ? 'VPN connected'
+                vpnStatus === 'connected'
+                  ? 'VPN connected — click to disconnect'
                   : vpnStatus === 'connecting'
-                    ? 'VPN connecting…'
+                    ? 'VPN connecting… — click to cancel'
                     : vpnStatus === 'error'
-                      ? 'VPN error — check Settings'
-                      : 'VPN not connected') + ' — click to open VPN settings'
+                      ? 'VPN error — click to reconnect'
+                      : 'VPN not connected — click to connect'
               }
             />
           )}

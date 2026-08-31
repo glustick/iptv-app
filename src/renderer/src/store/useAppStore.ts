@@ -195,6 +195,7 @@ interface AppState {
   removeVpnProfile: (id: string) => Promise<void>
   activateVpnProfile: (id: string) => Promise<void>
   deactivateVpnProfile: () => Promise<void>
+  toggleVpnTunnel: () => Promise<void>
   dismissVpnDisconnectWarning: () => void
   dismissVpnStreamRouteWarning: () => void
 }
@@ -639,7 +640,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       await get().deactivateVpnProfile()
     }
     const profile = get().settings.vpnProfiles.find((p) => p.id === id)
-    get().updateSettings({ vpnProfiles: get().settings.vpnProfiles.filter((p) => p.id !== id) })
+    get().updateSettings({
+      vpnProfiles: get().settings.vpnProfiles.filter((p) => p.id !== id),
+      // Otherwise the VPN dot's "reconnect to the last configuration" click would keep pointing
+      // at a profile that no longer exists.
+      lastVpnProfileId: get().settings.lastVpnProfileId === id ? null : get().settings.lastVpnProfileId
+    })
     // No-ops for a profile added before configs were imported on add (configPath still points
     // at wherever the user originally picked it, which this deliberately never touches).
     if (profile) void window.api.vpn.removeImportedConfig(profile.configPath)
@@ -657,7 +663,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       await window.api.vpn.disconnect()
       set({ vpnDisconnectingIntentionally: false })
     }
-    get().updateSettings({ activeVpnProfileId: id })
+    // lastVpnProfileId is set here too (not just activeVpnProfileId), and — unlike
+    // activeVpnProfileId — deactivateVpnProfile below never clears it, since it exists
+    // specifically to survive deactivation for the VPN dot's toggle-back-on click.
+    get().updateSettings({ activeVpnProfileId: id, lastVpnProfileId: id })
     try {
       await window.api.vpn.connect(profile.configPath, profile.username, profile.password)
     } catch (err) {
@@ -670,6 +679,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     await window.api.vpn.disconnect()
     set({ vpnDisconnectingIntentionally: false })
     get().updateSettings({ activeVpnProfileId: null })
+  },
+
+  // Backs the VPN status dot's click-to-toggle (TopBar.tsx, Player.tsx): connected or actively
+  // connecting reads as "on" and disconnects; anything else (disconnected, error, or genuinely
+  // no VPN configured yet) reads as "off" and (re)connects to whichever profile was last active,
+  // falling back to the first saved profile if none ever has been.
+  toggleVpnTunnel: async () => {
+    const { vpnStatus, settings } = get()
+    if (vpnStatus === 'connected' || vpnStatus === 'connecting') {
+      await get().deactivateVpnProfile()
+      return
+    }
+    const targetId = settings.lastVpnProfileId ?? settings.activeVpnProfileId ?? settings.vpnProfiles[0]?.id
+    if (!targetId) return
+    await get().activateVpnProfile(targetId)
   },
 
   dismissVpnDisconnectWarning: () => set({ vpnDisconnectWarning: null }),

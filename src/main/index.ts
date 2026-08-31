@@ -914,7 +914,19 @@ app.on('window-all-closed', () => {
 // active VPN connection: OpenVPN was spawned via sudo-prompt, entirely outside Electron's own
 // process tree, so quitting this app would otherwise leave the tunnel (and its route to the
 // Xtream server) running indefinitely in the background with nothing left to use it.
-app.on('before-quit', () => {
+//
+// stopVpn() is genuinely async (it writes SIGTERM to OpenVPN's management socket, then waits up
+// to 3s for the socket to actually close) — firing it without waiting, as this used to do, let
+// Electron's own quit sequence race ahead and tear down the process before OpenVPN necessarily
+// finished shutting the tunnel down. preventDefault() + re-quitting once stopVpn() resolves
+// guarantees the tunnel is actually closed first; the `quitting` flag stops this same handler
+// from preventing that second, deliberate app.quit() call from going through.
+let quittingAfterVpnStop = false
+app.on('before-quit', (event) => {
   transcodeService.stopAll()
-  if (vpnRuntime.status !== 'disconnected') void stopVpn()
+  if (vpnRuntime.status !== 'disconnected' && !quittingAfterVpnStop) {
+    event.preventDefault()
+    quittingAfterVpnStop = true
+    void stopVpn().finally(() => app.quit())
+  }
 })

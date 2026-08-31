@@ -20,6 +20,7 @@ export function TopBar(): JSX.Element {
   const isOnline = useAppStore((s) => s.isOnline)
   const vpnHasProfiles = useAppStore((s) => s.settings.vpnProfiles.length > 0)
   const vpnStatus = useAppStore((s) => s.vpnStatus)
+  const toggleVpnTunnel = useAppStore((s) => s.toggleVpnTunnel)
 
   return (
     <header className="top-bar">
@@ -59,19 +60,22 @@ export function TopBar(): JSX.Element {
 
       {/* Stays visible whenever a VPN profile exists, even deactivated — a deliberate warning
           that traffic isn't tunneled right now, not just a "currently connecting" indicator
-          that disappears the moment you're not actively using it. */}
+          that disappears the moment you're not actively using it. Doubles as an on/off toggle:
+          connected or connecting reads as "on" and a click disconnects; disconnected or error
+          reads as "off" and a click (re)connects to the last-active profile — see
+          toggleVpnTunnel in the store. */}
       {vpnHasProfiles && (
         <button
           className={`vpn-dot-button vpn-dot vpn-dot--${vpnStatus}`}
-          onClick={openSettings}
+          onClick={() => void toggleVpnTunnel()}
           title={
-            (vpnStatus === 'connected'
-              ? 'VPN connected'
+            vpnStatus === 'connected'
+              ? 'VPN connected — click to disconnect'
               : vpnStatus === 'connecting'
-                ? 'VPN connecting…'
+                ? 'VPN connecting… — click to cancel'
                 : vpnStatus === 'error'
-                  ? 'VPN error — check Settings'
-                  : 'VPN not connected') + ' — click to open VPN settings'
+                  ? 'VPN error — click to reconnect'
+                  : 'VPN not connected — click to connect'
           }
         />
       )}

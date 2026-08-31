@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { useAppStore } from './useAppStore'
 import { XtreamClient } from '../lib/xtream'
 import { DEFAULT_SETTINGS } from '../lib/types'
-import type { LiveStream, FavoriteEntry } from '../lib/types'
+import type { LiveStream, FavoriteEntry, VpnProfile } from '../lib/types'
 
 // Same rationale as storage.test.ts: the vitest environment is plain Node (see
 // vitest.config.mts), so useAppStore's own calls into lib/storage.ts (updateSettings,
@@ -233,5 +233,96 @@ describe('toggleFavorite / isFavorited', () => {
 
     useAppStore.getState().toggleFavorite(entry)
     expect(useAppStore.getState().isFavorited('live', 42)).toBe(false)
+  })
+})
+
+describe('VPN toggle (toggleVpnTunnel) and lastVpnProfileId', () => {
+  const profileA: VpnProfile = { id: 'a', name: 'A', configPath: '/a.ovpn', configName: 'a.ovpn', username: null, password: null }
+  const profileB: VpnProfile = { id: 'b', name: 'B', configPath: '/b.ovpn', configName: 'b.ovpn', username: null, password: null }
+
+  beforeEach(() => {
+    // window.api is a real contextBridge-frozen object in the packaged app (see Player.tsx's
+    // and TopBar.tsx's own VPN dot) — plain Node here, so a fresh mock per test is safe and
+    // doesn't risk touching a real OpenVPN process the way overriding it inside an actual
+    // Electron renderer would (contextBridge silently ignores that kind of reassignment there).
+    ;(globalThis as unknown as { window: { api: { vpn: Record<string, unknown> } } }).window = {
+      api: {
+        vpn: {
+          connect: vi.fn().mockResolvedValue(undefined),
+          disconnect: vi.fn().mockResolvedValue(undefined),
+          removeImportedConfig: vi.fn().mockResolvedValue(undefined)
+        }
+      }
+    }
+    useAppStore.setState({ vpnStatus: 'disconnected' })
+  })
+
+  it('falls back to the first saved profile when nothing has ever been activated', async () => {
+    useAppStore.setState({ settings: { ...DEFAULT_SETTINGS, vpnProfiles: [profileA, profileB] } })
+
+    await useAppStore.getState().toggleVpnTunnel()
+
+    expect(window.api.vpn.connect).toHaveBeenCalledWith(profileA.configPath, null, null)
+    expect(useAppStore.getState().settings.activeVpnProfileId).toBe('a')
+    expect(useAppStore.getState().settings.lastVpnProfileId).toBe('a')
+  })
+
+  it('reconnects to lastVpnProfileId, not just the first profile, once one has been set', async () => {
+    useAppStore.setState({
+      settings: { ...DEFAULT_SETTINGS, vpnProfiles: [profileA, profileB], lastVpnProfileId: 'b' }
+    })
+
+    await useAppStore.getState().toggleVpnTunnel()
+
+    expect(window.api.vpn.connect).toHaveBeenCalledWith(profileB.configPath, null, null)
+    expect(useAppStore.getState().settings.activeVpnProfileId).toBe('b')
+  })
+
+  it('disconnects (rather than reconnecting) when the tunnel is connected or connecting', async () => {
+    useAppStore.setState({
+      settings: { ...DEFAULT_SETTINGS, vpnProfiles: [profileA], activeVpnProfileId: 'a', lastVpnProfileId: 'a' },
+      vpnStatus: 'connected'
+    })
+
+    await useAppStore.getState().toggleVpnTunnel()
+
+    expect(window.api.vpn.disconnect).toHaveBeenCalled()
+    expect(window.api.vpn.connect).not.toHaveBeenCalled()
+
+    useAppStore.setState({ vpnStatus: 'connecting' })
+    await useAppStore.getState().toggleVpnTunnel()
+    expect(window.api.vpn.disconnect).toHaveBeenCalledTimes(2)
+  })
+
+  it('preserves lastVpnProfileId across a deactivate, unlike activeVpnProfileId', async () => {
+    useAppStore.setState({
+      settings: { ...DEFAULT_SETTINGS, vpnProfiles: [profileA], activeVpnProfileId: 'a', lastVpnProfileId: 'a' },
+      vpnStatus: 'connected'
+    })
+
+    await useAppStore.getState().deactivateVpnProfile()
+
+    expect(useAppStore.getState().settings.activeVpnProfileId).toBeNull()
+    expect(useAppStore.getState().settings.lastVpnProfileId).toBe('a')
+  })
+
+  it('clears lastVpnProfileId when that exact profile is removed, but not when a different one is', async () => {
+    useAppStore.setState({
+      settings: { ...DEFAULT_SETTINGS, vpnProfiles: [profileA, profileB], lastVpnProfileId: 'a' }
+    })
+
+    await useAppStore.getState().removeVpnProfile('b')
+    expect(useAppStore.getState().settings.lastVpnProfileId).toBe('a')
+
+    await useAppStore.getState().removeVpnProfile('a')
+    expect(useAppStore.getState().settings.lastVpnProfileId).toBeNull()
+  })
+
+  it('does nothing if disconnected with no saved profiles at all', async () => {
+    useAppStore.setState({ settings: { ...DEFAULT_SETTINGS, vpnProfiles: [] } })
+
+    await useAppStore.getState().toggleVpnTunnel()
+
+    expect(window.api.vpn.connect).not.toHaveBeenCalled()
   })
 })
