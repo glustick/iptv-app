@@ -12,6 +12,10 @@ const MAX_MEDIA_ERROR_RECOVERIES = 3
 const MEDIA_ERROR_RESET_AFTER_MS = 15000
 const PROGRESS_SAVE_INTERVAL_MS = 5000
 const CHANNEL_BAR_AUTO_HIDE_MS = 6000
+// Mirrors .player-channel-bar's own fixed CSS height exactly — used to test cursor position
+// against the bar's footprint (see the hover-tracking effect below) without needing to measure
+// the actual DOM element, which only exists while the bar is rendered at all.
+const CHANNEL_BAR_HEIGHT_PX = 206
 const SKIP_SECONDS = 10
 const SKIP_SECONDS_LONG = 60
 // How often (and for how long) to poll for the "video decoding, audio never has" symptom — see
@@ -123,8 +127,9 @@ export function Player(): JSX.Element | null {
   const wasOffline = useRef(false)
   const autoHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Read by the auto-hide effect below, not a dependency of it — a ref rather than state
-  // specifically so hovering doesn't re-run that effect (and thus needlessly reset/rearm the
-  // timer) on every mouseenter/mouseleave; the handlers below manage the timer directly instead.
+  // specifically so cursor movement over the bar doesn't re-run that effect (and thus
+  // needlessly reset/rearm the timer) on every pixel; the position-tracking effect further
+  // below manages the timer directly instead.
   const channelBarHovered = useRef(false)
   const lastStreamKeyRef = useRef<string | null>(null)
   const [transcodeElapsedSeconds, setTranscodeElapsedSeconds] = useState(0)
@@ -494,11 +499,10 @@ export function Player(): JSX.Element | null {
   }, [nowPlaying, bufferProfile, reloadTick])
 
   // The channel bar auto-hides after a few seconds of inactivity, like a real set-top box's
-  // channel banner — but not while the cursor is actually sitting on it (see
-  // handleChannelBarMouseEnter/Leave below), so browsing it doesn't get cut off mid-read. Skips
-  // arming the timer at all if the cursor is already there the moment this effect runs (e.g. the
-  // bar reopening under a cursor that never left the bottom of the screen); mouseleave is what
-  // (re)starts it from then on.
+  // channel banner — but is genuinely paused, not just re-armed, while the cursor is over it
+  // (see the position-tracking effect below). Skips arming the timer at all if the cursor is
+  // already there the moment this effect runs (e.g. the bar reopening under a cursor that never
+  // left the bottom of the screen).
   useEffect(() => {
     if (autoHideTimer.current) clearTimeout(autoHideTimer.current)
     if (!showChannelBar || channelBarHovered.current) return
@@ -507,6 +511,34 @@ export function Player(): JSX.Element | null {
       if (autoHideTimer.current) clearTimeout(autoHideTimer.current)
     }
   }, [showChannelBar, nowPlaying])
+
+  // Tracks whether the cursor is within the channel bar's own footprint by position (the same
+  // pattern the seek bar/header hover-reveal effects already use below), not via the bar's own
+  // DOM node's mouseenter/mouseleave — confirmed live that approach doesn't hold up: its rows
+  // are virtualized (react-window), and a scroll-triggered row swap under an otherwise-stationary
+  // cursor can fire a native mouseout with relatedTarget: null, which reads identically to the
+  // cursor genuinely leaving the container as far as React's mouseleave polyfill can tell, and
+  // did fire a spurious auto-hide in practice while actively browsing.
+  useEffect(() => {
+    const container = playerRef.current
+    if (!container || !showChannelBar) return
+    function onMouseMove(e: MouseEvent): void {
+      const rect = container!.getBoundingClientRect()
+      const overBar = e.clientY > rect.bottom - CHANNEL_BAR_HEIGHT_PX
+      if (overBar === channelBarHovered.current) return
+      channelBarHovered.current = overBar
+      if (overBar) {
+        if (autoHideTimer.current) {
+          clearTimeout(autoHideTimer.current)
+          autoHideTimer.current = null
+        }
+      } else {
+        autoHideTimer.current = setTimeout(() => setShowChannelBar(false), CHANNEL_BAR_AUTO_HIDE_MS)
+      }
+    }
+    container.addEventListener('mousemove', onMouseMove)
+    return () => container.removeEventListener('mousemove', onMouseMove)
+  }, [showChannelBar])
 
   // The channel bar only makes sense for live TV — hide it if playback switches to
   // something else (e.g. a series episode played from elsewhere while it was open).
@@ -735,26 +767,6 @@ export function Player(): JSX.Element | null {
     const video = videoRef.current
     if (!video) return
     video.muted = !video.muted
-  }
-
-  // Pauses the auto-hide countdown entirely while the cursor is sitting on the channel bar
-  // (see the auto-hide effect above), rather than just repeatedly re-arming a fixed delay on
-  // every mouse move the way the header/seek bar's own hover-reveal effects do — this bar can
-  // have real content to read (a channel's whole programme timeline), so a moving cursor
-  // shouldn't still be racing a countdown against it.
-  function handleChannelBarMouseEnter(): void {
-    channelBarHovered.current = true
-    if (autoHideTimer.current) {
-      clearTimeout(autoHideTimer.current)
-      autoHideTimer.current = null
-    }
-  }
-
-  function handleChannelBarMouseLeave(): void {
-    channelBarHovered.current = false
-    if (showChannelBar) {
-      autoHideTimer.current = setTimeout(() => setShowChannelBar(false), CHANNEL_BAR_AUTO_HIDE_MS)
-    }
   }
 
   // Cycles Off -> first language -> second -> ... -> Off, entirely client-side and free/instant
@@ -995,9 +1007,7 @@ export function Player(): JSX.Element | null {
         // channel bar already shows its own sense of "when" via the EPG grid's now-line) and
         // unless the cursor is actually near the bottom edge — see the mousemove effect above.
         nowPlaying.kind === 'live' && !showChannelBar && cursorNearBottom && <PlayerSeekBar videoRef={videoRef} />}
-        {showChannelBar && (
-          <PlayerChannelBar onMouseEnter={handleChannelBarMouseEnter} onMouseLeave={handleChannelBarMouseLeave} />
-        )}
+        {showChannelBar && <PlayerChannelBar />}
         {statsVisible && <PlayerStatsOverlay videoRef={videoRef} hlsRef={hlsRef} />}
       </div>
       {/* Rendered here too (App.tsx also mounts one) since .player-overlay is a fixed,

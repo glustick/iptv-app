@@ -1346,8 +1346,20 @@ body.resizing-col {
   border-bottom: 1px solid var(--border);
 }
 
+/* Distinct from the plain --bg-hover tint used almost everywhere else in this app (13+ other
+   spots) specifically because that generic treatment made the currently-playing channel
+   indistinguishable from an ordinarily-hovered row — reported live as "should be clearly
+   highlighted". A left accent stripe (inset box-shadow, not a real border, so it doesn't shift
+   the row's own layout) plus an accent-tinted background plus bolded, accent-colored channel
+   name text gives it three simultaneous, unambiguous signals instead of one subtle one. */
 .epg-row.active {
-  background: var(--bg-hover);
+  background: rgba(79, 124, 255, 0.16);
+  box-shadow: inset 3px 0 0 0 var(--accent);
+}
+
+.epg-row.active .epg-row-channel-name {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .epg-row--focused {

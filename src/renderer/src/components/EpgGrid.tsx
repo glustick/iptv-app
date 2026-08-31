@@ -143,13 +143,9 @@ interface EpgGridProps {
   // which never passes this) needing to know that setting exists.
   extraNavControls?: React.ReactNode
   // Row to scroll to once, right after the channel list first becomes non-empty — lets a caller
-  // (PlayerChannelBar) restore wherever the list was last scrolled to instead of always starting
-  // at the top. Omitted entirely by EpgGridPanel, which has no such persisted position to apply.
+  // (PlayerChannelBar) land on a specific row (the currently-playing channel) instead of always
+  // starting at the top. Omitted entirely by EpgGridPanel, which has no such row to scroll to.
   initialScrollIndex?: number
-  // Fires whenever the set of actually-rendered rows changes, with the index of the topmost one
-  // — the only way to observe "where the list is scrolled to" this component exposes, since
-  // react-window's List has no direct scroll-offset getter, only scrollToRow(index).
-  onVisibleRangeChange?: (topIndex: number) => void
   onSelectChannel: (channel: LiveStream) => void
   onWatchFullscreen: (channel: LiveStream) => void
   onWatchTimeshift: (channel: LiveStream, program: ShortEpgProgram) => void
@@ -169,7 +165,6 @@ export function EpgGrid({
   autoFocus = false,
   extraNavControls,
   initialScrollIndex,
-  onVisibleRangeChange,
   onSelectChannel,
   onWatchFullscreen,
   onWatchTimeshift
@@ -394,7 +389,6 @@ export function EpgGrid({
             listRef={listRef}
             rowCount={channels.length}
             rowHeight={rowHeight}
-            onRowsRendered={onVisibleRangeChange ? (visibleRows) => onVisibleRangeChange(visibleRows.startIndex) : undefined}
             rowProps={{
               channels,
               windowStart,

@@ -5,32 +5,18 @@ import type { LiveStream, ShortEpgProgram } from '../lib/types'
 
 const ROW_HEIGHT = 34
 
-interface PlayerChannelBarProps {
-  // Let Player.tsx pause/resume its own auto-hide countdown while the cursor is actually on
-  // this bar (see Player.tsx's handleChannelBarMouseEnter/Leave) — plain passthrough, this
-  // component has no hide-timer concept of its own.
-  onMouseEnter?: () => void
-  onMouseLeave?: () => void
-}
-
 // The fullscreen channel-swap bar: the same Gantt-chart EPG grid used for browsing Live TV
 // (channels down the vertical axis, time across the horizontal axis), just shrunk to a few
 // rows and overlaid on the bottom of the video instead of taking the whole screen. Clicking a
 // channel's name or anywhere on its programme timeline switches playback immediately — there's
 // no separate "preview vs. watch" step here since the player is already fullscreen.
-export function PlayerChannelBar({ onMouseEnter, onMouseLeave }: PlayerChannelBarProps): JSX.Element {
+export function PlayerChannelBar(): JSX.Element {
   const liveStreams = useAppStore((s) => s.liveStreams)
   const nowPlaying = useAppStore((s) => s.nowPlaying)
   const clockFormat = useAppStore((s) => s.settings.clockFormat)
   const play = useAppStore((s) => s.play)
   const playTimeshift = useAppStore((s) => s.playTimeshift)
   const openChannelPreview = useAppStore((s) => s.openChannelPreview)
-  const setChannelBarScrollIndex = useAppStore((s) => s.setChannelBarScrollIndex)
-  // Read once, at mount, rather than subscribed — this bar re-mounts fresh every time it opens
-  // (see channelBarScrollIndex's own comment in the store), so a plain snapshot here is enough
-  // to restore the last position, and avoids re-rendering this component on every scroll tick
-  // just to feed a value it only ever needs once.
-  const [initialScrollIndex] = useState(() => useAppStore.getState().channelBarScrollIndex)
 
   // liveStreams reflects whatever category was last browsed in the main grid — if fullscreen
   // was entered some other way (e.g. picked from Favorites or Recently Watched), the actual
@@ -58,6 +44,17 @@ export function PlayerChannelBar({ onMouseEnter, onMouseLeave }: PlayerChannelBa
     return [placeholder, ...liveStreams]
   }, [liveStreams, nowPlaying])
 
+  // Scrolled to once, right when the bar opens, so the channel actually playing is immediately
+  // visible instead of the list always starting at the top — a lazy useState initializer rather
+  // than an effect specifically so it only ever runs this one time per mount (this component,
+  // and the state along with it, is torn down and rebuilt fresh every time the bar closes and
+  // reopens). Free-scrolling afterward during the same open is left alone: EpgGrid's own
+  // appliedInitialScroll guard applies an initialScrollIndex exactly once, not on every render.
+  const [initialScrollIndex] = useState(() => {
+    const index = channels.findIndex((c) => nowPlaying?.kind === 'live' && c.stream_id === nowPlaying.streamId)
+    return index >= 0 ? index : 0
+  })
+
   const handleSelect = useCallback(
     (channel: LiveStream) => {
       play('live', channel.stream_id, channel.name, 'm3u8', channel.stream_icon, channel.tv_archive)
@@ -76,12 +73,7 @@ export function PlayerChannelBar({ onMouseEnter, onMouseLeave }: PlayerChannelBa
   )
 
   return (
-    <div
-      className="player-channel-bar"
-      onClick={(e) => e.stopPropagation()}
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
-    >
+    <div className="player-channel-bar" onClick={(e) => e.stopPropagation()}>
       <EpgGrid
         channels={channels}
         activeStreamId={nowPlaying?.kind === 'live' ? nowPlaying.streamId : undefined}
@@ -89,7 +81,6 @@ export function PlayerChannelBar({ onMouseEnter, onMouseLeave }: PlayerChannelBa
         rowHeight={ROW_HEIGHT}
         autoFocus
         initialScrollIndex={initialScrollIndex}
-        onVisibleRangeChange={setChannelBarScrollIndex}
         onSelectChannel={handleSelect}
         onWatchFullscreen={handleSelect}
         onWatchTimeshift={handleTimeshift}
