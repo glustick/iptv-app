@@ -55,6 +55,32 @@ const api = {
       ipcRenderer.on('vpn:stream-route-warning', listener)
       return () => ipcRenderer.removeListener('vpn:stream-route-warning', listener)
     }
+  },
+  updater: {
+    check: () => ipcRenderer.invoke('update:check') as Promise<void>,
+    download: () => ipcRenderer.invoke('update:download') as Promise<void>,
+    // Tears the app down to install — nothing meaningful to await after this resolves.
+    install: () => ipcRenderer.invoke('update:install') as Promise<void>,
+    onAvailable: (callback: (payload: { version: string }) => void) => {
+      const listener = (_event: unknown, payload: { version: string }): void => callback(payload)
+      ipcRenderer.on('update:available', listener)
+      return () => ipcRenderer.removeListener('update:available', listener)
+    },
+    onProgress: (callback: (payload: { percent: number }) => void) => {
+      const listener = (_event: unknown, payload: { percent: number }): void => callback(payload)
+      ipcRenderer.on('update:progress', listener)
+      return () => ipcRenderer.removeListener('update:progress', listener)
+    },
+    onDownloaded: (callback: (payload: { version: string }) => void) => {
+      const listener = (_event: unknown, payload: { version: string }): void => callback(payload)
+      ipcRenderer.on('update:downloaded', listener)
+      return () => ipcRenderer.removeListener('update:downloaded', listener)
+    },
+    onError: (callback: (payload: { message: string }) => void) => {
+      const listener = (_event: unknown, payload: { message: string }): void => callback(payload)
+      ipcRenderer.on('update:error', listener)
+      return () => ipcRenderer.removeListener('update:error', listener)
+    }
   }
 }
 

@@ -1559,6 +1559,28 @@ body.resizing-col {
   text-align: left;
 }
 
+.about-check-updates {
+  margin-top: 16px;
+}
+
+.update-card {
+  max-width: 420px;
+}
+
+.update-progress-track {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.update-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
 /* Settings page */
 
 .settings-card {

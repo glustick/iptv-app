@@ -11,7 +11,12 @@ interface AppInfo {
 export function AboutModal(): JSX.Element | null {
   const aboutOpen = useAppStore((s) => s.aboutOpen)
   const closeAbout = useAppStore((s) => s.closeAbout)
+  const checkForUpdates = useAppStore((s) => s.checkForUpdates)
   const [info, setInfo] = useState<AppInfo | null>(null)
+  // Local, not store state — this only ever means "the check() call this button made hasn't
+  // resolved yet," not "an update was found" (that's updateInfo, surfaced by UpdatePrompt
+  // instead, wherever the user is, not just while this modal happens to be open).
+  const [checking, setChecking] = useState(false)
 
   useEffect(() => {
     if (!aboutOpen) return
@@ -19,6 +24,17 @@ export function AboutModal(): JSX.Element | null {
   }, [aboutOpen])
 
   if (!aboutOpen) return null
+
+  async function handleCheckForUpdates(): Promise<void> {
+    setChecking(true)
+    try {
+      await checkForUpdates()
+    } catch (err) {
+      console.error('[about] update check failed:', err)
+    } finally {
+      setChecking(false)
+    }
+  }
 
   return (
     <div className="modal-overlay" onClick={closeAbout}>
@@ -38,6 +54,14 @@ export function AboutModal(): JSX.Element | null {
             <dt>Build</dt>
             <dd>{info?.buildNumber ?? '—'}</dd>
           </dl>
+          <button
+            type="button"
+            className="secondary-button about-check-updates"
+            onClick={() => void handleCheckForUpdates()}
+            disabled={checking}
+          >
+            {checking ? 'Checking…' : 'Check for Updates'}
+          </button>
         </div>
       </div>
     </div>

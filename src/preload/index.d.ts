@@ -54,6 +54,16 @@ interface VpnAPI {
   onStreamRouteWarning: (callback: (payload: { message: string }) => void) => () => void
 }
 
+interface UpdaterAPI {
+  check: () => Promise<void>
+  download: () => Promise<void>
+  install: () => Promise<void>
+  onAvailable: (callback: (payload: { version: string }) => void) => () => void
+  onProgress: (callback: (payload: { percent: number }) => void) => () => void
+  onDownloaded: (callback: (payload: { version: string }) => void) => () => void
+  onError: (callback: (payload: { message: string }) => void) => () => void
+}
+
 declare global {
   interface Window {
     electron: ElectronAPI
@@ -64,6 +74,7 @@ declare global {
       transcode: TranscodeAPI
       safeStorage: SafeStorageAPI
       vpn: VpnAPI
+      updater: UpdaterAPI
     }
   }
 }

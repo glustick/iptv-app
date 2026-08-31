@@ -326,3 +326,56 @@ describe('VPN toggle (toggleVpnTunnel) and lastVpnProfileId', () => {
     expect(window.api.vpn.connect).not.toHaveBeenCalled()
   })
 })
+
+describe('auto-update actions', () => {
+  beforeEach(() => {
+    ;(globalThis as unknown as { window: { api: { updater: Record<string, unknown> } } }).window = {
+      api: {
+        updater: {
+          check: vi.fn().mockResolvedValue(undefined),
+          download: vi.fn().mockResolvedValue(undefined),
+          install: vi.fn().mockResolvedValue(undefined)
+        }
+      }
+    }
+    useAppStore.setState({ updateInfo: null, updateDownloadPercent: null, updateDownloaded: false, updateError: null, updateDismissed: false })
+  })
+
+  it('checkForUpdates calls window.api.updater.check and clears any previous error', async () => {
+    useAppStore.setState({ updateError: 'stale error from a previous attempt' })
+
+    await useAppStore.getState().checkForUpdates()
+
+    expect(window.api.updater.check).toHaveBeenCalled()
+    expect(useAppStore.getState().updateError).toBeNull()
+  })
+
+  it('downloadUpdate sets updateDownloadPercent to 0 immediately and calls window.api.updater.download', async () => {
+    const promise = useAppStore.getState().downloadUpdate()
+    expect(useAppStore.getState().updateDownloadPercent).toBe(0)
+    await promise
+
+    expect(window.api.updater.download).toHaveBeenCalled()
+  })
+
+  it('downloadUpdate records a visible error and resets progress if the download itself fails', async () => {
+    ;(window.api.updater.download as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('network unreachable'))
+
+    await useAppStore.getState().downloadUpdate()
+
+    expect(useAppStore.getState().updateError).toBe('network unreachable')
+    expect(useAppStore.getState().updateDownloadPercent).toBeNull()
+  })
+
+  it('installUpdate calls window.api.updater.install', () => {
+    useAppStore.getState().installUpdate()
+
+    expect(window.api.updater.install).toHaveBeenCalled()
+  })
+
+  it('dismissUpdatePrompt sets updateDismissed', () => {
+    useAppStore.getState().dismissUpdatePrompt()
+
+    expect(useAppStore.getState().updateDismissed).toBe(true)
+  })
+})

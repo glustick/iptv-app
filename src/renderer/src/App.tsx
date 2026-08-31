@@ -12,6 +12,7 @@ import { PinPrompt } from './components/PinPrompt'
 import { SettingsPage } from './components/SettingsPage'
 import { AboutModal } from './components/AboutModal'
 import { VpnWarnings } from './components/VpnWarnings'
+import { UpdatePrompt } from './components/UpdatePrompt'
 
 function App(): JSX.Element {
   const init = useAppStore((s) => s.init)
@@ -107,6 +108,7 @@ function App(): JSX.Element {
       <SettingsPage />
       <AboutModal />
       <VpnWarnings />
+      <UpdatePrompt />
     </div>
   )
 }

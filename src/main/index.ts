@@ -892,9 +892,37 @@ app.whenReady().then(async () => {
   // Checks the GitHub Releases this app's CI publishes to (see .github/workflows/release.yml
   // and the "publish" field in package.json) — a no-op until the app is actually packaged
   // and code-signed, since autoUpdater has nothing to check against in dev and unsigned
-  // installs can download but not silently apply an update.
+  // installs can download but not silently apply an update (macOS in particular refuses to
+  // apply one at all without notarization — see ROADMAP.md).
+  //
+  // autoDownload is off deliberately: checkForUpdatesAndNotify() (the one-liner this replaces)
+  // downloads the moment it finds a newer version and only ever surfaces Electron's own native
+  // OS notification, with no way to ask first or show progress. Driving updater.on(...) events
+  // into the renderer instead (below) lets the UI offer an actual "Update now / Later" prompt
+  // and only spend the user's bandwidth once they've said yes.
+  autoUpdater.autoDownload = false
+  autoUpdater.on('update-available', (info) => {
+    mainWindowRef?.webContents.send('update:available', { version: info.version })
+  })
+  autoUpdater.on('download-progress', (progress) => {
+    mainWindowRef?.webContents.send('update:progress', { percent: progress.percent })
+  })
+  autoUpdater.on('update-downloaded', (info) => {
+    mainWindowRef?.webContents.send('update:downloaded', { version: info.version })
+  })
+  autoUpdater.on('error', (err) => {
+    console.error('[auto-update] error:', err)
+    mainWindowRef?.webContents.send('update:error', { message: err.message })
+  })
+
+  ipcMain.handle('update:check', () => autoUpdater.checkForUpdates())
+  ipcMain.handle('update:download', () => autoUpdater.downloadUpdate())
+  // quitAndInstall() tears down the app itself — nothing after this call runs. The renderer
+  // only ever calls this from an explicit "Restart now" click, never automatically.
+  ipcMain.handle('update:install', () => autoUpdater.quitAndInstall())
+
   if (!is.dev) {
-    autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+    autoUpdater.checkForUpdates().catch((err) => {
       console.error('[auto-update] check failed:', err)
     })
   }

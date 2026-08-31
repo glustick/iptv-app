@@ -145,6 +145,23 @@ interface AppState {
   // bypassing the VPN. null when nothing like that has been seen yet.
   vpnStreamRouteWarning: string | null
 
+  // A newer version found by the main process's autoUpdater (see update:available in
+  // src/main/index.ts) — version alone until it's actually finished downloading, at which point
+  // updateDownloaded flips true and this same field's version is what's offered to install.
+  // null whenever there's nothing to prompt about.
+  updateInfo: { version: string } | null
+  // Non-null only while a user-initiated download (see downloadUpdate) is actually in flight —
+  // there's no "downloading" state otherwise, since autoDownload is off (see main/index.ts).
+  updateDownloadPercent: number | null
+  updateDownloaded: boolean
+  // Only ever set from a failure during a download the user explicitly asked for — see the
+  // onError wiring in init() for why a background/launch-time check failure never reaches this.
+  updateError: string | null
+  // "Later" on the available-prompt sets this for the rest of the running session; a fresh
+  // update:available event (the next launch, or a manual re-check) resets it, so dismissing
+  // once doesn't silence the prompt forever.
+  updateDismissed: boolean
+
   init: () => Promise<void>
   addProfile: (profile: Omit<XtreamProfile, 'id'>) => Promise<void>
   removeProfile: (id: string) => Promise<void>
@@ -198,6 +215,11 @@ interface AppState {
   toggleVpnTunnel: () => Promise<void>
   dismissVpnDisconnectWarning: () => void
   dismissVpnStreamRouteWarning: () => void
+
+  checkForUpdates: () => Promise<void>
+  downloadUpdate: () => Promise<void>
+  installUpdate: () => void
+  dismissUpdatePrompt: () => void
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -247,6 +269,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   vpnDisconnectingIntentionally: false,
   vpnStreamRouteWarning: null,
 
+  updateInfo: null,
+  updateDownloadPercent: null,
+  updateDownloaded: false,
+  updateError: null,
+  updateDismissed: false,
+
   // Wrapped in its own try/catch (unlike most of this store's other async actions, which rely
   // on the caller to handle rejection) because App.tsx calls this fire-and-forget from a mount
   // effect — a useEffect callback can't itself be async, so there's no caller-side await to
@@ -293,6 +321,32 @@ export const useAppStore = create<AppState>((set, get) => ({
       // chain and can tell whether a hop landed outside the tunneled host.
       window.api?.vpn?.onStreamRouteWarning((payload) => {
         set({ vpnStreamRouteWarning: payload.message })
+      })
+
+      // updateAvailable resets updateDismissed too — a version found on a later check (the next
+      // launch, or a manual "Check for Updates") should prompt again even if the user dismissed
+      // an earlier one, rather than staying silenced forever from one "Later" click.
+      window.api?.updater?.onAvailable((payload) => {
+        set({ updateInfo: payload, updateDismissed: false, updateError: null })
+      })
+      window.api?.updater?.onProgress((payload) => {
+        set({ updateDownloadPercent: payload.percent })
+      })
+      // Also resets updateDismissed, same reasoning as onAvailable above — "restart to install"
+      // is a more consequential prompt than the "want to download this at all" one a user might
+      // have dismissed earlier, so it resurfaces regardless of that earlier dismissal. From here
+      // on, dismissing THIS prompt (see UpdatePrompt.tsx's plain "Later" button) behaves like a
+      // real toggle again — there's no further step this needs to defer to.
+      window.api?.updater?.onDownloaded((payload) => {
+        set({ updateInfo: payload, updateDownloaded: true, updateDownloadPercent: null, updateDismissed: false })
+      })
+      // Only ever shown if it happens while the user is actively waiting on a download they
+      // asked for (see downloadUpdate) — a background/launch-time check failing is common and
+      // benign (offline, an unsigned build with nothing to actually apply an update — see
+      // ROADMAP.md) and stays silent (console-logged in the main process) rather than alarming
+      // someone with an error for a check they never asked for.
+      window.api?.updater?.onError((payload) => {
+        set({ updateError: payload.message, updateDownloadPercent: null })
       })
 
       const active = profiles.find((p) => p.id === activeId) ?? profiles[0]
@@ -697,5 +751,30 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   dismissVpnDisconnectWarning: () => set({ vpnDisconnectWarning: null }),
-  dismissVpnStreamRouteWarning: () => set({ vpnStreamRouteWarning: null })
+  dismissVpnStreamRouteWarning: () => set({ vpnStreamRouteWarning: null }),
+
+  // Manual re-check (an "Check for Updates" button, not just the launch-time one in
+  // src/main/index.ts) — update:available/update:not-available both resolve this promise, but
+  // only the former actually pushes a payload back through the onAvailable listener above.
+  checkForUpdates: async () => {
+    set({ updateError: null })
+    await window.api.updater.check()
+  },
+
+  downloadUpdate: async () => {
+    set({ updateDownloadPercent: 0, updateError: null })
+    try {
+      await window.api.updater.download()
+    } catch (err) {
+      set({ updateError: err instanceof Error ? err.message : 'Failed to download update', updateDownloadPercent: null })
+    }
+  },
+
+  // quitAndInstall() (invoked by the main process on the other end of this) tears the whole app
+  // down itself — nothing to await or update state for afterward.
+  installUpdate: () => {
+    void window.api.updater.install()
+  },
+
+  dismissUpdatePrompt: () => set({ updateDismissed: true })
 }))
