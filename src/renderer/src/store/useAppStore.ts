@@ -105,6 +105,11 @@ interface AppState {
   // otherwise Player.tsx would need its own separate Escape listener again, which is exactly
   // the uncoordinated-multiple-listeners pattern that caused a real race condition before.
   channelBarOpen: boolean
+  // Topmost visible channel row in the fullscreen channel-swap bar, kept here (not as local
+  // state in PlayerChannelBar) specifically so it survives that component unmounting when the
+  // bar closes — reopening it (same session) restores the scroll position instead of always
+  // snapping back to the top of the list.
+  channelBarScrollIndex: number
 
   openSeries: SeriesItem | null
   seriesInfo: SeriesInfo | null
@@ -163,6 +168,7 @@ interface AppState {
   playTimeshift: (channel: LiveStream, program: ShortEpgProgram) => void
   stop: () => void
   setChannelBarOpen: (open: boolean) => void
+  setChannelBarScrollIndex: (index: number) => void
 
   openSeriesDetail: (item: SeriesItem) => Promise<void>
   closeSeriesDetail: () => void
@@ -216,6 +222,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   nowPlaying: null,
   channelBarOpen: false,
+  channelBarScrollIndex: 0,
 
   openSeries: null,
   seriesInfo: null,
@@ -532,6 +539,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   stop: () => set({ nowPlaying: null, channelBarOpen: false }),
   setChannelBarOpen: (open) => set({ channelBarOpen: open }),
+  setChannelBarScrollIndex: (index) => set({ channelBarScrollIndex: index }),
 
   openSeriesDetail: async (item) => {
     const { client } = get()

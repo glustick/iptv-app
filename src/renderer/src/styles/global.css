@@ -743,12 +743,11 @@ body.resizing-col {
   background: rgba(11, 13, 18, 0.9);
 }
 
-/* Fullscreen replaces the header's normal in-flow, always-visible bar with a translucent
-   overlay floating on top of the video — hidden by default (see Player.tsx's
-   fullscreenHeaderVisible) and revealed only by clicking the top edge of the screen, the same
-   "hidden chrome" pattern most fullscreen video players use. Taking it out of flex flow (rather
-   than just hiding it) is what lets the video expand to fill the freed space instead of leaving
-   a blank gap where the header used to be. */
+/* The header is always a translucent overlay floating on top of the video, in both windowed and
+   fullscreen mode — visible on load, then hidden unless the cursor is in the top 10% of the
+   player (see Player.tsx's headerVisible), the same "hidden chrome" pattern most video players
+   use. Taking it out of flex flow (rather than just hiding it) is what lets the video expand to
+   fill the freed space instead of leaving a blank gap where the header used to be. */
 .player-header--overlay {
   position: absolute;
   top: 0;

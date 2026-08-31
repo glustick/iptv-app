@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { EpgGrid } from './EpgGrid'
 import type { LiveStream, ShortEpgProgram } from '../lib/types'
@@ -17,6 +17,12 @@ export function PlayerChannelBar(): JSX.Element {
   const play = useAppStore((s) => s.play)
   const playTimeshift = useAppStore((s) => s.playTimeshift)
   const openChannelPreview = useAppStore((s) => s.openChannelPreview)
+  const setChannelBarScrollIndex = useAppStore((s) => s.setChannelBarScrollIndex)
+  // Read once, at mount, rather than subscribed — this bar re-mounts fresh every time it opens
+  // (see channelBarScrollIndex's own comment in the store), so a plain snapshot here is enough
+  // to restore the last position, and avoids re-rendering this component on every scroll tick
+  // just to feed a value it only ever needs once.
+  const [initialScrollIndex] = useState(() => useAppStore.getState().channelBarScrollIndex)
 
   // liveStreams reflects whatever category was last browsed in the main grid — if fullscreen
   // was entered some other way (e.g. picked from Favorites or Recently Watched), the actual
@@ -69,6 +75,8 @@ export function PlayerChannelBar(): JSX.Element {
         clockFormat={clockFormat}
         rowHeight={ROW_HEIGHT}
         autoFocus
+        initialScrollIndex={initialScrollIndex}
+        onVisibleRangeChange={setChannelBarScrollIndex}
         onSelectChannel={handleSelect}
         onWatchFullscreen={handleSelect}
         onWatchTimeshift={handleTimeshift}

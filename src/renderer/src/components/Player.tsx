@@ -54,25 +54,24 @@ function formatElapsed(seconds: number): string {
 // while there's genuinely still time left for the account-cap explanation to be useful, rather
 // than only once the wait is already effectively over.
 const SINGLE_CONNECTION_HINT_AFTER_SECONDS = 60
-// Click-zone thresholds for fullscreen mode, in pixels from the respective screen edge —
-// roughly matched to the header's own height and the channel bar's (see CHANNEL_BAR height in
-// global.css) so each zone lines up with the chrome it reveals rather than an arbitrary split.
-// Deliberately independent from SEEKBAR_REVEAL_ZONE_FRACTION just below, even though both sit
-// near the bottom edge: this one is click-triggered and fullscreen-only (opens the EPG channel
-// bar), while the seek bar's is hover-triggered and applies in windowed mode too — a fixed
-// pixel count wouldn't scale sensibly there. They don't currently conflict (a click still
-// reaches the video first; the seek bar only intercepts a much thinner strip right at its own
-// edge), but if either threshold changes, sanity-check the other still makes sense next to it.
-const FULLSCREEN_BOTTOM_ZONE_PX = 220
-const FULLSCREEN_TOP_ZONE_PX = 80
-// The seek bar itself reveals on hover/cursor position (not click, unlike the header/channel
-// bar above) — a fraction of the player's own height rather than a fixed pixel count so it
-// scales sensibly whether the player is windowed or truly fullscreen.
+// Click-zone threshold for the fullscreen EPG channel bar, in pixels from the bottom screen
+// edge — roughly matched to the channel bar's own height (see CHANNEL_BAR height in global.css)
+// so the zone lines up with the chrome it reveals rather than an arbitrary split. Deliberately
+// independent from SEEKBAR_REVEAL_ZONE_FRACTION just below, even though both sit near the
+// bottom edge: this one is click-triggered and fullscreen-only, while the seek bar's is
+// hover-triggered and applies in windowed mode too — a fixed pixel count wouldn't scale
+// sensibly there. They don't currently conflict (a click still reaches the video first; the
+// seek bar only intercepts a much thinner strip right at its own edge), but if either threshold
+// changes, sanity-check the other still makes sense next to it.
+const BOTTOM_ZONE_PX = 220
+// The seek bar itself reveals on hover/cursor position (not click) — a fraction of the player's
+// own height rather than a fixed pixel count so it scales sensibly whether the player is
+// windowed or truly fullscreen.
 const SEEKBAR_REVEAL_ZONE_FRACTION = 0.2
-// VOD/series' fullscreen header (unlike Live's, which stays click-toggled — see
-// handlePlayAreaClick) reveals purely on cursor position, the same hover-driven shape as the
-// seek bar above rather than FULLSCREEN_TOP_ZONE_PX's fixed pixel count, since it's meant to
-// track "top 10% of the screen" regardless of window size.
+// The header reveals purely on cursor position, in both windowed and fullscreen mode and for
+// every content kind — cursor in the top 10% of the player shows it, moving away hides it again,
+// no click needed. A fraction of the player's own height (not a fixed pixel count) so it tracks
+// "top 10% of the player" regardless of window size.
 const HEADER_REVEAL_ZONE_FRACTION = 0.1
 
 export function Player(): JSX.Element | null {
@@ -103,7 +102,7 @@ export function Player(): JSX.Element | null {
   const [muted, setMuted] = useState(false)
   const [volume, setVolume] = useState(1)
   const [isFullscreen, setIsFullscreen] = useState(false)
-  const [fullscreenHeaderVisible, setFullscreenHeaderVisible] = useState(false)
+  const [headerVisible, setHeaderVisible] = useState(true)
   const [statsVisible, setStatsVisible] = useState(false)
   const [cursorNearBottom, setCursorNearBottom] = useState(false)
   // hls.js's own on/off state for whichever single subtitle rendition the CURRENT transcode
@@ -578,15 +577,12 @@ export function Player(): JSX.Element | null {
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange)
   }, [])
 
-  // The header starts hidden every time fullscreen is entered and is simply always visible
-  // again once fullscreen ends, matching its normal in-flow, always-on windowed-mode appearance.
-  // How it's *revealed* while fullscreen differs by content kind: Live keeps the original
-  // click-the-top-edge toggle (see handlePlayAreaClick); VOD/series instead follows cursor
-  // position purely (see the next effect below), the mousemove effect after that immediately
-  // overriding this starting value the moment the cursor actually moves.
+  // The header starts visible every time a new title starts playing (or the player reopens) —
+  // a normal "here are the controls" moment on load — and from then on is purely cursor-driven
+  // (see the mousemove effect below), in both windowed and fullscreen mode alike.
   useEffect(() => {
-    setFullscreenHeaderVisible(!isFullscreen)
-  }, [isFullscreen])
+    setHeaderVisible(true)
+  }, [nowPlaying])
 
   // The seek bar (unlike the header/channel bar, which are click-toggled) reveals purely on
   // cursor position — it's meant to be glanceable without an extra click, but shouldn't sit
@@ -603,20 +599,21 @@ export function Player(): JSX.Element | null {
     return () => container.removeEventListener('mousemove', onMouseMove)
   }, [nowPlaying])
 
-  // VOD/series' fullscreen header: purely hover-driven, unlike Live's click-toggle (see
-  // handlePlayAreaClick) — cursor in the top 10% of the player reveals it, moving away
-  // instantly hides it again, no click needed. Only wired up in fullscreen; windowed mode's
-  // header stays permanently visible regardless of content kind, unchanged from before.
+  // The header: purely hover-driven, in both windowed and fullscreen mode and for every content
+  // kind — cursor in the top 10% of the player reveals it, moving away instantly hides it again,
+  // no click needed. The player overlay is always a fixed, full-viewport layer (see
+  // .player-overlay in global.css) regardless of the Fullscreen API's own on/off state, so this
+  // works identically either way.
   useEffect(() => {
     const container = playerRef.current
-    if (!container || !isFullscreen || nowPlaying?.kind === 'live') return
+    if (!container) return
     function onMouseMove(e: MouseEvent): void {
       const rect = container!.getBoundingClientRect()
-      setFullscreenHeaderVisible(e.clientY < rect.top + rect.height * HEADER_REVEAL_ZONE_FRACTION)
+      setHeaderVisible(e.clientY < rect.top + rect.height * HEADER_REVEAL_ZONE_FRACTION)
     }
     container.addEventListener('mousemove', onMouseMove)
     return () => container.removeEventListener('mousemove', onMouseMove)
-  }, [nowPlaying, isFullscreen])
+  }, [nowPlaying])
 
   // Picture-in-Picture opens a genuine floating OS window (confirmed: it renders on top of
   // other apps, not just inside this one) tied to this video element — closing the player or
@@ -745,42 +742,25 @@ export function Player(): JSX.Element | null {
     if (video.volume > 0 && video.muted) video.muted = false
   }
 
-  // Windowed mode keeps the old behavior (click anywhere on a live channel toggles the channel
-  // bar) unchanged — the header is always visible there, so there's no "reveal the chrome"
-  // concern to split zones for. Fullscreen replaces that with a top/bottom split: the header
-  // (translucent, hidden by default) is normally out of reach once it's hidden, so a click has
-  // to land somewhere to bring it back, and the bottom zone doubles as the in-video EPG toggle
-  // so it's reachable without a mouse ever leaving the video.
+  // Live only — VOD/series render native <video controls>, which already give a plain click
+  // play/pause and a double-click fullscreen toggle for free (confirmed live), so adding our own
+  // here would just fight the native behavior. The bottom zone doubles as the in-video EPG
+  // toggle, reachable without the mouse ever leaving the video; .player-overlay is always a
+  // fixed, full-viewport layer (see global.css) so window.innerHeight is the right measure in
+  // both windowed and fullscreen mode.
   function handlePlayAreaClick(e: React.MouseEvent<HTMLVideoElement>): void {
-    if (isFullscreen) {
-      // VOD/series' header is purely hover-driven now (see the mousemove effect above) — a
-      // click here would just fight that, immediately re-hiding what hovering just revealed.
-      if (e.clientY < FULLSCREEN_TOP_ZONE_PX && nowPlaying?.kind === 'live') {
-        setFullscreenHeaderVisible((v) => !v)
-        return
-      }
-      if (e.clientY > window.innerHeight - FULLSCREEN_BOTTOM_ZONE_PX) {
-        if (nowPlaying?.kind === 'live') setShowChannelBar(!showChannelBar)
-        return
-      }
+    if (nowPlaying?.kind !== 'live') return
+    if (e.clientY > window.innerHeight - BOTTOM_ZONE_PX) {
+      setShowChannelBar(!showChannelBar)
       return
     }
-    if (nowPlaying?.kind === 'live') setShowChannelBar(!showChannelBar)
+    togglePlayPause()
   }
 
   return (
     <div className="player-overlay" ref={playerRef}>
       <div
-        className={`player-header${isFullscreen ? ' player-header--overlay' : ''}${isFullscreen && !fullscreenHeaderVisible ? ' player-header--hidden' : ''}`}
-        // Once revealed, the header itself covers the same top zone that opened it — a second
-        // click there lands on the header, not the video underneath, so closing it again has to
-        // be handled here too. Ignores clicks on an actual control (button/input) so pressing
-        // e.g. Pause doesn't also immediately hide the header out from under the next click.
-        onClick={(e) => {
-          if (!isFullscreen) return
-          if ((e.target as HTMLElement).closest('button, input')) return
-          setFullscreenHeaderVisible(false)
-        }}
+        className={`player-header player-header--overlay${!headerVisible ? ' player-header--hidden' : ''}`}
       >
         <span className="player-title">
           {nowPlaying.name}
@@ -942,10 +922,12 @@ export function Player(): JSX.Element | null {
           autoPlay
           onClick={handlePlayAreaClick}
           // Live-only: VOD/series keep the browser's own native double-click-to-fullscreen
-          // behavior on their <video controls>, and "back to the EPG" isn't a meaningful
-          // concept for something that was never browsed from the EPG grid to begin with.
+          // behavior on their <video controls> for free (confirmed live), so adding our own here
+          // too would just race it. Live has no native controls to provide that, so it gets our
+          // own custom (playerRef-based, header-and-all) fullscreen toggle instead — closing the
+          // player is still available via the header's Close button.
           onDoubleClick={() => {
-            if (nowPlaying?.kind === 'live') stop()
+            if (nowPlaying?.kind === 'live') void toggleFullscreen()
           }}
         />
         {// Hidden while the channel bar/EPG is open (both anchor to the bottom edge, and the

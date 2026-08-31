@@ -137,6 +137,14 @@ interface EpgGridProps {
   // toggle without this shared component (also used by the much tighter fullscreen channel bar,
   // which never passes this) needing to know that setting exists.
   extraNavControls?: React.ReactNode
+  // Row to scroll to once, right after the channel list first becomes non-empty — lets a caller
+  // (PlayerChannelBar) restore wherever the list was last scrolled to instead of always starting
+  // at the top. Omitted entirely by EpgGridPanel, which has no such persisted position to apply.
+  initialScrollIndex?: number
+  // Fires whenever the set of actually-rendered rows changes, with the index of the topmost one
+  // — the only way to observe "where the list is scrolled to" this component exposes, since
+  // react-window's List has no direct scroll-offset getter, only scrollToRow(index).
+  onVisibleRangeChange?: (topIndex: number) => void
   onSelectChannel: (channel: LiveStream) => void
   onWatchFullscreen: (channel: LiveStream) => void
   onWatchTimeshift: (channel: LiveStream, program: ShortEpgProgram) => void
@@ -155,6 +163,8 @@ export function EpgGrid({
   compact = false,
   autoFocus = false,
   extraNavControls,
+  initialScrollIndex,
+  onVisibleRangeChange,
   onSelectChannel,
   onWatchFullscreen,
   onWatchTimeshift
@@ -164,6 +174,7 @@ export function EpgGrid({
   const [focusedIndex, setFocusedIndex] = useState(0)
   const listRef = useListRef(null)
   const rootRef = useRef<HTMLDivElement>(null)
+  const appliedInitialScroll = useRef(false)
 
   // Shared by the main docked guide and the fullscreen channel-swap overlay (both render this
   // same component) — persisted so a name that was clipped once stays legible everywhere this
@@ -199,6 +210,32 @@ export function EpgGrid({
   useEffect(() => {
     setFocusedIndex((i) => Math.min(i, Math.max(0, channels.length - 1)))
   }, [channels.length])
+
+  // Applied exactly once, the first time the list actually has rows to scroll — channels often
+  // arrives empty on the initial render (still loading) and fills in moments later, so this
+  // can't just run on mount; it has to wait for that fill-in and then never fire again, or every
+  // later re-render with a nonzero channel count would keep re-snapping the list back here even
+  // after the user has scrolled elsewhere themselves.
+  //
+  // The setTimeout is load-bearing, not a style choice: react-window's List mounts its
+  // scrollable container as null on the very first render and only wires the real DOM element
+  // into its imperative handle (the thing listRef.current.scrollToRow actually reads) on a
+  // second, internal re-render right after. Calling scrollToRow from a plain useEffect races
+  // that internal re-render and silently no-ops — confirmed live: the exact same call scrolled
+  // correctly every time once deferred a tick, and never once when called synchronously.
+  useEffect(() => {
+    if (appliedInitialScroll.current) return
+    if (initialScrollIndex === undefined || initialScrollIndex === 0 || channels.length === 0) return
+    appliedInitialScroll.current = true
+    const timer = setTimeout(() => {
+      listRef.current?.scrollToRow({
+        index: Math.min(initialScrollIndex, channels.length - 1),
+        align: 'start',
+        behavior: 'auto'
+      })
+    }, 50)
+    return () => clearTimeout(timer)
+  }, [channels.length, initialScrollIndex, listRef])
 
   const baseHour = Math.floor(Date.now() / HOUR_MS) * HOUR_MS
   const windowStart = baseHour + windowOffsetMs
@@ -297,6 +334,7 @@ export function EpgGrid({
             listRef={listRef}
             rowCount={channels.length}
             rowHeight={rowHeight}
+            onRowsRendered={onVisibleRangeChange ? (visibleRows) => onVisibleRangeChange(visibleRows.startIndex) : undefined}
             rowProps={{
               channels,
               windowStart,
