@@ -14,6 +14,11 @@ const MAX_WINDOW_OFFSET_MS = 24 * HOUR_MS // soft clamp — get_short_epg's own 
 // bar, which shares this same column width — see epgChannelColumnWidth in lib/types.ts).
 const CHANNEL_COLUMN_MIN_WIDTH = 90
 const CHANNEL_COLUMN_MAX_WIDTH = 320
+// A mousedown-drag on the timeline is indistinguishable from the start of an ordinary click
+// (selecting a channel, opening a programme's catch-up) until the mouse actually moves — this is
+// how far it has to travel before it's treated as a drag instead, matching the same small-slop
+// idea most drag implementations use to avoid punishing a slightly-shaky click.
+const DRAG_CLICK_THRESHOLD_PX = 4
 
 function formatHour(t: number, clockFormat: ClockFormat): string {
   return new Date(t).toLocaleTimeString([], { hour: 'numeric', hour12: clockFormat === '12h' })
@@ -262,6 +267,60 @@ export function EpgGrid({
     )
   }
 
+  // Click-and-drag panning of the time axis — grabbing anywhere on the timeline (a programme
+  // block, the header ticks, empty space) and moving left/right shifts windowOffsetMs 1:1 with
+  // the cursor, the same "content follows your mouse" feel as panning a map, rather than the
+  // wheel handler's arbitrary per-notch increment above. Scoped to the timeline region only (via
+  // the clientX check against channelColumnWidth) — the channel-name column isn't part of the
+  // time axis, and dragging a channel name is more naturally left alone.
+  function handleTimelineMouseDown(e: React.MouseEvent): void {
+    if (e.button !== 0) return
+    // The column-resize handle already runs its own drag (useResizableWidth's startDrag) and
+    // doesn't stopPropagation — without this check, grabbing it would also start a time-pan
+    // drag at the same time, fighting over the same mousemove/mouseup listeners.
+    if ((e.target as HTMLElement).closest('.resize-handle')) return
+    const container = rootRef.current
+    if (!container) return
+    const rect = container.getBoundingClientRect()
+    if (e.clientX - rect.left < channelColumnWidth) return
+    const trackWidth = rect.width - channelColumnWidth
+    if (trackWidth <= 0) return
+    // Native text/drag-image selection over channel names or programme titles would otherwise
+    // kick in the moment the mouse moves, visually fighting this drag.
+    e.preventDefault()
+
+    const startX = e.clientX
+    const startOffset = windowOffsetMs
+    const msPerPixel = (WINDOW_HOURS * HOUR_MS) / trackWidth
+    let moved = false
+
+    function onMouseMove(ev: MouseEvent): void {
+      const deltaX = ev.clientX - startX
+      if (Math.abs(deltaX) > DRAG_CLICK_THRESHOLD_PX) moved = true
+      setWindowOffsetMs(Math.min(MAX_WINDOW_OFFSET_MS, Math.max(-MAX_WINDOW_OFFSET_MS, startOffset - deltaX * msPerPixel)))
+    }
+    // A real drag ending on a channel-select button or programme block would otherwise still
+    // fire that element's own click right after mouseup, immediately undoing the "just panning,
+    // not selecting" intent a mouse-move-based drag implies. The removal is a defensive fallback
+    // for the (effectively never, but not impossible) case where mouseup isn't followed by a
+    // click at all — click dispatches synchronously right after mouseup for a real drag, so this
+    // scheduled cleanup only ever runs after that, never before it.
+    function suppressNextClick(ev: MouseEvent): void {
+      ev.stopPropagation()
+      ev.preventDefault()
+    }
+    function onMouseUp(): void {
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+      if (moved) {
+        window.addEventListener('click', suppressNextClick, { capture: true, once: true })
+        setTimeout(() => window.removeEventListener('click', suppressNextClick, { capture: true }), 0)
+      }
+    }
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+  }
+
   // Scoped to this element (via tabIndex, not a document-level listener) specifically because
   // the main grid and the fullscreen channel bar can both be mounted at once — a global
   // listener would move both grids' selections on every arrow press instead of just the
@@ -291,6 +350,7 @@ export function EpgGrid({
       className={`epg-grid${compact ? ' epg-grid--compact' : ''}`}
       tabIndex={0}
       onWheel={handleWheel}
+      onMouseDown={handleTimelineMouseDown}
       onKeyDown={handleKeyDown}
       style={{ '--epg-channel-col-width': `${channelColumnWidth}px` } as CSSProperties}
     >
