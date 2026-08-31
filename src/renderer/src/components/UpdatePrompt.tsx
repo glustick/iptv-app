@@ -39,7 +39,7 @@ export function UpdatePrompt(): JSX.Element | null {
               <button type="button" className="secondary-button" onClick={dismissUpdatePrompt}>
                 Later
               </button>
-              <button type="button" onClick={installUpdate}>
+              <button type="button" className="primary-button" onClick={installUpdate}>
                 Restart Now
               </button>
             </div>
@@ -59,7 +59,7 @@ export function UpdatePrompt(): JSX.Element | null {
               <button type="button" className="secondary-button" onClick={dismissUpdatePrompt}>
                 Later
               </button>
-              <button type="button" onClick={() => void downloadUpdate()}>
+              <button type="button" className="primary-button" onClick={() => void downloadUpdate()}>
                 Update Now
               </button>
             </div>

@@ -1512,7 +1512,8 @@ body.resizing-col {
   border-color: var(--accent);
 }
 
-.pin-actions button[type='submit'] {
+.pin-actions button[type='submit'],
+.primary-button {
   background: var(--accent);
   border: none;
   border-radius: 8px;
