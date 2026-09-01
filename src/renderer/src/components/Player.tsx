@@ -7,6 +7,7 @@ import { PlayerSeekBar } from './PlayerSeekBar'
 import { VpnWarnings } from './VpnWarnings'
 import { useTranscodeFallback } from '../lib/useTranscodeFallback'
 import { useNumericChannelEntry } from '../lib/useNumericChannelEntry'
+import { useToolbarOverflow } from '../lib/useToolbarOverflow'
 import type { VideoScaleMode } from '../lib/types'
 
 const MAX_NETWORK_RETRIES = 4
@@ -99,6 +100,7 @@ function formatCountdown(totalSeconds: number): string {
   return `${minutes}:${String(seconds).padStart(2, '0')}`
 }
 
+
 export function Player(): JSX.Element | null {
   const nowPlaying = useAppStore((s) => s.nowPlaying)
   const stop = useAppStore((s) => s.stop)
@@ -124,6 +126,14 @@ export function Player(): JSX.Element | null {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const hlsRef = useRef<Hls | null>(null)
   const playerRef = useRef<HTMLDivElement | null>(null)
+  // Detects actual overflow on the controls row itself (scrollWidth > clientWidth), not a fixed
+  // window/header width — .player-header spans the full player edge-to-edge regardless of how
+  // little room is actually left for buttons once a (possibly long) title takes its share, so a
+  // width-threshold on the header itself wouldn't reliably reflect whether the *buttons*
+  // genuinely fit. A live multi-feature channel can have well over a dozen buttons active at
+  // once; this drops to icon-only once they don't actually fit at full label width, regardless
+  // of how wide the window is otherwise.
+  const [controlsRef, headerCompact] = useToolbarOverflow<HTMLDivElement>()
   const [playbackError, setPlaybackError] = useState<string | null>(null)
   const [buffering, setBuffering] = useState(false)
   const [pipActive, setPipActive] = useState(false)
@@ -960,9 +970,7 @@ export function Player(): JSX.Element | null {
 
   return (
     <div className="player-overlay" ref={playerRef}>
-      <div
-        className={`player-header player-header--overlay${!headerVisible ? ' player-header--hidden' : ''}`}
-      >
+      <div className={`player-header player-header--overlay${!headerVisible ? ' player-header--hidden' : ''}`}>
         <span className="player-title">
           {nowPlaying.name}
           {/* Same persistent warning-while-not-connected indicator as the top bar — visible
@@ -986,178 +994,196 @@ export function Player(): JSX.Element | null {
             />
           )}
         </span>
-        <div className="player-header-actions">
-          {// Play/pause and skip are only added here for live TV — VOD/series already have full
-          // scrubbing via the native <video controls> bar below, and duplicating a second set
-          // of transport controls there would be redundant, not additive.
-          nowPlaying.kind === 'live' && (
-            <>
-              <button className="player-control-btn" onClick={() => skip(-SKIP_SECONDS_LONG)} title={`Back ${SKIP_SECONDS_LONG}s`}>
-                ⏪ 1m
+        <div className={`player-header-actions${headerCompact ? ' player-header-actions--compact' : ''}`}>
+          {// The scrollable/shrinkable group — everything except Close. min-width: 0 (see CSS)
+          // is what lets this actually shrink below its content's natural width instead of
+          // pushing Close out of the header; headerCompact (useToolbarOverflow, detecting real
+          // overflow on this row directly) drops text labels first, and if a pathologically
+          // narrow width still doesn't fit every icon, this scrolls horizontally within itself
+          // rather than ever hiding Close.
+          }
+          <div className="player-header-controls" ref={controlsRef}>
+            {// Play/pause and skip are only added here for live TV — VOD/series already have full
+            // scrubbing via the native <video controls> bar below, and duplicating a second set
+            // of transport controls there would be redundant, not additive.
+            nowPlaying.kind === 'live' && (
+              <>
+                <button className="player-control-btn" onClick={() => skip(-SKIP_SECONDS_LONG)} title={`Back ${SKIP_SECONDS_LONG}s`}>
+                  ⏪ <span className="control-label">1m</span>
+                </button>
+                <button className="player-control-btn" onClick={() => skip(-SKIP_SECONDS)} title={`Back ${SKIP_SECONDS}s`}>
+                  ⏪ <span className="control-label">{SKIP_SECONDS}s</span>
+                </button>
+                <button className="player-control-btn" onClick={togglePlayPause} title={paused ? 'Play' : 'Pause'}>
+                  {paused ? '▶' : '⏸'}
+                </button>
+                <button className="player-control-btn" onClick={() => skip(SKIP_SECONDS)} title={`Forward ${SKIP_SECONDS}s`}>
+                  <span className="control-label">{SKIP_SECONDS}s</span> ⏩
+                </button>
+                <button className="player-control-btn" onClick={() => skip(SKIP_SECONDS_LONG)} title={`Forward ${SKIP_SECONDS_LONG}s`}>
+                  <span className="control-label">1m</span> ⏩
+                </button>
+                <button className="player-control-btn" onClick={goToLive} title="Jump to the current live transmission">
+                  🔴 <span className="control-label">Live</span>
+                </button>
+              </>
+            )}
+            <div className="player-volume">
+              <button className="player-control-btn" onClick={toggleMute} title={muted ? 'Unmute' : 'Mute'}>
+                {muted || volume === 0 ? '🔇' : volume < 0.5 ? '🔉' : '🔊'}
               </button>
-              <button className="player-control-btn" onClick={() => skip(-SKIP_SECONDS)} title={`Back ${SKIP_SECONDS}s`}>
-                ⏪ {SKIP_SECONDS}s
+              <input
+                type="range"
+                className="player-volume-slider"
+                min={0}
+                max={1}
+                step={0.05}
+                value={muted ? 0 : volume}
+                onChange={handleVolumeChange}
+                title="Volume"
+              />
+            </div>
+            {hlsAudioTracks.length > 1 && (
+              <button className="player-control-btn" onClick={cycleHlsAudioTrack} title="Switch audio language">
+                🗣 <span className="control-label">{hlsAudioTracks.find((t) => t.id === activeHlsAudioTrack)?.name ?? 'Audio'}</span>
               </button>
-              <button className="player-control-btn" onClick={togglePlayPause} title={paused ? 'Play' : 'Pause'}>
-                {paused ? '▶' : '⏸'}
-              </button>
-              <button className="player-control-btn" onClick={() => skip(SKIP_SECONDS)} title={`Forward ${SKIP_SECONDS}s`}>
-                {SKIP_SECONDS}s ⏩
-              </button>
-              <button className="player-control-btn" onClick={() => skip(SKIP_SECONDS_LONG)} title={`Forward ${SKIP_SECONDS_LONG}s`}>
-                1m ⏩
-              </button>
-              <button className="player-control-btn" onClick={goToLive} title="Jump to the current live transmission">
-                🔴 Live
-              </button>
-            </>
-          )}
-          <div className="player-volume">
-            <button className="player-control-btn" onClick={toggleMute} title={muted ? 'Unmute' : 'Mute'}>
-              {muted || volume === 0 ? '🔇' : volume < 0.5 ? '🔉' : '🔊'}
-            </button>
-            <input
-              type="range"
-              className="player-volume-slider"
-              min={0}
-              max={1}
-              step={0.05}
-              value={muted ? 0 : volume}
-              onChange={handleVolumeChange}
-              title="Volume"
-            />
-          </div>
-          {hlsAudioTracks.length > 1 && (
-            <button className="player-control-btn" onClick={cycleHlsAudioTrack} title="Switch audio language">
-              🗣 {hlsAudioTracks.find((t) => t.id === activeHlsAudioTrack)?.name ?? 'Audio'}
-            </button>
-          )}
-          {// A live channel's raw stream can carry audio tracks its HLS playlist never
-          // advertises at all — hlsAudioTracks (above) only ever sees what the playlist
-          // declares, so this covers the gap for channels where that's empty/single but the
-          // actual multiplex has more (confirmed live: a real "5.1 + Stereo"-labeled channel
-          // whose playlist advertised one rendition but whose raw stream carried three). Hidden
-          // once hlsAudioTracks already found more than one (nothing left to check), or while a
-          // *different* transcode fallback (the automatic codec fix) is already active — but not
-          // once this block's own switchLiveAudioTrack is what's driving hasFallbackActive
-          // (liveAudioTracks !== null exactly identifies that case), or a user who's already
-          // picked a track could never see which one, or cycle to another.
-          nowPlaying.kind === 'live' && hlsAudioTracks.length <= 1 && (!hasFallbackActive || liveAudioTracks !== null) && (
-            <button
-              className="player-control-btn"
-              disabled={probingLiveAudio || (liveAudioTracks !== null && liveAudioTracks.length <= 1)}
-              onClick={() => {
-                if (liveAudioTracks === null) {
-                  void probeLiveAudioTracks(nowPlaying.url, (message) =>
-                    setPlaybackError(`Failed to check for extra audio tracks: ${message}`)
+            )}
+            {// A live channel's raw stream can carry audio tracks its HLS playlist never
+            // advertises at all — hlsAudioTracks (above) only ever sees what the playlist
+            // declares, so this covers the gap for channels where that's empty/single but the
+            // actual multiplex has more (confirmed live: a real "5.1 + Stereo"-labeled channel
+            // whose playlist advertised one rendition but whose raw stream carried three). Hidden
+            // once hlsAudioTracks already found more than one (nothing left to check), or while a
+            // *different* transcode fallback (the automatic codec fix) is already active — but not
+            // once this block's own switchLiveAudioTrack is what's driving hasFallbackActive
+            // (liveAudioTracks !== null exactly identifies that case), or a user who's already
+            // picked a track could never see which one, or cycle to another.
+            nowPlaying.kind === 'live' && hlsAudioTracks.length <= 1 && (!hasFallbackActive || liveAudioTracks !== null) && (
+              <button
+                className="player-control-btn"
+                disabled={probingLiveAudio || (liveAudioTracks !== null && liveAudioTracks.length <= 1)}
+                onClick={() => {
+                  if (liveAudioTracks === null) {
+                    void probeLiveAudioTracks(nowPlaying.url, (message) =>
+                      setPlaybackError(`Failed to check for extra audio tracks: ${message}`)
+                    )
+                    return
+                  }
+                  const currentPosition = liveAudioTracks.findIndex((t) => t.index === (activeLiveAudioTrackIndex ?? 0))
+                  const next = liveAudioTracks[(currentPosition + 1) % liveAudioTracks.length]
+                  switchLiveAudioTrack(
+                    nowPlaying.url,
+                    next.index,
+                    () => setReloadTick((t) => t + 1),
+                    (message) => setPlaybackError(`Failed to switch audio track: ${message}`)
                   )
-                  return
+                }}
+                title={
+                  liveAudioTracks === null
+                    ? 'Check whether this channel actually carries more audio tracks than its guide lists (opens a second connection briefly)'
+                    : liveAudioTracks.length > 1
+                      ? 'Switch to the next audio track found in this channel’s raw stream (restarts playback via a local remux, can take a few seconds)'
+                      : `No extra audio tracks found in this channel's raw stream${probedLiveSubtitleTrackCount ? ` (${probedLiveSubtitleTrackCount} subtitle track${probedLiveSubtitleTrackCount > 1 ? 's' : ''} found, not yet switchable for Live TV)` : ' (no embedded subtitle tracks either)'}`
                 }
-                const currentPosition = liveAudioTracks.findIndex((t) => t.index === (activeLiveAudioTrackIndex ?? 0))
-                const next = liveAudioTracks[(currentPosition + 1) % liveAudioTracks.length]
-                switchLiveAudioTrack(
-                  nowPlaying.url,
-                  next.index,
-                  () => setReloadTick((t) => t + 1),
-                  (message) => setPlaybackError(`Failed to switch audio track: ${message}`)
-                )
-              }}
-              title={
-                liveAudioTracks === null
-                  ? 'Check whether this channel actually carries more audio tracks than its guide lists (opens a second connection briefly)'
-                  : liveAudioTracks.length > 1
-                    ? 'Switch to the next audio track found in this channel’s raw stream (restarts playback via a local remux, can take a few seconds)'
-                    : `No extra audio tracks found in this channel's raw stream${probedLiveSubtitleTrackCount ? ` (${probedLiveSubtitleTrackCount} subtitle track${probedLiveSubtitleTrackCount > 1 ? 's' : ''} found, not yet switchable for Live TV)` : ' (no embedded subtitle tracks either)'}`
-              }
-            >
-              🎚{' '}
-              {probingLiveAudio
-                ? 'Checking…'
-                : liveAudioTracks === null
-                  ? 'Check Audio Tracks'
-                  : liveAudioTracks.length > 1
-                    ? (() => {
-                        const active = liveAudioTracks.find((t) => t.index === (activeLiveAudioTrackIndex ?? 0))
-                        return active
-                          ? `${active.language?.toUpperCase() ?? `Track ${active.index + 1}`} (${active.codec.toUpperCase()}, ${active.channelLayout})`
-                          : 'Audio'
-                      })()
-                    : 'No Extra Audio'}
-            </button>
-          )}
-          {hlsSubtitleTracks.length > 0 && (
+              >
+                🎚{' '}
+                <span className="control-label">
+                  {probingLiveAudio
+                    ? 'Checking…'
+                    : liveAudioTracks === null
+                      ? 'Check Audio Tracks'
+                      : liveAudioTracks.length > 1
+                        ? (() => {
+                            const active = liveAudioTracks.find((t) => t.index === (activeLiveAudioTrackIndex ?? 0))
+                            return active
+                              ? `${active.language?.toUpperCase() ?? `Track ${active.index + 1}`} (${active.codec.toUpperCase()}, ${active.channelLayout})`
+                              : 'Audio'
+                          })()
+                        : 'No Extra Audio'}
+                </span>
+              </button>
+            )}
+            {hlsSubtitleTracks.length > 0 && (
+              <button
+                className="player-control-btn"
+                onClick={cycleHlsSubtitleTrack}
+                title={
+                  hlsSubtitleTracks.length > 1
+                    ? 'Cycle subtitle language (or off)'
+                    : activeHlsSubtitleTrack === -1
+                      ? 'Turn subtitles on'
+                      : 'Turn subtitles off'
+                }
+              >
+                💬{' '}
+                <span className="control-label">
+                  {activeHlsSubtitleTrack === -1 ? 'CC Off' : (hlsSubtitleTracks.find((t) => t.id === activeHlsSubtitleTrack)?.name ?? 'CC On')}
+                </span>
+              </button>
+            )}
+            {// Only ever shown when this title's source genuinely has more than one *convertible*
+            // subtitle track (see SubtitleTrackInfo.supported — a bitmap codec like PGS can't be
+            // switched to at all, confirmed live to crash the whole transcode if attempted) —
+            // switching means restarting the whole transcode fallback (see switchSubtitleTrack's
+            // own comment for why this app's ffmpeg build can't just carry every language at
+            // once), so this is deliberately a separate, clearly-labeled action from the free/
+            // instant CC on/off toggle above.
+            switchableSubtitleTracks.length > 1 && (
+              <button
+                className="player-control-btn"
+                onClick={() =>
+                  switchSubtitleTrack(
+                    nowPlaying.url,
+                    () => setReloadTick((t) => t + 1),
+                    (message) => setPlaybackError(`Failed to switch subtitle language: ${message}`)
+                  )
+                }
+                title="Switch subtitle language (restarts the audio/playback fix, can take a minute or two)"
+              >
+                🌐{' '}
+                <span className="control-label">
+                  {subtitleTracks.find((t) => t.index === activeSubtitleTrackIndex)?.language?.toUpperCase() ??
+                    `Track ${activeSubtitleTrackIndex + 1}`}
+                </span>
+              </button>
+            )}
             <button
               className="player-control-btn"
-              onClick={cycleHlsSubtitleTrack}
-              title={
-                hlsSubtitleTracks.length > 1
-                  ? 'Cycle subtitle language (or off)'
-                  : activeHlsSubtitleTrack === -1
-                    ? 'Turn subtitles on'
-                    : 'Turn subtitles off'
-              }
+              onClick={cycleVideoScaleMode}
+              title="Cycle aspect ratio: Fit (letterboxed) → Zoom (crops to fill) → Stretch (fills exactly, may distort)"
             >
-              💬 {activeHlsSubtitleTrack === -1 ? 'CC Off' : (hlsSubtitleTracks.find((t) => t.id === activeHlsSubtitleTrack)?.name ?? 'CC On')}
+              🔲 <span className="control-label">{VIDEO_SCALE_MODE_LABELS[videoScaleMode]}</span>
             </button>
-          )}
-          {// Only ever shown when this title's source genuinely has more than one *convertible*
-          // subtitle track (see SubtitleTrackInfo.supported — a bitmap codec like PGS can't be
-          // switched to at all, confirmed live to crash the whole transcode if attempted) —
-          // switching means restarting the whole transcode fallback (see switchSubtitleTrack's
-          // own comment for why this app's ffmpeg build can't just carry every language at
-          // once), so this is deliberately a separate, clearly-labeled action from the free/
-          // instant CC on/off toggle above.
-          switchableSubtitleTracks.length > 1 && (
             <button
               className="player-control-btn"
-              onClick={() =>
-                switchSubtitleTrack(
-                  nowPlaying.url,
-                  () => setReloadTick((t) => t + 1),
-                  (message) => setPlaybackError(`Failed to switch subtitle language: ${message}`)
-                )
-              }
-              title="Switch subtitle language (restarts the audio/playback fix, can take a minute or two)"
+              onClick={cycleSleepTimer}
+              title="Cycle sleep timer: stops playback automatically after the chosen time"
             >
-              🌐{' '}
-              {subtitleTracks.find((t) => t.index === activeSubtitleTrackIndex)?.language?.toUpperCase() ??
-                `Track ${activeSubtitleTrackIndex + 1}`}
+              ⏾{' '}
+              <span className="control-label">
+                {sleepTimerMinutes === null
+                  ? 'Sleep Timer'
+                  : sleepTimerRemainingSeconds !== null
+                    ? formatCountdown(sleepTimerRemainingSeconds)
+                    : `${sleepTimerMinutes}m`}
+              </span>
             </button>
-          )}
-          <button
-            className="player-control-btn"
-            onClick={cycleVideoScaleMode}
-            title="Cycle aspect ratio: Fit (letterboxed) → Zoom (crops to fill) → Stretch (fills exactly, may distort)"
-          >
-            🔲 {VIDEO_SCALE_MODE_LABELS[videoScaleMode]}
-          </button>
-          <button
-            className="player-control-btn"
-            onClick={cycleSleepTimer}
-            title="Cycle sleep timer: stops playback automatically after the chosen time"
-          >
-            ⏾{' '}
-            {sleepTimerMinutes === null
-              ? 'Sleep Timer'
-              : sleepTimerRemainingSeconds !== null
-                ? formatCountdown(sleepTimerRemainingSeconds)
-                : `${sleepTimerMinutes}m`}
-          </button>
-          <button
-            className="player-control-btn"
-            onClick={() => setStatsVisible((v) => !v)}
-            title={statsVisible ? 'Hide stream stats' : 'Show stream stats'}
-          >
-            📊 Stats
-          </button>
-          <button className="player-control-btn" onClick={toggleFullscreen} title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
-            {isFullscreen ? '⛶ Exit Fullscreen' : '⛶ Fullscreen'}
-          </button>
-          <button className="player-pip" onClick={togglePip} title="Picture in picture">
-            {pipActive ? '⧉ Exit PiP' : '⧉ PiP'}
-          </button>
-          <button className="player-close" onClick={stop}>
-            ✕ Close
+            <button
+              className="player-control-btn"
+              onClick={() => setStatsVisible((v) => !v)}
+              title={statsVisible ? 'Hide stream stats' : 'Show stream stats'}
+            >
+              📊 <span className="control-label">Stats</span>
+            </button>
+            <button className="player-control-btn" onClick={toggleFullscreen} title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
+              ⛶ <span className="control-label">{isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}</span>
+            </button>
+            <button className="player-pip" onClick={togglePip} title="Picture in picture">
+              ⧉ <span className="control-label">{pipActive ? 'Exit PiP' : 'PiP'}</span>
+            </button>
+          </div>
+          <button className="player-close" onClick={stop} title="Close">
+            ✕ <span className="control-label">Close</span>
           </button>
         </div>
       </div>

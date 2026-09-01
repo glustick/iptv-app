@@ -872,6 +872,14 @@ body.resizing-col {
   justify-content: space-between;
   padding: 12px 18px;
   background: rgba(11, 13, 18, 0.9);
+  gap: 12px;
+  /* Flex items default to min-width: auto (sized to their content), which is exactly what let
+     this row overflow the header's own bounds in the first place — a live channel with several
+     features active at once (multi-language audio/subtitles, the audio-track picker, sleep
+     timer, ...) can easily need more width than a modest window has, pushing Close off the
+     visible area with no way back to it. min-width: 0 here (and on the two children below) is
+     what actually lets the row shrink instead of overflowing. */
+  min-width: 0;
 }
 
 /* The header is always a translucent overlay floating on top of the video, in both windowed and
@@ -902,16 +910,51 @@ body.resizing-col {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  /* A long channel/movie name shouldn't be able to squeeze the actions row (and ultimately
+     Close) out of room on its own — this lets the title itself give way first, truncating
+     rather than either wrapping to a second line or refusing to shrink at all. */
+  min-width: 0;
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .player-title-vpn-dot {
   vertical-align: middle;
+  flex-shrink: 0;
 }
 
+/* Two children: player-header-controls (everything except Close — shrinks, and scrolls
+   horizontally within itself as a last resort) and player-close (flex-shrink: 0, so it's
+   physically incapable of being the thing that gives way — see the reported bug this fixes). */
 .player-header-actions {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+.player-header-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow-x: auto;
+  /* Only meant as a last-resort safety net once headerCompact's icon-only mode still doesn't
+     fit everything — a visible scrollbar here in the common case would look broken, not
+     responsive, so it's hidden entirely; the row still scrolls via trackpad/shift-wheel/drag,
+     the same interactions already used for the EPG grid's own time axis. */
+  scrollbar-width: none;
+}
+
+.player-header-controls::-webkit-scrollbar {
+  display: none;
+}
+
+.player-close {
+  flex-shrink: 0;
 }
 
 .player-close,
@@ -924,6 +967,14 @@ body.resizing-col {
   padding: 6px 12px;
   font-size: 12px;
   white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* headerCompact (Player.tsx, measured via ResizeObserver on the header itself) — hides text
+   labels once the row genuinely doesn't have room for all of them at full width, leaving just
+   the icon and its title tooltip. Icons/emoji are never hidden, only the labels next to them. */
+.player-header-actions--compact .control-label {
+  display: none;
 }
 
 .player-pip:hover,
