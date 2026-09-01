@@ -706,54 +706,56 @@ describe('real ffmpeg integration', () => {
   // resampling/AAC-encoding artifacts from the transcode itself.
   async function measureRmsAmplitude(segmentPath: string): Promise<number> {
     if (!ffmpegStaticPath) throw new Error('ffmpeg-static did not resolve a binary for this platform')
-    // Two CI-only failures so far both surfaced as ffmpeg apparently producing nothing beyond
-    // its own startup banner — but GitHub Actions' annotation messages are truncated to a fixed
-    // length, and that banner is ~900 bytes of constant, uninformative text that can easily eat
-    // the entire budget before anything genuinely diagnostic (an exit code, a real error line)
-    // ever gets included. Checking the file directly, and building any failure message with the
-    // useful bits *first* and only the tail of stderr, is what actually gets real information
-    // through a truncated annotation instead of just the banner again.
+    // Writes to a real temp file rather than piping raw PCM through stdout — a real CI-only
+    // SIGSEGV (this exact ffmpeg-static Linux build, decoding+resampling to a pipe) is gone once
+    // this avoids that combination entirely, reproduced by removing both the pipe *and* the
+    // -ar/-ac resample/downmix (never functionally necessary — RMS on the source's own native
+    // interleaved samples works exactly the same for telling "silent" from "loud" apart) in one
+    // pass, matching how every other real-ffmpeg invocation in this file already writes real
+    // files rather than streaming binary data through a pipe.
+    const pcmPath = `${segmentPath}.pcm`
     const fileInfo = existsSync(segmentPath)
       ? `exists, ${statSync(segmentPath).size} bytes`
       : 'does NOT exist at spawn time'
-    return new Promise((resolve, reject) => {
-      const chunks: Buffer[] = []
+    await new Promise<void>((resolve, reject) => {
       let stderr = ''
       const proc = spawn(
         ffmpegStaticPath as string,
         // -nostdin: this is a scripted/non-interactive invocation, and ffmpeg's own docs
         // recommend this explicitly to avoid it treating an open-but-unwritten stdin pipe (the
         // default for a plain child_process.spawn) as a live keyboard-command source.
-        ['-nostdin', '-i', segmentPath, '-f', 's16le', '-ac', '1', '-ar', '8000', 'pipe:1'],
-        { stdio: ['ignore', 'pipe', 'pipe'] }
+        ['-y', '-nostdin', '-i', segmentPath, '-f', 's16le', pcmPath],
+        { stdio: ['ignore', 'ignore', 'pipe'] }
       )
-      proc.stdout.on('data', (chunk: Buffer) => chunks.push(chunk))
       proc.stderr.on('data', (chunk: Buffer) => {
         stderr += chunk.toString('utf8')
       })
       proc.on('error', reject)
       // 'close', not 'exit' — 'exit' only signals the process terminated, not that its stdio
-      // streams have finished delivering buffered data (a real, confirmed race elsewhere in
-      // this exact file before this was rewritten).
+      // streams (or, for this rewritten version, the output file itself) have finished being
+      // written (a real, confirmed race elsewhere in this exact file before this was rewritten).
       proc.on('close', (code, signal) => {
-        const pcm = Buffer.concat(chunks)
-        if (pcm.length < 2) {
+        if (code !== 0) {
           reject(
             new Error(
-              `ffmpeg produced no decoded PCM data. file: ${segmentPath} (${fileInfo}); exit code: ${code}, signal: ${signal}; stdout bytes: ${pcm.length}; stderr tail: ${stderr.slice(-800)}`
+              `ffmpeg exited ${code} (signal ${signal}) decoding PCM. file: ${segmentPath} (${fileInfo}); stderr tail: ${stderr.slice(-800)}`
             )
           )
           return
         }
-        let sumOfSquares = 0
-        const sampleCount = Math.floor(pcm.length / 2)
-        for (let i = 0; i < sampleCount * 2; i += 2) {
-          const sample = pcm.readInt16LE(i)
-          sumOfSquares += sample * sample
-        }
-        resolve(Math.sqrt(sumOfSquares / sampleCount))
+        resolve()
       })
     })
+    const pcm = readFileSync(pcmPath)
+    rmSync(pcmPath, { force: true })
+    if (pcm.length < 2) throw new Error(`ffmpeg produced an empty PCM file for ${segmentPath}`)
+    let sumOfSquares = 0
+    const sampleCount = Math.floor(pcm.length / 2)
+    for (let i = 0; i < sampleCount * 2; i += 2) {
+      const sample = pcm.readInt16LE(i)
+      sumOfSquares += sample * sample
+    }
+    return Math.sqrt(sumOfSquares / sampleCount)
   }
 
   // ffmpeg's HLS muxer only lists a segment in the playlist once that segment file is fully
