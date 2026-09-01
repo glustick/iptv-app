@@ -694,33 +694,50 @@ describe('real ffmpeg integration', () => {
     }
   }, 30000)
 
-  // Runs a real ffmpeg pass over one already-produced HLS segment and reports its mean volume
-  // (via libavfilter's own volumedetect, not a custom analysis) — the simplest reliable way to
-  // tell "which of two audio tracks actually made it into the output" apart without needing real
-  // frequency-domain analysis: one track is genuine digital silence, the other a full-scale
-  // tone, so the two read as unmistakably different (silence: ~-91dB/"-inf"; tone: well above
-  // -20dB) regardless of any resampling/AAC-encoding artifacts from the transcode itself.
-  async function measureMeanVolumeDb(segmentPath: string): Promise<number> {
+  // Runs a real ffmpeg pass over one already-produced HLS segment and returns its RMS amplitude,
+  // computed directly from raw decoded PCM samples on stdout — not by scraping ffmpeg's own
+  // free-text log output (an earlier version of this used the volumedetect filter's log line,
+  // which broke in CI: a different ffmpeg-static build there, 7.0.2 vs this being developed
+  // against 6.0 locally, produced no matching output at all for reasons that couldn't be
+  // reproduced or diagnosed without a Linux environment to test against). Raw PCM bytes on
+  // stdout are a far more stable target across ffmpeg builds/versions than the exact wording and
+  // presence of an informational log line. One track is genuine digital silence, the other a
+  // full-scale tone, so the two read as unmistakably different RMS regardless of any
+  // resampling/AAC-encoding artifacts from the transcode itself.
+  async function measureRmsAmplitude(segmentPath: string): Promise<number> {
     if (!ffmpegStaticPath) throw new Error('ffmpeg-static did not resolve a binary for this platform')
     return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = []
       let stderr = ''
-      const proc = spawn(ffmpegStaticPath as string, ['-i', segmentPath, '-af', 'volumedetect', '-f', 'null', '-'])
+      const proc = spawn(
+        ffmpegStaticPath as string,
+        // -nostdin: this is a scripted/non-interactive invocation, and ffmpeg's own docs
+        // recommend this explicitly to avoid it treating an open-but-unwritten stdin pipe (the
+        // default for a plain child_process.spawn) as a live keyboard-command source.
+        ['-nostdin', '-i', segmentPath, '-f', 's16le', '-ac', '1', '-ar', '8000', 'pipe:1'],
+        { stdio: ['ignore', 'pipe', 'pipe'] }
+      )
+      proc.stdout.on('data', (chunk: Buffer) => chunks.push(chunk))
       proc.stderr.on('data', (chunk: Buffer) => {
         stderr += chunk.toString('utf8')
       })
       proc.on('error', reject)
-      // 'close', not 'exit' — a real CI failure (Linux, a different ffmpeg-static build than
-      // this was developed against on macOS) showed stderr truncated to just the startup
-      // banner at the moment this fired, missing the volumedetect summary entirely: 'exit'
-      // only means the process terminated, not that stdio has finished draining. 'close' is
-      // the event Node guarantees fires only once every stdio stream has actually ended.
+      // 'close', not 'exit' — 'exit' only signals the process terminated, not that its stdio
+      // streams have finished delivering buffered data (a real, confirmed race elsewhere in
+      // this exact file before this was rewritten).
       proc.on('close', () => {
-        const match = /mean_volume:\s*(-inf|-?[\d.]+)\s*dB/.exec(stderr)
-        if (!match) {
-          reject(new Error(`volumedetect produced no mean_volume line:\n${stderr}`))
+        const pcm = Buffer.concat(chunks)
+        if (pcm.length < 2) {
+          reject(new Error(`ffmpeg produced no decoded PCM data:\n${stderr}`))
           return
         }
-        resolve(match[1] === '-inf' ? -Infinity : Number(match[1]))
+        let sumOfSquares = 0
+        const sampleCount = Math.floor(pcm.length / 2)
+        for (let i = 0; i < sampleCount * 2; i += 2) {
+          const sample = pcm.readInt16LE(i)
+          sumOfSquares += sample * sample
+        }
+        resolve(Math.sqrt(sumOfSquares / sampleCount))
       })
     })
   }
@@ -791,7 +808,7 @@ describe('real ffmpeg integration', () => {
       const defaultDir = join(defaultResult.playlistPath, '..')
       const defaultSegment = readdirSync(defaultDir).find((f) => f.endsWith('.ts'))
       if (!defaultSegment) throw new Error('no .ts segment was produced')
-      const defaultVolume = await measureMeanVolumeDb(join(defaultDir, defaultSegment))
+      const defaultRms = await measureRmsAmplitude(join(defaultDir, defaultSegment))
       await service.stopTranscode('real-audio-default')
 
       // audioStreamIndex: 1 — the second audio stream — should carry through the audible tone.
@@ -799,11 +816,15 @@ describe('real ffmpeg integration', () => {
       const chosenDir = join(chosenResult.playlistPath, '..')
       const chosenSegment = readdirSync(chosenDir).find((f) => f.endsWith('.ts'))
       if (!chosenSegment) throw new Error('no .ts segment was produced')
-      const chosenVolume = await measureMeanVolumeDb(join(chosenDir, chosenSegment))
+      const chosenRms = await measureRmsAmplitude(join(chosenDir, chosenSegment))
       await service.stopTranscode('real-audio-1')
 
-      expect(defaultVolume).toBeLessThan(-70)
-      expect(chosenVolume).toBeGreaterThan(-45)
+      // 16-bit PCM: silence should read as essentially zero (allowing headroom for AAC
+      // quantization noise); a full-scale tone survives resampling/encoding at roughly a
+      // quarter of full scale in local testing (~2000 of a possible 32767) — comfortable
+      // margin either side of these thresholds for a different ffmpeg build/version.
+      expect(defaultRms).toBeLessThan(200)
+      expect(chosenRms).toBeGreaterThan(500)
     } finally {
       server.close()
       rmSync(fixtureDir, { recursive: true, force: true })
