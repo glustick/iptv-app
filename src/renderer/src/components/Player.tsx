@@ -151,7 +151,14 @@ export function Player(): JSX.Element | null {
     beginRun: beginTranscodeRun,
     subtitleTracks,
     activeSubtitleTrackIndex,
-    switchSubtitleTrack
+    switchSubtitleTrack,
+    hasFallbackActive,
+    liveAudioTracks,
+    probingLiveAudio,
+    activeLiveAudioTrackIndex,
+    probedLiveSubtitleTrackCount,
+    probeLiveAudioTracks,
+    switchLiveAudioTrack
   } = useTranscodeFallback()
 
   // Channel identity changing (including to nothing, i.e. the player closing) is the only
@@ -931,6 +938,59 @@ export function Player(): JSX.Element | null {
           {hlsAudioTracks.length > 1 && (
             <button className="player-control-btn" onClick={cycleHlsAudioTrack} title="Switch audio language">
               🗣 {hlsAudioTracks.find((t) => t.id === activeHlsAudioTrack)?.name ?? 'Audio'}
+            </button>
+          )}
+          {// A live channel's raw stream can carry audio tracks its HLS playlist never
+          // advertises at all — hlsAudioTracks (above) only ever sees what the playlist
+          // declares, so this covers the gap for channels where that's empty/single but the
+          // actual multiplex has more (confirmed live: a real "5.1 + Stereo"-labeled channel
+          // whose playlist advertised one rendition but whose raw stream carried three). Hidden
+          // once hlsAudioTracks already found more than one (nothing left to check), or while a
+          // *different* transcode fallback (the automatic codec fix) is already active — but not
+          // once this block's own switchLiveAudioTrack is what's driving hasFallbackActive
+          // (liveAudioTracks !== null exactly identifies that case), or a user who's already
+          // picked a track could never see which one, or cycle to another.
+          nowPlaying.kind === 'live' && hlsAudioTracks.length <= 1 && (!hasFallbackActive || liveAudioTracks !== null) && (
+            <button
+              className="player-control-btn"
+              disabled={probingLiveAudio || (liveAudioTracks !== null && liveAudioTracks.length <= 1)}
+              onClick={() => {
+                if (liveAudioTracks === null) {
+                  void probeLiveAudioTracks(nowPlaying.url, (message) =>
+                    setPlaybackError(`Failed to check for extra audio tracks: ${message}`)
+                  )
+                  return
+                }
+                const currentPosition = liveAudioTracks.findIndex((t) => t.index === (activeLiveAudioTrackIndex ?? 0))
+                const next = liveAudioTracks[(currentPosition + 1) % liveAudioTracks.length]
+                switchLiveAudioTrack(
+                  nowPlaying.url,
+                  next.index,
+                  () => setReloadTick((t) => t + 1),
+                  (message) => setPlaybackError(`Failed to switch audio track: ${message}`)
+                )
+              }}
+              title={
+                liveAudioTracks === null
+                  ? 'Check whether this channel actually carries more audio tracks than its guide lists (opens a second connection briefly)'
+                  : liveAudioTracks.length > 1
+                    ? 'Switch to the next audio track found in this channel’s raw stream (restarts playback via a local remux, can take a few seconds)'
+                    : `No extra audio tracks found in this channel's raw stream${probedLiveSubtitleTrackCount ? ` (${probedLiveSubtitleTrackCount} subtitle track${probedLiveSubtitleTrackCount > 1 ? 's' : ''} found, not yet switchable for Live TV)` : ' (no embedded subtitle tracks either)'}`
+              }
+            >
+              🎚{' '}
+              {probingLiveAudio
+                ? 'Checking…'
+                : liveAudioTracks === null
+                  ? 'Check Audio Tracks'
+                  : liveAudioTracks.length > 1
+                    ? (() => {
+                        const active = liveAudioTracks.find((t) => t.index === (activeLiveAudioTrackIndex ?? 0))
+                        return active
+                          ? `${active.language?.toUpperCase() ?? `Track ${active.index + 1}`} (${active.codec.toUpperCase()}, ${active.channelLayout})`
+                          : 'Audio'
+                      })()
+                    : 'No Extra Audio'}
             </button>
           )}
           {hlsSubtitleTracks.length > 0 && (

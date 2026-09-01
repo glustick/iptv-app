@@ -59,6 +59,31 @@ case "${FAKE_FFMPEG_MODE:-}" in
     echo "fake ffmpeg: simulated fatal error" >&2
     exit 1
     ;;
+  probe_multi_audio)
+    # Mirrors a real probe against a real live channel on this app's test account (a sports
+    # channel provider-labeled "5.1 + Stereo" whose playlist advertised one rendition, but whose
+    # raw multiplex actually carried three) — see probeTracks/AUDIO_STREAM_PATTERN.
+    echo "Stream #0:0: Video: h264 (High), yuv420p(tv, bt709), 1920x1080, 50 fps, 50 tbr, 90k tbn" >&2
+    echo "Stream #0:1: Audio: aac (HE-AAC) ([15][0][0][0] / 0x000F), 48000 Hz, stereo, fltp" >&2
+    echo "Stream #0:2: Audio: eac3 (EAC3 / 0x33434145), 48000 Hz, stereo, fltp, 128 kb/s" >&2
+    echo "Stream #0:3: Audio: eac3 (EAC3 / 0x33434145), 48000 Hz, 5.1(side), fltp, 256 kb/s" >&2
+    echo "At least one output file must be specified" >&2
+    exit 1
+    ;;
+  probe_single_audio_no_subtitles)
+    echo "Stream #0:0: Video: hevc (Main), yuv420p, 3840x2160, 50 fps, 50 tbr, 90k tbn" >&2
+    echo "Stream #0:1: Audio: aac (LC) ([15][0][0][0] / 0x000F), 48000 Hz, stereo, fltp" >&2
+    echo "At least one output file must be specified" >&2
+    exit 1
+    ;;
+  probe_audio_and_subtitle)
+    echo "Stream #0:0: Video: h264 (High), yuv420p, 1920x1080, 50 fps, 50 tbr, 90k tbn" >&2
+    echo "Stream #0:1(eng): Audio: aac (LC) ([15][0][0][0] / 0x000F), 48000 Hz, stereo, fltp" >&2
+    echo "Stream #0:2(fre): Audio: aac (LC) ([15][0][0][0] / 0x000F), 48000 Hz, stereo, fltp" >&2
+    echo "Stream #0:3(eng): Subtitle: dvb_subtitle" >&2
+    echo "At least one output file must be specified" >&2
+    exit 1
+    ;;
   hang_forever)
     sleep 300
     ;;

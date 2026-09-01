@@ -35,6 +35,23 @@ const TEXT_SUBTITLE_CODECS = new Set(['subrip', 'srt', 'ass', 'ssa', 'mov_text',
 // stream — this is the safety net for that case specifically.
 const SUBTITLE_CODEC_INCOMPATIBLE_PATTERN = /Subtitle encoding currently only possible from text to text or bitmap to bitmap/
 
+// Same idea and same source line (ffmpeg's own "Input #0 ... Stream #0:N(lang): Audio: codec
+// ..." line) as SUBTITLE_STREAM_PATTERN above, for audio. This exists for a real, confirmed gap:
+// a live channel's actual MPEG-TS multiplex can carry more than one audio elementary stream
+// (different language, or a different codec/channel-layout mix like stereo vs. 5.1) with zero
+// #EXT-X-MEDIA entries in its HLS playlist to advertise any of that — HLS's own alternate-
+// rendition model only ever exposes what the playlist explicitly declares, so hls.js has no way
+// to see (let alone switch to) a track the provider's playlist just doesn't mention, no matter
+// how many are actually present in the stream. Confirmed live against a real account: a
+// provider-labeled "5.1 + Stereo" sports channel's playlist advertised exactly one rendition,
+// while probing the raw stream found three distinct audio tracks. The trailing channel-layout
+// capture (stereo/mono/5.1(side)/...) exists because most real tracks like this carry no
+// language tag at all — without it there'd be no way to tell two same-language, same-codec
+// tracks apart in a picker, or to explain *why* a provider's own "5.1 + Stereo" labeling means
+// two tracks, not one.
+const AUDIO_STREAM_PATTERN =
+  /Stream #\d+:\d+(?:\[[^\]]*\])?(?:\(([a-zA-Z-]+)\))?: Audio: (\S+).*?,\s*\d+\s*Hz,\s*([a-zA-Z0-9.()]+)/
+
 /**
  * Some providers' live channels carry EC-3/E-AC-3 (Dolby Digital Plus) audio inside their
  * MPEG-TS segments, which hls.js's built-in demuxer cannot parse at all — every fragment
@@ -62,6 +79,19 @@ export interface SubtitleTrackInfo {
   supported: boolean
 }
 
+export interface AudioTrackInfo {
+  // Position among the source's audio streams only (0-based, file order) — exactly what
+  // ffmpeg's `-map 0:a:N` specifier addresses, so it doubles as the value a caller passes back
+  // in to startTranscode's audioStreamIndex to select this track.
+  index: number
+  language: string | null
+  codec: string
+  // e.g. "stereo", "mono", "5.1(side)" — most real-world extra tracks like this carry no
+  // language tag at all (see AUDIO_STREAM_PATTERN's own comment), so this is often the only
+  // thing that actually distinguishes one track from another in a picker.
+  channelLayout: string
+}
+
 export interface TranscodeSession {
   proc: ChildProcessWithoutNullStreams
   dir: string
@@ -78,13 +108,14 @@ export interface TranscodeSession {
 
 export interface TranscodeServiceDeps {
   resolveFfmpegPath: () => Promise<string | null>
-  // All five below have real production defaults (see createTranscodeService) — overridable
-  // purely so tests don't have to wait out a real 20s/240s/2s/5s deadline to exercise them.
+  // All six below have real production defaults (see createTranscodeService) — overridable
+  // purely so tests don't have to wait out a real 20s/240s/2s/5s/30s deadline to exercise them.
   liveDeadlineMs?: number
   vodDeadlineMs?: number
   pollIntervalMs?: number
   stopGraceMs?: number
   subtitleGraceMs?: number
+  probeTimeoutMs?: number
 }
 
 export interface TranscodeService {
@@ -99,13 +130,26 @@ export interface TranscodeService {
     // fails with "No streams to mux were specified") — switching languages genuinely means
     // stopping this session and starting a new one with a different index, not picking among
     // multiple simultaneously available renditions. Defaults to the first subtitle stream found.
-    subtitleStreamIndex?: number
+    subtitleStreamIndex?: number,
+    // Which audio stream (by position among the source's audio streams — see AudioTrackInfo) to
+    // map. Unlike subtitles this applies to Live TV too, not just VOD/series — see
+    // AUDIO_STREAM_PATTERN's own comment for why a live channel needs this at all. Defaults to
+    // the first audio stream, matching every existing call site's previous hardcoded behavior.
+    audioStreamIndex?: number
   ): Promise<{ sessionId: string; playlistPath: string; subtitleTracks: SubtitleTrackInfo[] }>
   stopTranscode(sessionId: string): Promise<void>
   serveTranscodeFile(url: string, res: ServerResponse): Promise<void>
   // Fire-and-forget by design, matching the one real caller (app 'before-quit'): every active
   // session gets a stopTranscode() kicked off, but quitting doesn't wait on any of them.
   stopAll(): void
+  // A lightweight, output-less probe (ffmpeg -i with nothing to write to, which exits almost
+  // immediately once it's read the source's headers/PMT — confirmed live, typically well under
+  // a second against this app's real test account) that reports every audio/subtitle stream the
+  // raw source actually carries, independent of what its HLS playlist advertises. Doesn't start
+  // playback or touch any active transcode session — purely informational, so a caller (see
+  // useTranscodeFallback.ts's probeLiveAudioTracks) can decide whether picking a non-default
+  // audioStreamIndex via startTranscode above is even worth offering.
+  probeTracks(sourceUrl: string): Promise<{ audioTracks: AudioTrackInfo[]; subtitleTracks: SubtitleTrackInfo[] }>
 }
 
 const TRANSCODE_MIME_TYPES: Record<string, string> = {
@@ -128,6 +172,13 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
   const pollIntervalMs = deps.pollIntervalMs ?? 300
   const stopGraceMs = deps.stopGraceMs ?? 2000
   const subtitleGraceMs = deps.subtitleGraceMs ?? 5000
+  // Real-world "just open the source and read its headers" timing on this app's own test
+  // account has run anywhere from under a second (the common case, confirmed against several
+  // real channels) up to the same 25-90s range startTranscode's own deadlines already document
+  // for a slow connection — 30s sits well inside that observed range without making a user who
+  // clicked "check for extra audio tracks" wait out the full 240s VOD deadline for what's
+  // supposed to be a quick, no-output probe.
+  const probeTimeoutMs = deps.probeTimeoutMs ?? 30000
 
   const transcodeSessions = new Map<string, TranscodeSession>()
 
@@ -161,7 +212,8 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
     sourceUrl: string,
     isVod: boolean,
     sessionId: string,
-    subtitleStreamIndex = 0
+    subtitleStreamIndex = 0,
+    audioStreamIndex = 0
   ): Promise<{ sessionId: string; playlistPath: string; subtitleTracks: SubtitleTrackInfo[] }> {
     const ffmpegPath = await deps.resolveFfmpegPath()
     if (!ffmpegPath) {
@@ -206,7 +258,11 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
       '-map',
       '0:v:0',
       '-map',
-      '0:a:0',
+      // Defaults to the first audio stream, same as every call site's previous hardcoded
+      // behavior — only a caller that's already probed the source (see probeTracks/
+      // useTranscodeFallback.ts's switchLiveAudioTrack) and knows a specific non-default index
+      // exists ever passes anything else.
+      `0:a:${audioStreamIndex}`,
       // subtitleStreamIndex < 0 means "no subtitle at all" — used for the automatic retry below
       // when the requested index turns out to be a bitmap codec ffmpeg can't convert.
       ...(isVod && subtitleStreamIndex >= 0 ? ['-map', `0:s:${subtitleStreamIndex}?`] : []),
@@ -404,7 +460,7 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
         // whole fallback exists for. subtitleStreamIndex >= 0 guards against retrying forever —
         // the retry itself always passes -1, which can never hit this same failure again.
         if (subtitleStreamIndex >= 0 && SUBTITLE_CODEC_INCOMPATIBLE_PATTERN.test(session.stderrTail.join('\n'))) {
-          return startTranscode(sourceUrl, isVod, sessionId, -1)
+          return startTranscode(sourceUrl, isVod, sessionId, -1, audioStreamIndex)
         }
         throw new Error(`ffmpeg exited before producing output: ${session.stderrTail.slice(-10).join('\n')}`)
       }
@@ -447,5 +503,83 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
     }
   }
 
-  return { startTranscode, stopTranscode, serveTranscodeFile, stopAll }
+  // Deliberately independent of transcodeSessions/startTranscode's own state — this never
+  // writes anything to disk and never registers a session, so it can't collide with (or need
+  // cleanup alongside) a real transcode, and a caller can probe a channel it has no intention
+  // of ever transcoding at all.
+  async function probeTracks(
+    sourceUrl: string
+  ): Promise<{ audioTracks: AudioTrackInfo[]; subtitleTracks: SubtitleTrackInfo[] }> {
+    const ffmpegPath = await deps.resolveFfmpegPath()
+    if (!ffmpegPath) {
+      throw new Error('ffmpeg binary not available on this platform')
+    }
+    return new Promise((resolve, reject) => {
+      // No output/format specified at all — ffmpeg reads and logs the source's headers/PMT
+      // (exactly the info this needs) then exits on its own with "At least one output file must
+      // be specified," almost immediately once it's done (confirmed live, typically well under a
+      // second against several real channels on this app's test account). The timeout below is
+      // only a backstop for a slow/unresponsive source, not the normal way this resolves.
+      const proc = spawn(ffmpegPath, ['-i', sourceUrl])
+      const audioTracks: AudioTrackInfo[] = []
+      const subtitleTracks: SubtitleTrackInfo[] = []
+      let inputStreamListEnded = false
+      let stderrBuffer = ''
+      let settled = false
+
+      const timer = setTimeout(() => {
+        if (settled) return
+        settled = true
+        proc.kill('SIGKILL')
+        resolve({ audioTracks, subtitleTracks })
+      }, probeTimeoutMs)
+
+      // Same chunk-boundary-safety rationale as startTranscode's own stderr handling above:
+      // stderr is a pipe, not a tty, and a line can land split across two 'data' events.
+      proc.stderr.on('data', (chunk: Buffer) => {
+        stderrBuffer += chunk.toString('utf8')
+        const parts = stderrBuffer.split('\n')
+        stderrBuffer = parts.pop() ?? ''
+        for (const line of parts) {
+          if (/^(Output #\d+|Stream mapping:)/.test(line)) {
+            inputStreamListEnded = true
+            break
+          }
+          if (inputStreamListEnded) break
+          const subtitleMatch = SUBTITLE_STREAM_PATTERN.exec(line)
+          if (subtitleMatch) {
+            subtitleTracks.push({
+              index: subtitleTracks.length,
+              language: subtitleMatch[1] ?? null,
+              supported: TEXT_SUBTITLE_CODECS.has(subtitleMatch[2].toLowerCase())
+            })
+            continue
+          }
+          const audioMatch = AUDIO_STREAM_PATTERN.exec(line)
+          if (audioMatch) {
+            audioTracks.push({
+              index: audioTracks.length,
+              language: audioMatch[1] ?? null,
+              codec: audioMatch[2],
+              channelLayout: audioMatch[3]
+            })
+          }
+        }
+      })
+      proc.on('error', (err) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        reject(err)
+      })
+      proc.on('exit', () => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve({ audioTracks, subtitleTracks })
+      })
+    })
+  }
+
+  return { startTranscode, stopTranscode, serveTranscodeFile, stopAll, probeTracks }
 }

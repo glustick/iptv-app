@@ -353,6 +353,66 @@ describe('stopAll', () => {
   })
 })
 
+describe('probeTracks', () => {
+  it('throws when no ffmpeg binary is available', async () => {
+    const service = createTranscodeService({ resolveFfmpegPath: resolverFor(null) })
+
+    await expect(service.probeTracks('http://example.com/stream.ts')).rejects.toThrow('ffmpeg binary not available')
+  })
+
+  it('reports every audio track found, including one with no language tag', async () => {
+    const service = createTranscodeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG) })
+
+    const result = await withFakeFfmpegMode('probe_multi_audio', () => service.probeTracks('irrelevant-source'))
+
+    expect(result.audioTracks).toEqual([
+      { index: 0, language: null, codec: 'aac', channelLayout: 'stereo' },
+      { index: 1, language: null, codec: 'eac3', channelLayout: 'stereo' },
+      { index: 2, language: null, codec: 'eac3', channelLayout: '5.1(side)' }
+    ])
+    expect(result.subtitleTracks).toEqual([])
+  })
+
+  it('reports a single audio track and no subtitles for an ordinary single-rendition source', async () => {
+    const service = createTranscodeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG) })
+
+    const result = await withFakeFfmpegMode('probe_single_audio_no_subtitles', () =>
+      service.probeTracks('irrelevant-source')
+    )
+
+    expect(result.audioTracks).toEqual([{ index: 0, language: null, codec: 'aac', channelLayout: 'stereo' }])
+    expect(result.subtitleTracks).toEqual([])
+  })
+
+  it('reports both audio and subtitle tracks, each with correct language tags', async () => {
+    const service = createTranscodeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG) })
+
+    const result = await withFakeFfmpegMode('probe_audio_and_subtitle', () => service.probeTracks('irrelevant-source'))
+
+    expect(result.audioTracks).toEqual([
+      { index: 0, language: 'eng', codec: 'aac', channelLayout: 'stereo' },
+      { index: 1, language: 'fre', codec: 'aac', channelLayout: 'stereo' }
+    ])
+    expect(result.subtitleTracks).toEqual([{ index: 0, language: 'eng', supported: false }])
+  })
+
+  it('resolves with empty results (does not reject) when ffmpeg exits with nothing usable logged', async () => {
+    const service = createTranscodeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG) })
+
+    const result = await withFakeFfmpegMode('fail_immediately', () => service.probeTracks('irrelevant-source'))
+
+    expect(result).toEqual({ audioTracks: [], subtitleTracks: [] })
+  })
+
+  it('resolves with whatever was found so far once probeTimeoutMs elapses, for a hanging source', async () => {
+    const service = createTranscodeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG), probeTimeoutMs: 300 })
+
+    const result = await withFakeFfmpegMode('hang_forever', () => service.probeTracks('irrelevant-source'))
+
+    expect(result).toEqual({ audioTracks: [], subtitleTracks: [] })
+  })
+})
+
 // The one integration test here: confirms this all genuinely works against the real bundled
 // ffmpeg-static binary and a real (synthetic, network-free) input, not just the fake-ffmpeg
 // fixture's hand-shaped behavior above — mirroring how this project has verified real ffmpeg
@@ -628,6 +688,117 @@ describe('real ffmpeg integration', () => {
       expect(cueText).not.toContain('Hello')
 
       await service.stopTranscode('real-3')
+    } finally {
+      server.close()
+      rmSync(fixtureDir, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  // Runs a real ffmpeg pass over one already-produced HLS segment and reports its mean volume
+  // (via libavfilter's own volumedetect, not a custom analysis) — the simplest reliable way to
+  // tell "which of two audio tracks actually made it into the output" apart without needing real
+  // frequency-domain analysis: one track is genuine digital silence, the other a full-scale
+  // tone, so the two read as unmistakably different (silence: ~-91dB/"-inf"; tone: well above
+  // -20dB) regardless of any resampling/AAC-encoding artifacts from the transcode itself.
+  async function measureMeanVolumeDb(segmentPath: string): Promise<number> {
+    if (!ffmpegStaticPath) throw new Error('ffmpeg-static did not resolve a binary for this platform')
+    return new Promise((resolve, reject) => {
+      let stderr = ''
+      const proc = spawn(ffmpegStaticPath as string, ['-i', segmentPath, '-af', 'volumedetect', '-f', 'null', '-'])
+      proc.stderr.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString('utf8')
+      })
+      proc.on('error', reject)
+      proc.on('exit', () => {
+        const match = /mean_volume:\s*(-inf|-?[\d.]+)\s*dB/.exec(stderr)
+        if (!match) {
+          reject(new Error(`volumedetect produced no mean_volume line:\n${stderr}`))
+          return
+        }
+        resolve(match[1] === '-inf' ? -Infinity : Number(match[1]))
+      })
+    })
+  }
+
+  // Confirms audioStreamIndex genuinely selects a *specific* audio track from a source with more
+  // than one — the real gap this exists for (see AUDIO_STREAM_PATTERN's own comment): a live
+  // channel's raw multiplex can carry extra audio tracks its HLS playlist never advertises, so
+  // hls.js can never switch to one on its own. Uses the live (isVod: false) code path, since
+  // that's this feature's actual target — Live TV, not VOD/series.
+  it('selects the requested audio track, not just the first one, from a real multi-audio-track input', async () => {
+    if (!ffmpegStaticPath) throw new Error('ffmpeg-static did not resolve a binary for this platform')
+
+    const fixtureDir = mkdtempSync(join(tmpdir(), 'allisoniptv-test-fixture-'))
+    const inputPath = join(fixtureDir, 'synthetic-multi-audio-input.mkv')
+    // Track 0: genuine digital silence. Track 1: a full-scale 440Hz tone. Distinguishing by
+    // silence-vs-tone (rather than two different tone frequencies) sidesteps any need for real
+    // frequency-domain analysis of the transcoded output — silence and a loud tone read as
+    // unmistakably different mean volume regardless of resampling/AAC re-encoding.
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn(ffmpegStaticPath as string, [
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        'testsrc=duration=6:size=320x240:rate=10',
+        '-f',
+        'lavfi',
+        '-i',
+        'anullsrc=r=48000:cl=stereo:d=6',
+        '-f',
+        'lavfi',
+        '-i',
+        'sine=frequency=440:duration=6',
+        '-map',
+        '0:v',
+        '-map',
+        '1:a',
+        '-map',
+        '2:a',
+        '-c:v',
+        'libx264',
+        '-preset',
+        'ultrafast',
+        '-g',
+        '10',
+        '-keyint_min',
+        '10',
+        '-c:a',
+        'aac',
+        inputPath
+      ])
+      proc.on('error', reject)
+      proc.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`fixture build exited ${code}`))))
+    })
+
+    const { url: originUrl, server } = await startSyntheticOrigin(inputPath)
+    try {
+      const service = track(
+        createTranscodeService({
+          resolveFfmpegPath: resolverFor(ffmpegStaticPath as string),
+          liveDeadlineMs: 30000,
+          pollIntervalMs: 200
+        })
+      )
+
+      // Default audioStreamIndex (0) — should carry through the silent track.
+      const defaultResult = await service.startTranscode(originUrl, false, 'real-audio-default')
+      const defaultDir = join(defaultResult.playlistPath, '..')
+      const defaultSegment = readdirSync(defaultDir).find((f) => f.endsWith('.ts'))
+      if (!defaultSegment) throw new Error('no .ts segment was produced')
+      const defaultVolume = await measureMeanVolumeDb(join(defaultDir, defaultSegment))
+      await service.stopTranscode('real-audio-default')
+
+      // audioStreamIndex: 1 — the second audio stream — should carry through the audible tone.
+      const chosenResult = await service.startTranscode(originUrl, false, 'real-audio-1', 0, 1)
+      const chosenDir = join(chosenResult.playlistPath, '..')
+      const chosenSegment = readdirSync(chosenDir).find((f) => f.endsWith('.ts'))
+      if (!chosenSegment) throw new Error('no .ts segment was produced')
+      const chosenVolume = await measureMeanVolumeDb(join(chosenDir, chosenSegment))
+      await service.stopTranscode('real-audio-1')
+
+      expect(defaultVolume).toBeLessThan(-70)
+      expect(chosenVolume).toBeGreaterThan(-45)
     } finally {
       server.close()
       rmSync(fixtureDir, { recursive: true, force: true })

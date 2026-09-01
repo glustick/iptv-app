@@ -44,6 +44,16 @@ export interface SubtitleTrackInfo {
   supported: boolean
 }
 
+export interface AudioTrackInfo {
+  index: number
+  language: string | null
+  codec: string
+  // e.g. "stereo", "mono", "5.1(side)" — most real-world extra tracks like this carry no
+  // language tag at all (see probeLiveAudioTracks' own comment), so this is often the only
+  // thing that actually distinguishes one track from another in a picker.
+  channelLayout: string
+}
+
 export function useTranscodeFallback(): {
   transcoding: boolean
   getSourceUrl: (originalUrl: string) => string
@@ -58,6 +68,31 @@ export function useTranscodeFallback(): {
   subtitleTracks: SubtitleTrackInfo[]
   activeSubtitleTrackIndex: number
   switchSubtitleTrack: (originalUrl: string, onReload: () => void, onError?: (message: string) => void) => void
+  // True once any fallback session — the automatic codec fix above, or a user-chosen
+  // switchLiveAudioTrack below — is actually the thing driving playback (i.e. getSourceUrl no
+  // longer returns the original URL). Lets a caller avoid offering to probe/switch audio tracks
+  // while already playing a remuxed source.
+  hasFallbackActive: boolean
+  // Live TV's raw stream can carry audio tracks its HLS playlist never advertises at all (see
+  // probeLiveAudioTracks' own comment) — hls.js has no way to see, let alone switch to, one of
+  // these on its own. null until a probe has actually run.
+  liveAudioTracks: AudioTrackInfo[] | null
+  probingLiveAudio: boolean
+  // Index into liveAudioTracks currently playing via the fallback, or null while still on the
+  // original, unprobed/unswitched source.
+  activeLiveAudioTrackIndex: number | null
+  // How many subtitle streams the same probe found in the raw source — reported for visibility
+  // even though there's currently no consumption path for a live subtitle rendition (see this
+  // hook's own module comment): every real channel sampled on this app's test account had zero,
+  // but a caller can at least tell a user "checked, found none" rather than staying silent.
+  probedLiveSubtitleTrackCount: number | null
+  probeLiveAudioTracks: (originalUrl: string, onError?: (message: string) => void) => Promise<void>
+  switchLiveAudioTrack: (
+    originalUrl: string,
+    trackIndex: number,
+    onReload: () => void,
+    onError?: (message: string) => void
+  ) => void
 } {
   const transcodedUrlRef = useRef<string | null>(null)
   const triedTranscodeRef = useRef(false)
@@ -66,6 +101,11 @@ export function useTranscodeFallback(): {
   const [transcoding, setTranscoding] = useState(false)
   const [subtitleTracks, setSubtitleTracks] = useState<SubtitleTrackInfo[]>([])
   const [activeSubtitleTrackIndex, setActiveSubtitleTrackIndex] = useState(0)
+  const [hasFallbackActive, setHasFallbackActive] = useState(false)
+  const [liveAudioTracks, setLiveAudioTracks] = useState<AudioTrackInfo[] | null>(null)
+  const [probingLiveAudio, setProbingLiveAudio] = useState(false)
+  const [activeLiveAudioTrackIndex, setActiveLiveAudioTrackIndex] = useState<number | null>(null)
+  const [probedLiveSubtitleTrackCount, setProbedLiveSubtitleTrackCount] = useState<number | null>(null)
 
   // Call when the underlying channel/stream identity changes (a genuinely different source,
   // not just a reload of the same one) — resets fallback state and stops any prior session.
@@ -75,6 +115,11 @@ export function useTranscodeFallback(): {
     transcodedUrlRef.current = null
     setSubtitleTracks([])
     setActiveSubtitleTrackIndex(0)
+    setHasFallbackActive(false)
+    setLiveAudioTracks(null)
+    setProbingLiveAudio(false)
+    setActiveLiveAudioTrackIndex(null)
+    setProbedLiveSubtitleTrackCount(null)
     const staleSessionId = transcodeSessionIdRef.current
     transcodeSessionIdRef.current = null
     if (staleSessionId) {
@@ -99,7 +144,8 @@ export function useTranscodeFallback(): {
       isVod: boolean,
       subtitleStreamIndex: number,
       onReload: () => void,
-      onError?: (message: string) => void
+      onError?: (message: string) => void,
+      audioStreamIndex = 0
     ): void => {
       triedTranscodeRef.current = true
       awaitingTranscodeRef.current = true
@@ -115,11 +161,13 @@ export function useTranscodeFallback(): {
       const sessionId = crypto.randomUUID()
       transcodeSessionIdRef.current = sessionId
       window.api.transcode
-        .start(originalUrl, isVod, sessionId, subtitleStreamIndex)
+        .start(originalUrl, isVod, sessionId, subtitleStreamIndex, audioStreamIndex)
         .then(({ url, subtitleTracks: tracks }) => {
           transcodedUrlRef.current = url
           setSubtitleTracks(tracks)
           setActiveSubtitleTrackIndex(subtitleStreamIndex)
+          setHasFallbackActive(true)
+          setActiveLiveAudioTrackIndex(audioStreamIndex)
           onReload()
         })
         .catch((err) => {
@@ -183,6 +231,56 @@ export function useTranscodeFallback(): {
     [startFallback, subtitleTracks, activeSubtitleTrackIndex]
   )
 
+  // A live channel's actual MPEG-TS multiplex can carry more than one audio elementary stream
+  // (a different language, or just a different codec/channel-layout mix like stereo vs. 5.1)
+  // with zero #EXT-X-MEDIA entries in its HLS playlist to advertise any of it — HLS's alternate-
+  // rendition model only ever exposes what the playlist explicitly declares, so hls.js (see
+  // hlsAudioTracks in Player.tsx) has no way to see, let alone switch to, a track the provider's
+  // playlist just doesn't mention. Confirmed live against a real account: a provider-labeled
+  // "5.1 + Stereo" sports channel's playlist advertised exactly one rendition, while probing the
+  // raw stream directly (main process's transcodeService.probeTracks — the same ffmpeg-opens-
+  // and-logs-the-source mechanism startTranscode already uses, just without ever writing any
+  // output) found three. This is manual (a button, not automatic-on-every-channel) rather than
+  // probing every live channel on open: it's a second connection to the origin, and on a large
+  // account (this app's own test account runs ~24k live channels) or a single-connection-capped
+  // provider, doing that unprompted for every channel switch isn't worth it for what's usually a
+  // "no" answer — most channels genuinely do only carry the one track their playlist claims.
+  const probeLiveAudioTracks = useCallback(
+    async (originalUrl: string, onError?: (message: string) => void): Promise<void> => {
+      setProbingLiveAudio(true)
+      try {
+        const { audioTracks, subtitleTracks: probedSubtitles } = await window.api.transcode.probeTracks(originalUrl)
+        setLiveAudioTracks(audioTracks)
+        setProbedLiveSubtitleTrackCount(probedSubtitles.length)
+      } catch (err) {
+        onError?.(err instanceof Error ? err.message : String(err))
+      } finally {
+        setProbingLiveAudio(false)
+      }
+    },
+    []
+  )
+
+  // Unlike switchSubtitleTrack above, this never has an "off"/native state to cycle back to
+  // once engaged — once a specific raw audio track is chosen, playback keeps coming from the
+  // ffmpeg remux (there's no free way back to the original hls.js source without a full player
+  // reload onto nowPlaying.url, which Player.tsx already offers via a channel switch/reopen).
+  const switchLiveAudioTrack = useCallback(
+    (originalUrl: string, trackIndex: number, onReload: () => void, onError?: (message: string) => void): void => {
+      const staleSessionId = transcodeSessionIdRef.current
+      if (staleSessionId) {
+        window.api.transcode
+          .stop(staleSessionId)
+          .catch((err) => console.error('[transcode] failed to stop session before switching audio track:', err))
+      }
+      // subtitleStreamIndex 0 here doesn't map a subtitle — Live TV's argv only ever requests
+      // one when isVod is true (see transcodeService.ts's startTranscode), which this call
+      // deliberately never is.
+      startFallback(originalUrl, false, 0, onReload, onError, trackIndex)
+    },
+    [startFallback]
+  )
+
   return {
     transcoding,
     getSourceUrl,
@@ -192,6 +290,13 @@ export function useTranscodeFallback(): {
     beginRun,
     subtitleTracks,
     activeSubtitleTrackIndex,
-    switchSubtitleTrack
+    switchSubtitleTrack,
+    hasFallbackActive,
+    liveAudioTracks,
+    probingLiveAudio,
+    activeLiveAudioTrackIndex,
+    probedLiveSubtitleTrackCount,
+    probeLiveAudioTracks,
+    switchLiveAudioTrack
   }
 }

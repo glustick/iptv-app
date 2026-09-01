@@ -22,14 +22,23 @@ interface SubtitleTrackInfo {
   supported: boolean
 }
 
+interface AudioTrackInfo {
+  index: number
+  language: string | null
+  codec: string
+  channelLayout: string
+}
+
 interface TranscodeAPI {
   start: (
     sourceUrl: string,
     isVod: boolean,
     sessionId: string,
-    subtitleStreamIndex?: number
+    subtitleStreamIndex?: number,
+    audioStreamIndex?: number
   ) => Promise<{ sessionId: string; url: string; subtitleTracks: SubtitleTrackInfo[] }>
   stop: (sessionId: string) => Promise<void>
+  probeTracks: (sourceUrl: string) => Promise<{ audioTracks: AudioTrackInfo[]; subtitleTracks: SubtitleTrackInfo[] }>
 }
 
 interface SafeStorageAPI {
