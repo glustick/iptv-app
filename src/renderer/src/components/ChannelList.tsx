@@ -223,12 +223,14 @@ export function ChannelList(): JSX.Element {
   const openChannelPreview = useAppStore((s) => s.openChannelPreview)
   const toggleFavorite = useAppStore((s) => s.toggleFavorite)
   const isFavorited = useAppStore((s) => s.isFavorited)
+  const clearRecentlyWatched = useAppStore((s) => s.clearRecentlyWatched)
 
   const filteredVod = useFiltered(vodStreams, searchTerm, (c) => c.name)
   const filteredSeries = useFiltered(series, searchTerm, (c) => c.name)
   const filteredFavorites = useFiltered(favorites, searchTerm, (f) =>
     f.kind === 'series' ? f.item.name : f.stream.name
   )
+  const filteredRecentlyWatched = useFiltered(recentlyWatched, searchTerm, (e) => e.name)
 
   if (viewMode === 'movies') {
     const entries: GridEntry[] = filteredVod.map((movie) => ({
@@ -270,38 +272,47 @@ export function ChannelList(): JSX.Element {
     )
   }
 
-  // Favorites, with a Recently Watched strip above it — recentlyWatched is a flat, directly
-  // resumable reference to whatever was last played (see recentlyWatchedEntryToGridEntry),
-  // capped at 30 entries by the store, so a plain horizontal row is fine without virtualizing.
+  if (viewMode === 'history') {
+    const resumeRecentlyWatched = (entry: RecentlyWatchedEntry): void =>
+      play(entry.kind, entry.streamId, entry.name, entry.extension, entry.icon, entry.tvArchive)
+    const entries = filteredRecentlyWatched.map((entry) => recentlyWatchedEntryToGridEntry(entry, resumeRecentlyWatched))
+    return (
+      <div className="virtual-list-wrap history-view">
+        <div className="history-header">
+          <h3 className="section-heading">History</h3>
+          {recentlyWatched.length > 0 && (
+            <button
+              className="history-clear-button"
+              onClick={() => {
+                if (window.confirm('Clear all watch history? This cannot be undone.')) clearRecentlyWatched()
+              }}
+            >
+              Clear All
+            </button>
+          )}
+        </div>
+        <div className="history-grid-wrap">
+          {entries.length === 0 ? (
+            <p className="empty-state">
+              {recentlyWatched.length === 0
+                ? 'Nothing watched yet — channels, movies, and series you play will show up here.'
+                : 'No history entries match your search.'}
+            </p>
+          ) : (
+            <MediaGrid entries={entries} />
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  // Favorites.
   const entries = filteredFavorites.map((f) =>
     favoriteEntryToGridEntry(f, { openChannelPreview, play, openSeriesDetail, toggleFavorite })
   )
-  const resumeRecentlyWatched = (entry: RecentlyWatchedEntry): void =>
-    play(entry.kind, entry.streamId, entry.name, entry.extension, entry.icon, entry.tvArchive)
-  const recentEntries = recentlyWatched.map((entry) => recentlyWatchedEntryToGridEntry(entry, resumeRecentlyWatched))
 
   return (
     <div className="virtual-list-wrap favorites-view">
-      {recentEntries.length > 0 && (
-        <section className="recently-watched">
-          <h3 className="section-heading">Recently Watched</h3>
-          <div className="recently-watched-row">
-            {recentEntries.map((entry) => (
-              <div
-                key={entry.key}
-                className="channel-item channel-item--grid recently-watched-card"
-                onClick={entry.onClick}
-              >
-                <PosterImage src={entry.image} className="channel-poster" />
-                <div className="channel-info">
-                  <span className="channel-name">{entry.name}</span>
-                  {entry.badge && <span className="channel-epg">{entry.badge}</span>}
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
       <div className="favorites-grid-wrap">
         {entries.length === 0 ? (
           <p className="empty-state">No favorites yet — click the ☆ on any channel, movie, or series to add one.</p>

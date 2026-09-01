@@ -18,7 +18,7 @@ export function Sidebar(): JSX.Element | null {
     onCommit: (w) => updateSettings({ sidebarWidth: w })
   })
 
-  if (viewMode === 'favorites') return null
+  if (viewMode === 'favorites' || viewMode === 'history') return null
 
   // Namespaced by section since Xtream doesn't guarantee category_id uniqueness across
   // Live/Movies/Series — see useAppStore's requestCategory and setCategoryLocked.

@@ -36,7 +36,7 @@ import type {
 import { DEFAULT_SETTINGS, favoriteKey } from '../lib/types'
 import { shouldWarnOnVpnDisconnect } from '../lib/vpnStatus'
 
-export type ViewMode = 'live' | 'movies' | 'series' | 'favorites'
+export type ViewMode = 'live' | 'movies' | 'series' | 'favorites' | 'history'
 export type ConnectionStatus = 'idle' | 'connecting' | 'ready' | 'error'
 
 // Both the main EPG grid and the fullscreen channel-swap bar lazy-load per-row short EPG as
@@ -194,6 +194,7 @@ interface AppState {
 
   toggleFavorite: (entry: FavoriteEntry) => void
   isFavorited: (kind: MediaKind, id: number) => boolean
+  clearRecentlyWatched: () => void
 
   updateEpisodeProgress: (key: string, positionSeconds: number, durationSeconds: number) => void
 
@@ -449,7 +450,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setViewMode: async (mode) => {
-    if (mode === 'favorites') {
+    // Favorites and History are both derived purely from local state (no category fetch,
+    // no Sidebar) — same short-circuit as each other.
+    if (mode === 'favorites' || mode === 'history') {
       set({ viewMode: mode, selectedCategoryId: null, searchTerm: '' })
       return
     }
@@ -634,6 +637,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   isFavorited: (kind, id) => get().favorites.some((f) => favoriteKey(f) === `${kind}:${id}`),
+
+  clearRecentlyWatched: () => {
+    set({ recentlyWatched: [] })
+    saveRecentlyWatched([]).catch((err) => console.error('[store] failed to save recently-watched:', err))
+  },
 
   updateEpisodeProgress: (key, positionSeconds, durationSeconds) => {
     const updated = {

@@ -4,7 +4,8 @@ const TABS: { mode: ViewMode; label: string }[] = [
   { mode: 'live', label: 'Live TV' },
   { mode: 'movies', label: 'Movies' },
   { mode: 'series', label: 'Series' },
-  { mode: 'favorites', label: 'Favorites' }
+  { mode: 'favorites', label: 'Favorites' },
+  { mode: 'history', label: 'History' }
 ]
 
 export function TopBar(): JSX.Element {

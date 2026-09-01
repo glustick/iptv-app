@@ -662,18 +662,10 @@ body.resizing-col {
   background: var(--bg-hover);
 }
 
-/* Recently Watched: a plain horizontal row, not virtualized — recentlyWatched is capped at
-   30 entries by the store, so react-window's overhead isn't worth it here. Sits above the
-   Favorites grid on the Favorites tab. */
-
 .favorites-view {
   display: flex;
   flex-direction: column;
   gap: 16px;
-}
-
-.recently-watched {
-  flex-shrink: 0;
 }
 
 .section-heading {
@@ -682,22 +674,46 @@ body.resizing-col {
   color: var(--text-dim);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  margin: 0 0 10px;
-}
-
-.recently-watched-row {
-  display: flex;
-  gap: 12px;
-  overflow-x: auto;
-  padding-bottom: 4px;
-}
-
-.recently-watched-card {
-  width: 150px;
-  flex-shrink: 0;
+  margin: 0;
 }
 
 .favorites-grid-wrap {
+  flex: 1;
+  min-height: 0;
+}
+
+/* History: a full-width grid (like Movies/Series), not the old horizontal strip — recentlyWatched
+   is a flat, directly resumable reference to whatever was last played across every content kind
+   (see recentlyWatchedEntryToGridEntry), capped at 30 entries by the store. */
+
+.history-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.history-clear-button {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-dim);
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.history-clear-button:hover {
+  border-color: #e5484d;
+  color: #e5484d;
+}
+
+.history-grid-wrap {
   flex: 1;
   min-height: 0;
 }
