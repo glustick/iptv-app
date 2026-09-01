@@ -70,6 +70,11 @@ export interface NowPlaying {
   // play() was called with, so the channel bar can offer real catch-up for a channel reached via
   // Favorites or Recently Watched, not just ones in the currently-browsed EPG grid category.
   tvArchive: number
+  // Carried through the same way as tvArchive above — every live play() call site already has
+  // the full LiveStream record's stream_icon on hand, so the player's edge-hover info panel
+  // (Player.tsx) can show it without depending on the currently-browsed category's liveStreams
+  // list, which may not even contain this channel (e.g. reached via Favorites or search).
+  icon: string
 }
 
 interface AppState {
@@ -557,7 +562,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { client, recentlyWatched } = get()
     if (!client) return
     set({
-      nowPlaying: { kind, streamId, name, extension, tvArchive, url: client.getStreamUrl(kind, streamId, extension) }
+      nowPlaying: {
+        kind,
+        streamId,
+        name,
+        extension,
+        tvArchive,
+        icon,
+        url: client.getStreamUrl(kind, streamId, extension)
+      }
     })
 
     const entry: RecentlyWatchedEntry = { kind, streamId, name, icon, extension, tvArchive, watchedAt: Date.now() }
@@ -580,6 +593,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         name: `${channel.name} — ${program.title}`,
         extension: 'm3u8',
         tvArchive: channel.tv_archive,
+        icon: channel.stream_icon,
         url
       }
     })

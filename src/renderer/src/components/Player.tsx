@@ -77,6 +77,11 @@ const SEEKBAR_REVEAL_ZONE_FRACTION = 0.2
 // no click needed. A fraction of the player's own height (not a fixed pixel count) so it tracks
 // "top 10% of the player" regardless of window size.
 const HEADER_REVEAL_ZONE_FRACTION = 0.1
+// Same idea as the header above, but along the left edge and live-only: cursor in the left 10%
+// of the player reveals the channel info panel (icon, name, current programme + description),
+// moving away hides it again. A fraction of the player's own width for the same reason the
+// header uses a height fraction — tracks "left 10%" regardless of window size.
+const CHANNEL_INFO_ZONE_FRACTION = 0.1
 
 export function Player(): JSX.Element | null {
   const nowPlaying = useAppStore((s) => s.nowPlaying)
@@ -94,6 +99,8 @@ export function Player(): JSX.Element | null {
   const vpnStatus = useAppStore((s) => s.vpnStatus)
   const toggleVpnTunnel = useAppStore((s) => s.toggleVpnTunnel)
   const singleConnectionAccount = useAppStore((s) => s.singleConnectionAccount)
+  const shortEpgByStream = useAppStore((s) => s.shortEpgByStream)
+  const loadShortEpg = useAppStore((s) => s.loadShortEpg)
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const hlsRef = useRef<Hls | null>(null)
@@ -109,6 +116,7 @@ export function Player(): JSX.Element | null {
   const [headerVisible, setHeaderVisible] = useState(true)
   const [statsVisible, setStatsVisible] = useState(false)
   const [cursorNearBottom, setCursorNearBottom] = useState(false)
+  const [channelInfoVisible, setChannelInfoVisible] = useState(false)
   // hls.js's own, free/instant notion of "which renditions does the CURRENT source's playlist
   // carry" — populated from Hls.Events.SUBTITLE_TRACKS_UPDATED, which fires for *any* m3u8 with
   // #EXT-X-MEDIA:TYPE=SUBTITLES entries, live or not: a genuinely multi-language live channel's
@@ -672,6 +680,30 @@ export function Player(): JSX.Element | null {
     return () => container.removeEventListener('mousemove', onMouseMove)
   }, [nowPlaying])
 
+  // The channel info panel needs this channel's short EPG (for the current programme's title
+  // and description) on hand before the cursor ever reaches the left edge — fetching it lazily
+  // on first hover would mean showing nothing (or a stale previous channel's listings) for a
+  // beat. loadShortEpg de-dupes against both an already-cached entry and an in-flight fetch (see
+  // its own definition), so this is safe to call again on every channel change without guarding
+  // here too.
+  useEffect(() => {
+    if (nowPlaying?.kind === 'live') void loadShortEpg(nowPlaying.streamId)
+  }, [nowPlaying, loadShortEpg])
+
+  // Left-edge channel info panel: purely hover-driven like the header above, but along the
+  // player's own width and live-only — hovering elsewhere (VOD/series have no "now playing
+  // channel" concept in the same sense) never shows it.
+  useEffect(() => {
+    const container = playerRef.current
+    if (!container || nowPlaying?.kind !== 'live') return
+    function onMouseMove(e: MouseEvent): void {
+      const rect = container!.getBoundingClientRect()
+      setChannelInfoVisible(e.clientX < rect.left + rect.width * CHANNEL_INFO_ZONE_FRACTION)
+    }
+    container.addEventListener('mousemove', onMouseMove)
+    return () => container.removeEventListener('mousemove', onMouseMove)
+  }, [nowPlaying])
+
   // Picture-in-Picture opens a genuine floating OS window (confirmed: it renders on top of
   // other apps, not just inside this one) tied to this video element — closing the player or
   // switching channels while it's open would otherwise leave that window floating on the
@@ -705,6 +737,16 @@ export function Player(): JSX.Element | null {
   // crash the whole transcode if attempted (see switchSubtitleTrack's own comment) — so the
   // language button's visibility and its cycling both key off this, not the raw track count.
   const switchableSubtitleTracks = subtitleTracks.filter((t) => t.supported)
+
+  // The "currently playing" programme out of this channel's short EPG listings — the one whose
+  // window actually contains right now, not just the first entry (get_short_epg can return
+  // listings starting slightly in the future, e.g. right at a programme boundary).
+  const nowPlayingProgram =
+    nowPlaying.kind === 'live'
+      ? (shortEpgByStream[nowPlaying.streamId] ?? []).find(
+          (p) => Number(p.start_timestamp) * 1000 <= Date.now() && Number(p.stop_timestamp) * 1000 > Date.now()
+        )
+      : undefined
 
   async function togglePip(): Promise<void> {
     const video = videoRef.current
@@ -980,6 +1022,29 @@ export function Player(): JSX.Element | null {
           <div className="player-buffering">
             <div className="spinner" />
             <span>Buffering…</span>
+          </div>
+        )}
+        {// Left-edge hover panel, live-only — see the channelInfoVisible mousemove effect above.
+        // Deliberately pointer-events: none (see global.css) so it never intercepts the
+        // click-to-pause/double-click-to-fullscreen handlers on the video underneath it.
+        nowPlaying.kind === 'live' && (
+          <div
+            className={`player-channel-info-panel${channelInfoVisible ? ' player-channel-info-panel--visible' : ''}`}
+          >
+            {nowPlaying.icon ? (
+              <img className="player-channel-info-icon" src={nowPlaying.icon} alt="" />
+            ) : (
+              <span className="player-channel-info-icon placeholder" />
+            )}
+            <div className="player-channel-info-name">{nowPlaying.name}</div>
+            {nowPlayingProgram && (
+              <>
+                <div className="player-channel-info-program">{nowPlayingProgram.title}</div>
+                {nowPlayingProgram.description && (
+                  <div className="player-channel-info-description">{nowPlayingProgram.description}</div>
+                )}
+              </>
+            )}
           </div>
         )}
         <video

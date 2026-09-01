@@ -924,6 +924,69 @@ body.resizing-col {
   color: var(--text-dim);
 }
 
+/* Left-edge channel info panel: hovering the left 10% of the player (see Player.tsx's
+   channelInfoVisible) reveals the currently playing channel's icon, name and current programme —
+   a glanceable "what am I watching" panel, like the header/seek bar it's purely hover-driven and
+   never needs a click. pointer-events: none throughout so it never steals the video's own
+   click-to-pause/double-click-to-fullscreen handlers. */
+.player-channel-info-panel {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 3;
+  width: min(360px, 32vw);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  justify-content: center;
+  padding: 28px 24px;
+  background: linear-gradient(to right, rgba(11, 13, 18, 0.85), rgba(11, 13, 18, 0));
+  backdrop-filter: blur(6px);
+  opacity: 0;
+  transform: translateX(-12px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  pointer-events: none;
+}
+
+.player-channel-info-panel--visible {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.player-channel-info-icon {
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.player-channel-info-icon.placeholder {
+  background: var(--bg-hover);
+}
+
+.player-channel-info-name {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.player-channel-info-program {
+  font-size: 13px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.player-channel-info-description {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 /* Channel bar: a compact vertical mini-EPG (the same EpgGrid used for browsing Live TV, see
    EpgGrid.tsx) overlaid on the bottom of the fullscreen player — 5 channel rows tall, with its
    own horizontal time scroll, rather than a flat single-row channel switcher. */
