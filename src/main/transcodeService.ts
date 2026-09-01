@@ -572,7 +572,13 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
         clearTimeout(timer)
         reject(err)
       })
-      proc.on('exit', () => {
+      // 'close' (not 'exit') deliberately: 'exit' only signals the process itself has
+      // terminated, not that its stdio streams have finished delivering buffered data — a real,
+      // confirmed race (see the CI failure this was found from) where the process had already
+      // exited but a final chunk of stderr, including a track's own log line, hadn't been
+      // flushed through 'data' yet. 'close' is the one Node guarantees fires only once every
+      // stdio stream has actually ended.
+      proc.on('close', () => {
         if (settled) return
         settled = true
         clearTimeout(timer)

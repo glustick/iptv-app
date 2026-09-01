@@ -709,7 +709,12 @@ describe('real ffmpeg integration', () => {
         stderr += chunk.toString('utf8')
       })
       proc.on('error', reject)
-      proc.on('exit', () => {
+      // 'close', not 'exit' — a real CI failure (Linux, a different ffmpeg-static build than
+      // this was developed against on macOS) showed stderr truncated to just the startup
+      // banner at the moment this fired, missing the volumedetect summary entirely: 'exit'
+      // only means the process terminated, not that stdio has finished draining. 'close' is
+      // the event Node guarantees fires only once every stdio stream has actually ended.
+      proc.on('close', () => {
         const match = /mean_volume:\s*(-inf|-?[\d.]+)\s*dB/.exec(stderr)
         if (!match) {
           reject(new Error(`volumedetect produced no mean_volume line:\n${stderr}`))
