@@ -73,7 +73,15 @@ const store = new Store()
 // keychain, so an imported value that can't be decrypted on a *different* machine already
 // degrades to "treat as unset" rather than a hard failure, the same fallback PIN/VPN storage
 // already has for exactly this situation).
-const BACKUP_KEYS = ['xtream_profiles', 'active_profile_id', 'favorites', 'recently_watched', 'episode_progress', 'settings'] as const
+const BACKUP_KEYS = [
+  'xtream_profiles',
+  'active_profile_id',
+  'favorites',
+  'favorite_groups',
+  'recently_watched',
+  'episode_progress',
+  'settings'
+] as const
 
 // app.getVersion() already reads package.json's "version" natively, but buildNumber is a
 // custom field with no built-in getter — app.getAppPath() resolves correctly both in dev and

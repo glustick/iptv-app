@@ -1,9 +1,10 @@
-import type { XtreamProfile, FavoriteEntry, RecentlyWatchedEntry, EpisodeProgress, AppSettings } from './types'
+import type { XtreamProfile, FavoriteEntry, FavoriteGroup, RecentlyWatchedEntry, EpisodeProgress, AppSettings } from './types'
 import { DEFAULT_SETTINGS } from './types'
 
 const PROFILES_KEY = 'xtream_profiles'
 const ACTIVE_PROFILE_KEY = 'active_profile_id'
 const FAVORITES_KEY = 'favorites'
+const FAVORITE_GROUPS_KEY = 'favorite_groups'
 const RECENTLY_WATCHED_KEY = 'recently_watched'
 const EPISODE_PROGRESS_KEY = 'episode_progress'
 const SETTINGS_KEY = 'settings'
@@ -58,6 +59,14 @@ export async function loadFavorites(): Promise<FavoriteEntry[]> {
 
 export async function saveFavorites(favorites: FavoriteEntry[]): Promise<void> {
   return saveJson(FAVORITES_KEY, favorites)
+}
+
+export async function loadFavoriteGroups(): Promise<FavoriteGroup[]> {
+  return loadJson(FAVORITE_GROUPS_KEY, [])
+}
+
+export async function saveFavoriteGroups(groups: FavoriteGroup[]): Promise<void> {
+  return saveJson(FAVORITE_GROUPS_KEY, groups)
 }
 
 export async function loadRecentlyWatched(): Promise<RecentlyWatchedEntry[]> {

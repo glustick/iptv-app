@@ -33,7 +33,8 @@ beforeEach(() => {
     shortEpgByStream: {},
     nowPlaying: null,
     recentlyWatched: [],
-    favorites: []
+    favorites: [],
+    favoriteGroups: []
   })
 })
 
@@ -233,6 +234,73 @@ describe('toggleFavorite / isFavorited', () => {
 
     useAppStore.getState().toggleFavorite(entry)
     expect(useAppStore.getState().isFavorited('live', 42)).toBe(false)
+  })
+})
+
+describe('favorite groups', () => {
+  const entry: FavoriteEntry = { kind: 'live', stream: { stream_id: 42 } as unknown as LiveStream }
+
+  it('addFavoriteGroup appends a new group with a generated id', () => {
+    useAppStore.getState().addFavoriteGroup('Sports')
+
+    const { favoriteGroups } = useAppStore.getState()
+    expect(favoriteGroups).toHaveLength(1)
+    expect(favoriteGroups[0].name).toBe('Sports')
+    expect(favoriteGroups[0].id).toBeTruthy()
+  })
+
+  it('addFavoriteGroup trims whitespace and ignores an empty name', () => {
+    useAppStore.getState().addFavoriteGroup('  Kids  ')
+    useAppStore.getState().addFavoriteGroup('   ')
+
+    const { favoriteGroups } = useAppStore.getState()
+    expect(favoriteGroups).toHaveLength(1)
+    expect(favoriteGroups[0].name).toBe('Kids')
+  })
+
+  it('renameFavoriteGroup updates only the matching group', () => {
+    useAppStore.setState({ favoriteGroups: [{ id: 'g1', name: 'Old Name' }, { id: 'g2', name: 'Other' }] })
+
+    useAppStore.getState().renameFavoriteGroup('g1', 'New Name')
+
+    const { favoriteGroups } = useAppStore.getState()
+    expect(favoriteGroups.find((g) => g.id === 'g1')?.name).toBe('New Name')
+    expect(favoriteGroups.find((g) => g.id === 'g2')?.name).toBe('Other')
+  })
+
+  it('setFavoriteGroup assigns a group to an already-favorited entry', () => {
+    useAppStore.getState().toggleFavorite(entry)
+
+    useAppStore.getState().setFavoriteGroup('live:42', 'g1')
+
+    expect(useAppStore.getState().favorites[0].groupId).toBe('g1')
+  })
+
+  it('setFavoriteGroup is a no-op when the key is not actually favorited', () => {
+    useAppStore.getState().setFavoriteGroup('live:999', 'g1')
+
+    expect(useAppStore.getState().favorites).toEqual([])
+  })
+
+  it('setFavoriteGroup(key, null) clears a previously-assigned group', () => {
+    useAppStore.getState().toggleFavorite(entry)
+    useAppStore.getState().setFavoriteGroup('live:42', 'g1')
+
+    useAppStore.getState().setFavoriteGroup('live:42', null)
+
+    expect(useAppStore.getState().favorites[0].groupId).toBeNull()
+  })
+
+  it('deleteFavoriteGroup removes the group and ungroups (not deletes) its favorites', () => {
+    useAppStore.setState({ favoriteGroups: [{ id: 'g1', name: 'Sports' }] })
+    useAppStore.getState().toggleFavorite(entry)
+    useAppStore.getState().setFavoriteGroup('live:42', 'g1')
+
+    useAppStore.getState().deleteFavoriteGroup('g1')
+
+    expect(useAppStore.getState().favoriteGroups).toEqual([])
+    expect(useAppStore.getState().favorites).toHaveLength(1)
+    expect(useAppStore.getState().favorites[0].groupId).toBeNull()
   })
 })
 

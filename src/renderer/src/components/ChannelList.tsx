@@ -3,7 +3,8 @@ import { Grid, useGridRef } from 'react-window'
 import { useAppStore } from '../store/useAppStore'
 import { useElementSize } from '../lib/useElementSize'
 import { useDebouncedValue } from '../lib/useDebouncedValue'
-import type { LiveStream, SeriesItem, FavoriteEntry, RecentlyWatchedEntry, MediaKind } from '../lib/types'
+import type { LiveStream, SeriesItem, FavoriteEntry, FavoriteGroup, RecentlyWatchedEntry, MediaKind } from '../lib/types'
+import { favoriteKey } from '../lib/types'
 
 const GRID_CELL_MIN_WIDTH = 150
 const GRID_GAP = 14
@@ -25,6 +26,10 @@ export interface GridEntry {
   active?: boolean
   onClick: () => void
   favorite?: { active: boolean; onToggle: () => void }
+  // Only ever set on the Favorites tab — lets a tile assign itself directly to a group without
+  // leaving the grid (a native <select>, not a custom dropdown, since this is exactly the kind
+  // of small, infrequent picker native form controls already handle well).
+  groupSelect?: { currentGroupId: string | null; groups: FavoriteGroup[]; onChange: (groupId: string | null) => void }
 }
 
 // A provider's icon/poster URL going stale (channel renamed, artwork removed) would otherwise
@@ -76,6 +81,22 @@ function GridCell({
           >
             {entry.favorite.active ? '★' : '☆'}
           </button>
+        )}
+        {entry.groupSelect && (
+          <select
+            className="favorite-group-select"
+            value={entry.groupSelect.currentGroupId ?? ''}
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) => entry.groupSelect?.onChange(e.target.value || null)}
+            title="Move to group"
+          >
+            <option value="">Ungrouped</option>
+            {entry.groupSelect.groups.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.name}
+              </option>
+            ))}
+          </select>
         )}
       </div>
     </div>
@@ -159,8 +180,16 @@ function favoriteEntryToGridEntry(
     play: (kind: 'movie', id: number, name: string, ext: string, icon?: string) => void
     openSeriesDetail: (item: SeriesItem) => void
     toggleFavorite: (entry: FavoriteEntry) => void
+    favoriteGroups: FavoriteGroup[]
+    setFavoriteGroup: (key: string, groupId: string | null) => void
   }
 ): GridEntry {
+  const key = favoriteKey(entry)
+  const groupSelect = {
+    currentGroupId: entry.groupId ?? null,
+    groups: handlers.favoriteGroups,
+    onChange: (groupId: string | null) => handlers.setFavoriteGroup(key, groupId)
+  }
   if (entry.kind === 'live') {
     return {
       key: `live:${entry.stream.stream_id}`,
@@ -168,7 +197,8 @@ function favoriteEntryToGridEntry(
       image: entry.stream.stream_icon,
       badge: 'Live TV',
       onClick: () => handlers.openChannelPreview(entry.stream),
-      favorite: { active: true, onToggle: () => handlers.toggleFavorite(entry) }
+      favorite: { active: true, onToggle: () => handlers.toggleFavorite(entry) },
+      groupSelect
     }
   }
   if (entry.kind === 'movie') {
@@ -179,7 +209,8 @@ function favoriteEntryToGridEntry(
       badge: 'Movie',
       onClick: () =>
         handlers.play('movie', entry.stream.stream_id, entry.stream.name, entry.stream.container_extension || 'mp4'),
-      favorite: { active: true, onToggle: () => handlers.toggleFavorite(entry) }
+      favorite: { active: true, onToggle: () => handlers.toggleFavorite(entry) },
+      groupSelect
     }
   }
   return {
@@ -188,7 +219,8 @@ function favoriteEntryToGridEntry(
     image: entry.item.cover,
     badge: 'Series',
     onClick: () => handlers.openSeriesDetail(entry.item),
-    favorite: { active: true, onToggle: () => handlers.toggleFavorite(entry) }
+    favorite: { active: true, onToggle: () => handlers.toggleFavorite(entry) },
+    groupSelect
   }
 }
 
@@ -215,6 +247,7 @@ export function ChannelList(): JSX.Element {
   const vodStreams = useAppStore((s) => s.vodStreams)
   const series = useAppStore((s) => s.series)
   const favorites = useAppStore((s) => s.favorites)
+  const favoriteGroups = useAppStore((s) => s.favoriteGroups)
   const recentlyWatched = useAppStore((s) => s.recentlyWatched)
   const searchTerm = useAppStore((s) => s.searchTerm)
   const play = useAppStore((s) => s.play)
@@ -223,9 +256,23 @@ export function ChannelList(): JSX.Element {
   const openChannelPreview = useAppStore((s) => s.openChannelPreview)
   const toggleFavorite = useAppStore((s) => s.toggleFavorite)
   const isFavorited = useAppStore((s) => s.isFavorited)
+  const setFavoriteGroup = useAppStore((s) => s.setFavoriteGroup)
+  const addFavoriteGroup = useAppStore((s) => s.addFavoriteGroup)
+  const renameFavoriteGroup = useAppStore((s) => s.renameFavoriteGroup)
+  const deleteFavoriteGroup = useAppStore((s) => s.deleteFavoriteGroup)
   const clearRecentlyWatched = useAppStore((s) => s.clearRecentlyWatched)
   const refreshRecentlyWatched = useAppStore((s) => s.refreshRecentlyWatched)
   const refreshingRecentlyWatched = useAppStore((s) => s.refreshingRecentlyWatched)
+  // 'all' (default) shows every favorite; a specific group id scopes the grid to just that
+  // group's members; null scopes to favorites with no group assigned at all. Local, view-only
+  // state — deliberately not persisted, the same way a search term or focused grid cell isn't.
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null | 'all'>('all')
+  // Both null when their inline form isn't open — Electron has no window.prompt() at all
+  // (confirmed live: it throws "prompt() is and will not be supported," unlike window.confirm(),
+  // which does work and is still used for the destructive delete-group case below), so creating
+  // and renaming a group need a real inline text input instead.
+  const [newGroupName, setNewGroupName] = useState<string | null>(null)
+  const [renameDraft, setRenameDraft] = useState<string | null>(null)
 
   const filteredVod = useFiltered(vodStreams, searchTerm, (c) => c.name)
   const filteredSeries = useFiltered(series, searchTerm, (c) => c.name)
@@ -318,16 +365,115 @@ export function ChannelList(): JSX.Element {
     )
   }
 
-  // Favorites.
-  const entries = filteredFavorites.map((f) =>
-    favoriteEntryToGridEntry(f, { openChannelPreview, play, openSeriesDetail, toggleFavorite })
+  // Favorites, optionally scoped to one named group — 'all' (the default) shows everything,
+  // null scopes to favorites with no group assigned, a group id scopes to just that group.
+  const groupFilteredFavorites =
+    selectedGroupId === 'all' ? filteredFavorites : filteredFavorites.filter((f) => (f.groupId ?? null) === selectedGroupId)
+  const entries = groupFilteredFavorites.map((f) =>
+    favoriteEntryToGridEntry(f, { openChannelPreview, play, openSeriesDetail, toggleFavorite, favoriteGroups, setFavoriteGroup })
   )
+  const selectedGroup = typeof selectedGroupId === 'string' ? favoriteGroups.find((g) => g.id === selectedGroupId) : undefined
+
+  function commitAddGroup(): void {
+    if (newGroupName?.trim()) addFavoriteGroup(newGroupName)
+    setNewGroupName(null)
+  }
+
+  function commitRenameGroup(group: FavoriteGroup): void {
+    if (renameDraft?.trim()) renameFavoriteGroup(group.id, renameDraft)
+    setRenameDraft(null)
+  }
+
+  function handleDeleteGroup(group: FavoriteGroup): void {
+    if (window.confirm(`Delete "${group.name}"? Favorites in it become ungrouped, not deleted.`)) {
+      deleteFavoriteGroup(group.id)
+      setSelectedGroupId('all')
+    }
+  }
 
   return (
     <div className="virtual-list-wrap favorites-view">
+      {favorites.length > 0 && (
+        <div className="favorite-group-tabs">
+          <button
+            className={selectedGroupId === 'all' ? 'favorite-group-tab active' : 'favorite-group-tab'}
+            onClick={() => setSelectedGroupId('all')}
+          >
+            All
+          </button>
+          <button
+            className={selectedGroupId === null ? 'favorite-group-tab active' : 'favorite-group-tab'}
+            onClick={() => setSelectedGroupId(null)}
+          >
+            Ungrouped
+          </button>
+          {favoriteGroups.map((g) =>
+            selectedGroupId === g.id && renameDraft !== null ? (
+              <span key={g.id} className="favorite-group-inline-form">
+                <input
+                  autoFocus
+                  value={renameDraft}
+                  onChange={(e) => setRenameDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitRenameGroup(g)
+                    if (e.key === 'Escape') setRenameDraft(null)
+                  }}
+                />
+                <button onClick={() => commitRenameGroup(g)}>Save</button>
+                <button onClick={() => setRenameDraft(null)}>Cancel</button>
+              </span>
+            ) : (
+              <button
+                key={g.id}
+                className={selectedGroupId === g.id ? 'favorite-group-tab active' : 'favorite-group-tab'}
+                onClick={() => setSelectedGroupId(g.id)}
+              >
+                {g.name}
+              </button>
+            )
+          )}
+          {newGroupName !== null ? (
+            <span className="favorite-group-inline-form">
+              <input
+                autoFocus
+                value={newGroupName}
+                placeholder="Group name"
+                onChange={(e) => setNewGroupName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitAddGroup()
+                  if (e.key === 'Escape') setNewGroupName(null)
+                }}
+              />
+              <button onClick={commitAddGroup}>Add</button>
+              <button onClick={() => setNewGroupName(null)}>Cancel</button>
+            </span>
+          ) : (
+            <button className="favorite-group-add" onClick={() => setNewGroupName('')}>
+              + New Group
+            </button>
+          )}
+          {selectedGroup && renameDraft === null && (
+            <span className="favorite-group-manage">
+              <button
+                className="favorite-group-manage-btn"
+                onClick={() => setRenameDraft(selectedGroup.name)}
+              >
+                Rename
+              </button>
+              <button className="favorite-group-manage-btn" onClick={() => handleDeleteGroup(selectedGroup)}>
+                Delete
+              </button>
+            </span>
+          )}
+        </div>
+      )}
       <div className="favorites-grid-wrap">
         {entries.length === 0 ? (
-          <p className="empty-state">No favorites yet — click the ☆ on any channel, movie, or series to add one.</p>
+          <p className="empty-state">
+            {favorites.length === 0
+              ? 'No favorites yet — click the ☆ on any channel, movie, or series to add one.'
+              : 'No favorites in this group match your search.'}
+          </p>
         ) : (
           <MediaGrid entries={entries} />
         )}

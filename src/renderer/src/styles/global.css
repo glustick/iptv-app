@@ -637,6 +637,23 @@ body.resizing-col {
   justify-content: center;
 }
 
+/* Favorite group assignment: a plain native <select> pinned to the bottom of the tile — only
+   ever rendered on the Favorites tab (see GridEntry.groupSelect), so Movies/Series tiles are
+   unaffected. Styled minimally to sit on the dark theme rather than the browser's own default
+   light control chrome. */
+.favorite-group-select {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  right: 8px;
+  background: rgba(11, 13, 18, 0.75);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+  padding: 3px 4px;
+}
+
 .channel-icon {
   width: 32px;
   height: 32px;
@@ -680,6 +697,89 @@ body.resizing-col {
 .favorites-grid-wrap {
   flex: 1;
   min-height: 0;
+}
+
+/* Favorite group tabs: filters the grid below to one named group at a time (or "All"/
+   "Ungrouped") — a plain horizontal row of toggle buttons, the same visual language as
+   .tab/.tabs already use for the top-level Live/Movies/Series/Favorites/History switcher. */
+.favorite-group-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.favorite-group-tab,
+.favorite-group-add {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-dim);
+  padding: 5px 12px;
+  font-size: 12px;
+}
+
+.favorite-group-tab:hover,
+.favorite-group-add:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.favorite-group-tab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.favorite-group-manage {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.favorite-group-manage-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: 5px 8px;
+}
+
+.favorite-group-manage-btn:hover {
+  color: var(--text);
+}
+
+/* Inline create/rename form — Electron has no window.prompt() (see ChannelList.tsx), so both
+   flows use a real text input right in the tab row instead of a native dialog. */
+.favorite-group-inline-form {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.favorite-group-inline-form input {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+  width: 120px;
+}
+
+.favorite-group-inline-form button {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.favorite-group-inline-form button:hover {
+  border-color: var(--accent);
+  color: var(--text);
 }
 
 /* History: a full-width grid (like Movies/Series), not the old horizontal strip — recentlyWatched

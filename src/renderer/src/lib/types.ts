@@ -119,13 +119,26 @@ export interface ShortEpgProgram {
 
 export type MediaKind = 'live' | 'movie' | 'series'
 
+// A user-named way to organize favorites (e.g. "Sports", "Kids") — deliberately just an id/name
+// pair, not a container of entries itself: each FavoriteEntry below points at its own group by
+// id instead, the same "child references parent" shape favoriteKey's own lookup already uses.
+export interface FavoriteGroup {
+  id: string
+  name: string
+}
+
 // Favorites keep the original rich object per kind, since clicking a favorited item
 // should behave exactly like clicking it from its normal list (open the live preview,
 // play the movie, or open the series modal) — not just replay a flat stream URL.
+//
+// groupId is optional (not required on every variant) so every existing call site that
+// constructs a fresh FavoriteEntry literal on first-favoriting an item didn't need to change —
+// undefined and null both mean "ungrouped," and toggleFavorite only ever needs to compare
+// favoriteKey() to find/remove an existing entry, never groupId itself.
 export type FavoriteEntry =
-  | { kind: 'live'; stream: LiveStream }
-  | { kind: 'movie'; stream: VodStream }
-  | { kind: 'series'; item: SeriesItem }
+  | { kind: 'live'; stream: LiveStream; groupId?: string | null }
+  | { kind: 'movie'; stream: VodStream; groupId?: string | null }
+  | { kind: 'series'; item: SeriesItem; groupId?: string | null }
 
 export function favoriteKey(entry: FavoriteEntry): string {
   const id = entry.kind === 'series' ? entry.item.series_id : entry.stream.stream_id

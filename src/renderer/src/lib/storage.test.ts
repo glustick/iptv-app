@@ -1,7 +1,15 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { loadSettings, saveSettings, saveFavorites, loadFavorites, loadRecentlyWatched } from './storage'
+import {
+  loadSettings,
+  saveSettings,
+  saveFavorites,
+  loadFavorites,
+  loadRecentlyWatched,
+  saveFavoriteGroups,
+  loadFavoriteGroups
+} from './storage'
 import { DEFAULT_SETTINGS } from './types'
-import type { FavoriteEntry } from './types'
+import type { FavoriteEntry, FavoriteGroup } from './types'
 
 // The vitest environment is plain Node (see vitest.config.mts), which has neither `window` nor
 // `localStorage` — storage.ts's hasElectronApi() check is what makes it fall back to
@@ -62,5 +70,15 @@ describe('favorites / recently-watched round trip', () => {
 
   it('loads an empty array when nothing has been saved yet', async () => {
     expect(await loadRecentlyWatched()).toEqual([])
+  })
+
+  it('saves and loads favorite groups through the same fallback store', async () => {
+    const groups: FavoriteGroup[] = [{ id: 'g1', name: 'Sports' }]
+    await saveFavoriteGroups(groups)
+    expect(await loadFavoriteGroups()).toEqual(groups)
+  })
+
+  it('loads an empty array of favorite groups when nothing has been saved yet', async () => {
+    expect(await loadFavoriteGroups()).toEqual([])
   })
 })

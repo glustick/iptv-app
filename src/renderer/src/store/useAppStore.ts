@@ -10,6 +10,8 @@ import {
   saveActiveProfileId,
   loadFavorites,
   saveFavorites,
+  loadFavoriteGroups,
+  saveFavoriteGroups,
   loadRecentlyWatched,
   saveRecentlyWatched,
   loadEpisodeProgress,
@@ -27,6 +29,7 @@ import type {
   MediaKind,
   ShortEpgProgram,
   FavoriteEntry,
+  FavoriteGroup,
   RecentlyWatchedEntry,
   EpisodeProgress,
   AppSettings,
@@ -122,6 +125,7 @@ interface AppState {
   previewChannel: LiveStream | null
 
   favorites: FavoriteEntry[]
+  favoriteGroups: FavoriteGroup[]
   recentlyWatched: RecentlyWatchedEntry[]
   // True only while refreshRecentlyWatched's catalog fetch is in flight — lets the History
   // tab's Refresh button show a busy state and avoid firing a second overlapping refresh.
@@ -201,6 +205,14 @@ interface AppState {
 
   toggleFavorite: (entry: FavoriteEntry) => void
   isFavorited: (kind: MediaKind, id: number) => boolean
+  // Assigns (or clears, via null) which group an already-favorited entry belongs to — a no-op
+  // if the key isn't actually favorited, since there's nothing to assign a group to.
+  setFavoriteGroup: (key: string, groupId: string | null) => void
+  addFavoriteGroup: (name: string) => void
+  renameFavoriteGroup: (id: string, name: string) => void
+  // Removes the group itself but never the favorites in it — they fall back to ungrouped
+  // (groupId: null), the same as any favorite that was never assigned a group at all.
+  deleteFavoriteGroup: (id: string) => void
   clearRecentlyWatched: () => void
   refreshRecentlyWatched: () => Promise<void>
 
@@ -267,6 +279,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   previewChannel: null,
 
   favorites: [],
+  favoriteGroups: [],
   recentlyWatched: [],
   refreshingRecentlyWatched: false,
   episodeProgress: {},
@@ -297,15 +310,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   // with nothing but a console error to say why.
   init: async () => {
     try {
-      const [profiles, favorites, recentlyWatched, episodeProgress, settings] = await Promise.all([
+      const [profiles, favorites, favoriteGroups, recentlyWatched, episodeProgress, settings] = await Promise.all([
         loadProfiles(),
         loadFavorites(),
+        loadFavoriteGroups(),
         loadRecentlyWatched(),
         loadEpisodeProgress(),
         loadSettings()
       ])
       const activeId = await loadActiveProfileId()
-      set({ profiles, favorites, recentlyWatched, episodeProgress, settings })
+      set({ profiles, favorites, favoriteGroups, recentlyWatched, episodeProgress, settings })
 
       if (typeof window !== 'undefined') {
         window.addEventListener('online', () => set({ isOnline: true }))
@@ -652,6 +666,41 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   isFavorited: (kind, id) => get().favorites.some((f) => favoriteKey(f) === `${kind}:${id}`),
+
+  setFavoriteGroup: (key, groupId) => {
+    const { favorites } = get()
+    if (!favorites.some((f) => favoriteKey(f) === key)) return
+    const updated = favorites.map((f) => (favoriteKey(f) === key ? { ...f, groupId } : f))
+    set({ favorites: updated })
+    saveFavorites(updated).catch((err) => console.error('[store] failed to save favorites:', err))
+  },
+
+  addFavoriteGroup: (name) => {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    const updated = [...get().favoriteGroups, { id: crypto.randomUUID(), name: trimmed }]
+    set({ favoriteGroups: updated })
+    saveFavoriteGroups(updated).catch((err) => console.error('[store] failed to save favorite groups:', err))
+  },
+
+  renameFavoriteGroup: (id, name) => {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    const updated = get().favoriteGroups.map((g) => (g.id === id ? { ...g, name: trimmed } : g))
+    set({ favoriteGroups: updated })
+    saveFavoriteGroups(updated).catch((err) => console.error('[store] failed to save favorite groups:', err))
+  },
+
+  deleteFavoriteGroup: (id) => {
+    const updatedGroups = get().favoriteGroups.filter((g) => g.id !== id)
+    // Ungroups its members rather than removing them — deleting a *group* shouldn't delete the
+    // favorites that happened to be in it, the same way removing a folder's label wouldn't
+    // delete its contents.
+    const updatedFavorites = get().favorites.map((f) => (f.groupId === id ? { ...f, groupId: null } : f))
+    set({ favoriteGroups: updatedGroups, favorites: updatedFavorites })
+    saveFavoriteGroups(updatedGroups).catch((err) => console.error('[store] failed to save favorite groups:', err))
+    saveFavorites(updatedFavorites).catch((err) => console.error('[store] failed to save favorites:', err))
+  },
 
   clearRecentlyWatched: () => {
     set({ recentlyWatched: [] })
