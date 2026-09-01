@@ -695,24 +695,22 @@ describe('real ffmpeg integration', () => {
   }, 30000)
 
   // Runs a real ffmpeg pass over one already-produced HLS segment and returns its RMS amplitude,
-  // computed directly from raw decoded PCM samples on stdout — not by scraping ffmpeg's own
-  // free-text log output (an earlier version of this used the volumedetect filter's log line,
-  // which broke in CI: a different ffmpeg-static build there, 7.0.2 vs this being developed
-  // against 6.0 locally, produced no matching output at all for reasons that couldn't be
-  // reproduced or diagnosed without a Linux environment to test against). Raw PCM bytes on
-  // stdout are a far more stable target across ffmpeg builds/versions than the exact wording and
-  // presence of an informational log line. One track is genuine digital silence, the other a
-  // full-scale tone, so the two read as unmistakably different RMS regardless of any
-  // resampling/AAC-encoding artifacts from the transcode itself.
+  // computed directly from raw decoded PCM samples — not by scraping ffmpeg's own free-text log
+  // output (an earlier version used the volumedetect filter's log line, which never appeared at
+  // all in CI's different ffmpeg-static build there, 7.0.2 vs 6.0 locally). One track is genuine
+  // digital silence, the other a full-scale tone, so the two read as unmistakably different RMS
+  // regardless of any resampling/AAC-encoding artifacts from the transcode itself.
+  //
+  // A real CI-only SIGSEGV chased down across several attempts (a pipe, resampling, and thread
+  // count were each ruled out in turn without stopping it) turned out to be about the *video*
+  // stream, not the audio this actually wants: startTranscode's own remux uses `-c:v copy` for
+  // video, which never actually decodes a single video frame — this analysis pass, with no
+  // `-map`/`-vn` of its own, was the very first thing to ever ask this ffmpeg build to probe/
+  // decode this test fixture's oddly-encoded video (ultrafast preset, 10fps, a keyframe every
+  // single frame) at all, on a newer decoder (7.0.2) than this was developed against (6.0).
+  // `-vn -map 0:a:0` sidesteps the video stream entirely — this only ever wanted the audio.
   async function measureRmsAmplitude(segmentPath: string): Promise<number> {
     if (!ffmpegStaticPath) throw new Error('ffmpeg-static did not resolve a binary for this platform')
-    // Writes to a real temp file rather than piping raw PCM through stdout — a real CI-only
-    // SIGSEGV (this exact ffmpeg-static Linux build, decoding+resampling to a pipe) is gone once
-    // this avoids that combination entirely, reproduced by removing both the pipe *and* the
-    // -ar/-ac resample/downmix (never functionally necessary — RMS on the source's own native
-    // interleaved samples works exactly the same for telling "silent" from "loud" apart) in one
-    // pass, matching how every other real-ffmpeg invocation in this file already writes real
-    // files rather than streaming binary data through a pipe.
     const pcmPath = `${segmentPath}.pcm`
     const fileInfo = existsSync(segmentPath)
       ? `exists, ${statSync(segmentPath).size} bytes`
@@ -724,14 +722,12 @@ describe('real ffmpeg integration', () => {
         // -nostdin: this is a scripted/non-interactive invocation, and ffmpeg's own docs
         // recommend this explicitly to avoid it treating an open-but-unwritten stdin pipe (the
         // default for a plain child_process.spawn) as a live keyboard-command source.
-        // -threads 1: a real, documented category of ffmpeg crash under container CPU-quota
-        // limits (cgroups) is the decoder's automatic thread-count detection spawning more
-        // decode threads than the container's actual quota supports — plausible here since every
-        // earlier fix (the close/exit race, the 12s-duration EOF race, avoiding a pipe) addressed
-        // a real, confirmed issue in turn without stopping the SIGSEGV, pointing at something
-        // about the decode itself on this specific containerized Linux runner, not this test's
-        // own I/O timing.
-        ['-y', '-nostdin', '-threads', '1', '-i', segmentPath, '-f', 's16le', pcmPath],
+        // -probesize/-analyzeduration (input-side, before -i): minimizes how much ffmpeg
+        // examines the container on open — a smaller, more targeted mitigation alongside -vn/-map
+        // in case the crash is actually happening during automatic stream-parameter probing
+        // (which runs for every stream in the container, before -map's stream selection is even
+        // applied), not during the later, explicitly-audio-only decode itself.
+        ['-y', '-nostdin', '-probesize', '32k', '-analyzeduration', '0', '-i', segmentPath, '-map', '0:a:0', '-vn', '-f', 's16le', pcmPath],
         { stdio: ['ignore', 'ignore', 'pipe'] }
       )
       proc.stderr.on('data', (chunk: Buffer) => {
