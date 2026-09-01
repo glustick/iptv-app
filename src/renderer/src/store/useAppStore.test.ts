@@ -527,3 +527,71 @@ describe('refreshRecentlyWatched', () => {
     expect(useAppStore.getState().refreshingRecentlyWatched).toBe(false)
   })
 })
+
+describe('exportBackup / importBackup', () => {
+  let reload: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    reload = vi.fn()
+    ;(
+      globalThis as unknown as {
+        window: { api: { backup: Record<string, unknown> }; location: { reload: ReturnType<typeof vi.fn> } }
+      }
+    ).window = {
+      api: {
+        backup: {
+          export: vi.fn().mockResolvedValue('/Users/test/allisoniptv-backup-2026-01-01.json'),
+          import: vi.fn().mockResolvedValue({ imported: true })
+        }
+      },
+      location: { reload }
+    }
+  })
+
+  it('exportBackup returns ok:true with the chosen path', async () => {
+    const result = await useAppStore.getState().exportBackup()
+
+    expect(result).toEqual({ ok: true, path: '/Users/test/allisoniptv-backup-2026-01-01.json' })
+  })
+
+  it('exportBackup returns ok:true with no path when the user cancels the save dialog (not a failure)', async () => {
+    ;(window.api.backup.export as ReturnType<typeof vi.fn>).mockResolvedValue(null)
+
+    const result = await useAppStore.getState().exportBackup()
+
+    expect(result).toEqual({ ok: true, path: undefined })
+  })
+
+  it('exportBackup returns ok:false with the error message on failure', async () => {
+    ;(window.api.backup.export as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('disk full'))
+
+    const result = await useAppStore.getState().exportBackup()
+
+    expect(result).toEqual({ ok: false, error: 'disk full' })
+  })
+
+  it('importBackup reloads the app after a successful import', async () => {
+    const result = await useAppStore.getState().importBackup()
+
+    expect(result).toEqual({ ok: true, imported: true })
+    expect(reload).toHaveBeenCalled()
+  })
+
+  it('importBackup does not reload when the user cancels the open dialog', async () => {
+    ;(window.api.backup.import as ReturnType<typeof vi.fn>).mockResolvedValue({ imported: false })
+
+    const result = await useAppStore.getState().importBackup()
+
+    expect(result).toEqual({ ok: true, imported: false })
+    expect(reload).not.toHaveBeenCalled()
+  })
+
+  it('importBackup returns ok:false with the error message and does not reload on failure', async () => {
+    ;(window.api.backup.import as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("not a valid backup file"))
+
+    const result = await useAppStore.getState().importBackup()
+
+    expect(result).toEqual({ ok: false, imported: false, error: 'not a valid backup file' })
+    expect(reload).not.toHaveBeenCalled()
+  })
+})

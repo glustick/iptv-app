@@ -212,6 +212,12 @@ interface AppState {
   cancelPinPrompt: () => void
   openSettings: () => void
   closeSettings: () => void
+  // Resolves rather than throws either way (ok: false carries the error message) — Settings
+  // renders these results directly rather than needing its own try/catch around every call.
+  exportBackup: () => Promise<{ ok: boolean; path?: string; error?: string }>
+  // Reloads the whole renderer on a successful import (see the implementation's own comment for
+  // why) — the caller only ever sees this return for a cancel or a genuine failure.
+  importBackup: () => Promise<{ ok: boolean; imported: boolean; error?: string }>
   openAbout: () => void
   closeAbout: () => void
 
@@ -755,6 +761,34 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false }),
+
+  exportBackup: async () => {
+    try {
+      // A cancelled save dialog resolves with null, same as import's own cancel case below —
+      // that's not a failure, just nothing to report, so it stays ok: true with no path rather
+      // than being conflated with a genuine write error.
+      const path = await window.api.backup.export()
+      return { ok: true, path: path ?? undefined }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  },
+
+  // A successful import overwrites profiles/favorites/history/settings underneath every part of
+  // the already-initialized store — trying to patch each of those in-memory fields individually
+  // to match would mean re-deriving everything init() already knows how to do from a cold start
+  // (reconnecting the active profile, reloading categories, re-checking the parental PIN's
+  // encryption, ...). Reloading the whole renderer is what actually gets that for free: the next
+  // load's own init() reads the newly-imported values exactly the way a fresh launch would.
+  importBackup: async () => {
+    try {
+      const { imported } = await window.api.backup.import()
+      if (imported) window.location.reload()
+      return { ok: true, imported }
+    } catch (err) {
+      return { ok: false, imported: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  },
 
   openAbout: () => set({ aboutOpen: true }),
   closeAbout: () => set({ aboutOpen: false }),

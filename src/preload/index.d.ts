@@ -16,6 +16,11 @@ interface ProxyAPI {
   setTarget: (baseUrl: string) => Promise<void>
 }
 
+interface BackupAPI {
+  export: () => Promise<string | null>
+  import: () => Promise<{ imported: boolean }>
+}
+
 interface SubtitleTrackInfo {
   index: number
   language: string | null
@@ -79,6 +84,7 @@ declare global {
     api: {
       app: AppInfoAPI
       store: StoreAPI
+      backup: BackupAPI
       proxy: ProxyAPI
       transcode: TranscodeAPI
       safeStorage: SafeStorageAPI

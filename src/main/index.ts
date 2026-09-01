@@ -62,6 +62,19 @@ process.on('unhandledRejection', (reason) => {
 
 const store = new Store()
 
+// Every top-level electron-store key a backup covers — kept as one list so export and import
+// can't drift out of sync with each other (export always writes exactly these keys; import only
+// ever touches these keys, ignoring anything else a file might contain). Deliberately excludes
+// nothing storage.ts itself persists today: profiles (including Xtream credentials, which this
+// app already stores in plaintext — see xtream.ts — so a backup file is exactly as sensitive as
+// the config file it's copied from, not a new exposure), favorites, history, episode progress,
+// and settings (which itself carries VPN profiles and the parental PIN, encrypted the same way
+// they already are on disk — safeStorage ties that encryption to this specific machine's OS
+// keychain, so an imported value that can't be decrypted on a *different* machine already
+// degrades to "treat as unset" rather than a hard failure, the same fallback PIN/VPN storage
+// already has for exactly this situation).
+const BACKUP_KEYS = ['xtream_profiles', 'active_profile_id', 'favorites', 'recently_watched', 'episode_progress', 'settings'] as const
+
 // app.getVersion() already reads package.json's "version" natively, but buildNumber is a
 // custom field with no built-in getter — app.getAppPath() resolves correctly both in dev and
 // packaged (inside app.asar, which Node's fs can read transparently), so this mirrors how
@@ -784,6 +797,63 @@ app.whenReady().then(async () => {
   ipcMain.handle('store:get', (_event, key: string) => store.get(key))
   ipcMain.handle('store:set', (_event, key: string, value: unknown) => store.set(key, value))
   ipcMain.handle('store:delete', (_event, key: string) => store.delete(key))
+
+  // Exports every BACKUP_KEYS entry into one JSON file the user picks a location for — a plain
+  // native Save dialog rather than anything auto-triggered, since this is meant for a deliberate
+  // "back this up before I reinstall/move machines" moment, not a background behavior. Returns
+  // null (not an error) on cancel, matching vpn:selectConfigFile's own convention below.
+  ipcMain.handle('backup:export', async () => {
+    if (!mainWindowRef) return null
+    const result = await dialog.showSaveDialog(mainWindowRef, {
+      title: 'Export Backup',
+      defaultPath: `allisoniptv-backup-${new Date().toISOString().slice(0, 10)}.json`,
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    if (result.canceled || !result.filePath) return null
+    const data: Record<string, unknown> = {}
+    for (const key of BACKUP_KEYS) data[key] = store.get(key)
+    const payload = { schemaVersion: 1, exportedAt: new Date().toISOString(), appVersion: app.getVersion(), data }
+    await writeFile(result.filePath, JSON.stringify(payload, null, 2), 'utf8')
+    return result.filePath
+  })
+
+  // Only ever touches BACKUP_KEYS, regardless of what else a hand-edited or foreign file might
+  // contain — this is a restore, not an arbitrary config merge. Deliberately overwrites rather
+  // than merging (a real "backup/restore," matching what a user picking a specific backup file
+  // actually expects) — the renderer reloads the whole app after a successful import so every
+  // store field derived from these keys (profiles, favorites, settings, ...) picks the new
+  // values up the same way a fresh launch would, rather than trying to patch already-initialized
+  // in-memory state field by field.
+  ipcMain.handle('backup:import', async () => {
+    if (!mainWindowRef) return { imported: false as const }
+    const result = await dialog.showOpenDialog(mainWindowRef, {
+      title: 'Import Backup',
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+      properties: ['openFile']
+    })
+    if (result.canceled || result.filePaths.length === 0) return { imported: false as const }
+    const raw = await readFile(result.filePaths[0], 'utf8')
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      throw new Error('That file is not valid JSON.')
+    }
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      !('data' in parsed) ||
+      typeof (parsed as { data: unknown }).data !== 'object' ||
+      (parsed as { data: unknown }).data === null
+    ) {
+      throw new Error("That file doesn't look like an AllisonIPTV backup.")
+    }
+    const { data } = parsed as { data: Record<string, unknown> }
+    for (const key of BACKUP_KEYS) {
+      if (key in data) store.set(key, data[key])
+    }
+    return { imported: true as const }
+  })
 
   // OS-keychain-backed encryption (macOS Keychain / Windows DPAPI / Linux Secret Service where
   // available) for the parental PIN — only reachable from the main process, hence the IPC

@@ -23,6 +23,8 @@ export function SettingsPage(): JSX.Element | null {
   const removeVpnProfile = useAppStore((s) => s.removeVpnProfile)
   const activateVpnProfile = useAppStore((s) => s.activateVpnProfile)
   const deactivateVpnProfile = useAppStore((s) => s.deactivateVpnProfile)
+  const exportBackup = useAppStore((s) => s.exportBackup)
+  const importBackup = useAppStore((s) => s.importBackup)
 
   const [pinDraft, setPinDraft] = useState('')
   // Only set when opening the log fails (no active connection, or the file hasn't been written
@@ -36,8 +38,36 @@ export function SettingsPage(): JSX.Element | null {
   // Only one profile's edit form is ever open at a time — rows are compact by default so a
   // list of many saved configs doesn't turn into a wall of always-expanded forms.
   const [editingProfileId, setEditingProfileId] = useState<string | null>(null)
+  const [backupMessage, setBackupMessage] = useState<string | null>(null)
 
   if (!settingsOpen) return null
+
+  async function handleExportBackup(): Promise<void> {
+    const result = await exportBackup()
+    if (result.ok) {
+      setBackupMessage(result.path ? `Backup saved to ${result.path}` : null)
+    } else {
+      setBackupMessage(`Export failed: ${result.error ?? 'unknown error'}`)
+    }
+  }
+
+  async function handleImportBackup(): Promise<void> {
+    // A real restore, not a merge — replaces whatever's currently saved (see importBackup's own
+    // comment), so this needs the same explicit confirmation as any other irreversible action in
+    // this app (see History's Clear All).
+    if (
+      !window.confirm(
+        'Importing a backup will replace your current profiles, favorites, history, and settings, then reload the app. Continue?'
+      )
+    ) {
+      return
+    }
+    const result = await importBackup()
+    // A successful import reloads the whole app immediately (see importBackup) — nothing here
+    // ever actually renders once that happens. Only a failure or a cancelled file picker reach
+    // this line at all.
+    if (!result.ok) setBackupMessage(`Import failed: ${result.error ?? 'unknown error'}`)
+  }
 
   function draftFor(profile: VpnProfile): VpnDraft {
     return vpnDrafts[profile.id] ?? { name: profile.name, username: profile.username ?? '', password: profile.password ?? '' }
@@ -286,6 +316,25 @@ export function SettingsPage(): JSX.Element | null {
               })}
             </ul>
           )}
+        </section>
+
+        <section className="settings-section">
+          <h3>Backup</h3>
+          <p className="settings-hint">
+            Export saves your profiles, favorites, history, and settings to a single file — useful before
+            reinstalling this app or moving to a different computer. The file contains your provider login
+            credentials in plain text (the same way this app already stores them), so keep it somewhere safe.
+            Importing replaces everything currently saved here and reloads the app.
+          </p>
+          <div className="settings-choice">
+            <button className="secondary-button" onClick={() => void handleExportBackup()}>
+              Export Backup…
+            </button>
+            <button className="secondary-button" onClick={() => void handleImportBackup()}>
+              Import Backup…
+            </button>
+          </div>
+          {backupMessage && <p className="settings-hint">{backupMessage}</p>}
         </section>
       </div>
     </div>

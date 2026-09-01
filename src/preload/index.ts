@@ -16,6 +16,12 @@ const api = {
     set: (key: string, value: unknown) => ipcRenderer.invoke('store:set', key, value),
     delete: (key: string) => ipcRenderer.invoke('store:delete', key)
   },
+  backup: {
+    // Resolves the chosen file path on success, null on cancel — never rejects for "the user
+    // just closed the dialog," only for a genuine write failure.
+    export: () => ipcRenderer.invoke('backup:export') as Promise<string | null>,
+    import: () => ipcRenderer.invoke('backup:import') as Promise<{ imported: boolean }>
+  },
   proxy: {
     getBaseUrl: () => ipcRenderer.invoke('proxy:getBaseUrl') as Promise<string>,
     setTarget: (baseUrl: string) => ipcRenderer.invoke('proxy:setTarget', baseUrl) as Promise<void>
