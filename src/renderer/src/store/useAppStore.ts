@@ -106,6 +106,12 @@ interface AppState {
   vodStreams: VodStream[]
   series: SeriesItem[]
   searchTerm: string
+  // The FULL live catalog (not just the currently-browsed category liveStreams above holds),
+  // fetched once and cached — findChannelByNumber needs to search by a channel's provider-
+  // assigned `num` regardless of which category it's actually in, and liveStreams alone can't
+  // answer that. null until the first lookup; reset on connect()/disconnect() so a profile
+  // switch can't resolve a typed number against a stale, different provider's lineup.
+  numericChannelCatalog: LiveStream[] | null
 
   epg: EpgData | null
   epgLoading: boolean
@@ -183,6 +189,11 @@ interface AppState {
   requestCategory: (categoryId: string | null) => void
   selectCategory: (categoryId: string | null) => Promise<void>
   setSearchTerm: (term: string) => void
+  // Fetches (once) and searches the full live catalog by a channel's provider-assigned `num` —
+  // for the numeric channel-entry shortcut (type a number, jump straight to that channel),
+  // which has to work regardless of which category is currently being browsed. Returns null if
+  // there's no client, or no channel with that number.
+  findChannelByNumber: (num: number) => Promise<LiveStream | null>
   loadEpg: () => Promise<void>
   loadShortEpg: (streamId: number) => Promise<void>
   play: (
@@ -264,6 +275,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   vodStreams: [],
   series: [],
   searchTerm: '',
+  numericChannelCatalog: null,
 
   epg: null,
   epgLoading: false,
@@ -439,7 +451,15 @@ export const useAppStore = create<AppState>((set, get) => ({
         client = new XtreamClient(proxyBase, profile.username ?? '', profile.password ?? '')
       }
       const auth = await client.authenticate()
-      set({ client, status: 'ready', singleConnectionAccount: auth.user_info.max_connections === '1' })
+      set({
+        client,
+        status: 'ready',
+        singleConnectionAccount: auth.user_info.max_connections === '1',
+        // A new connection means a (possibly different) provider's catalog — last profile's
+        // cached numeric lookup would otherwise resolve a typed channel number against the
+        // wrong account's lineup.
+        numericChannelCatalog: null
+      })
       await saveActiveProfileId(profileId)
       await get().setViewMode('live')
       // Deliberately does NOT auto-reconnect the VPN here, even if a profile was left active
@@ -474,7 +494,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       epg: null,
       nowPlaying: null,
       channelBarOpen: false,
-      unlockedCategoryIds: []
+      unlockedCategoryIds: [],
+      numericChannelCatalog: null
     })
   },
 
@@ -522,6 +543,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     // selectCategory catches its own errors internally (sets `error` in the store).
     void get().selectCategory(categoryId)
+  },
+
+  findChannelByNumber: async (num) => {
+    const { client } = get()
+    if (!client) return null
+    let catalog = get().numericChannelCatalog
+    if (!catalog) {
+      catalog = await client.getLiveStreams()
+      set({ numericChannelCatalog: catalog })
+    }
+    return catalog.find((c) => c.num === num) ?? null
   },
 
   selectCategory: async (categoryId) => {

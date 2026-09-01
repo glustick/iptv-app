@@ -6,6 +6,8 @@ import { PlayerStatsOverlay } from './PlayerStatsOverlay'
 import { PlayerSeekBar } from './PlayerSeekBar'
 import { VpnWarnings } from './VpnWarnings'
 import { useTranscodeFallback } from '../lib/useTranscodeFallback'
+import { useNumericChannelEntry } from '../lib/useNumericChannelEntry'
+import type { VideoScaleMode } from '../lib/types'
 
 const MAX_NETWORK_RETRIES = 4
 const MAX_MEDIA_ERROR_RECOVERIES = 3
@@ -82,13 +84,30 @@ const HEADER_REVEAL_ZONE_FRACTION = 0.1
 // moving away hides it again. A fraction of the player's own width for the same reason the
 // header uses a height fraction — tracks "left 10%" regardless of window size.
 const CHANNEL_INFO_ZONE_FRACTION = 0.1
+// Cycle order for the aspect-ratio/zoom button — maps directly onto <video>'s own object-fit
+// values (see VideoScaleMode in lib/types.ts).
+const VIDEO_SCALE_MODES: VideoScaleMode[] = ['contain', 'cover', 'fill']
+const VIDEO_SCALE_MODE_LABELS: Record<VideoScaleMode, string> = { contain: 'Fit', cover: 'Zoom', fill: 'Stretch' }
+// Sleep timer preset cycle, in minutes — null is "off". Same click-to-cycle interaction as the
+// aspect-ratio button above, rather than a dropdown, for consistency with this header's existing
+// controls.
+const SLEEP_TIMER_OPTIONS_MINUTES: (number | null)[] = [null, 15, 30, 60, 90]
+
+function formatCountdown(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${String(seconds).padStart(2, '0')}`
+}
 
 export function Player(): JSX.Element | null {
   const nowPlaying = useAppStore((s) => s.nowPlaying)
   const stop = useAppStore((s) => s.stop)
+  const play = useAppStore((s) => s.play)
+  const findChannelByNumber = useAppStore((s) => s.findChannelByNumber)
   const bufferProfile = useAppStore((s) => s.settings.bufferProfile)
   const persistedVolume = useAppStore((s) => s.settings.playerVolume)
   const persistedMuted = useAppStore((s) => s.settings.playerMuted)
+  const videoScaleMode = useAppStore((s) => s.settings.videoScaleMode)
   const updateSettings = useAppStore((s) => s.updateSettings)
   const episodeProgress = useAppStore((s) => s.episodeProgress)
   const updateEpisodeProgress = useAppStore((s) => s.updateEpisodeProgress)
@@ -117,6 +136,16 @@ export function Player(): JSX.Element | null {
   const [statsVisible, setStatsVisible] = useState(false)
   const [cursorNearBottom, setCursorNearBottom] = useState(false)
   const [channelInfoVisible, setChannelInfoVisible] = useState(false)
+  // null = off. A global "stop watching after N minutes" timer, not tied to any one channel —
+  // deliberately survives a channel switch (see the effect below) since the point is winding
+  // down a viewing session, not this specific channel. Player.tsx's own instance never actually
+  // unmounts across a close/reopen (nowPlaying just goes null and the component returns null —
+  // see resetTranscodeFallback's own comment for the same gotcha), so this needs its own explicit
+  // reset-on-close rather than relying on fresh initial state.
+  const [sleepTimerMinutes, setSleepTimerMinutes] = useState<number | null>(null)
+  const [sleepTimerRemainingSeconds, setSleepTimerRemainingSeconds] = useState<number | null>(null)
+  // Set briefly when a typed channel number (see useNumericChannelEntry below) has no match.
+  const [numberNotFound, setNumberNotFound] = useState<number | null>(null)
   // hls.js's own, free/instant notion of "which renditions does the CURRENT source's playlist
   // carry" — populated from Hls.Events.SUBTITLE_TRACKS_UPDATED, which fires for *any* m3u8 with
   // #EXT-X-MEDIA:TYPE=SUBTITLES entries, live or not: a genuinely multi-language live channel's
@@ -738,6 +767,62 @@ export function Player(): JSX.Element | null {
     }
   }, [nowPlaying])
 
+  // The sleep timer counts down independent of channel switches (it's about winding down a
+  // viewing session, not any one channel) — only resetting to off when the player actually
+  // closes. Since this component's own instance never unmounts across a close/reopen, "closes"
+  // has to be detected explicitly as a nowPlaying transition from something to null, rather than
+  // relying on fresh initial state the way a real unmount/remount would give for free.
+  const wasPlayingRef = useRef(false)
+  useEffect(() => {
+    if (wasPlayingRef.current && !nowPlaying) setSleepTimerMinutes(null)
+    wasPlayingRef.current = !!nowPlaying
+  }, [nowPlaying])
+
+  useEffect(() => {
+    if (sleepTimerMinutes === null) {
+      setSleepTimerRemainingSeconds(null)
+      return
+    }
+    setSleepTimerRemainingSeconds(sleepTimerMinutes * 60)
+    const interval = setInterval(() => {
+      setSleepTimerRemainingSeconds((prev) => {
+        if (prev === null) return null
+        if (prev <= 1) {
+          clearInterval(interval)
+          stop()
+          setSleepTimerMinutes(null)
+          return null
+        }
+        return prev - 1
+      })
+    }, 1000)
+    return () => clearInterval(interval)
+    // Deliberately scoped to sleepTimerMinutes only — re-triggering on every render (or on
+    // nowPlaying changing) would reset the countdown back to the full duration on every channel
+    // switch, defeating the entire point of a sleep timer surviving them.
+  }, [sleepTimerMinutes])
+
+  function cycleSleepTimer(): void {
+    const currentIndex = SLEEP_TIMER_OPTIONS_MINUTES.indexOf(sleepTimerMinutes)
+    setSleepTimerMinutes(SLEEP_TIMER_OPTIONS_MINUTES[(currentIndex + 1) % SLEEP_TIMER_OPTIONS_MINUTES.length])
+  }
+
+  // Channel-surfing-by-number while actually watching, the more iconic version of the same
+  // feature EpgGridPanel.tsx offers while just browsing — live-only, matching every other
+  // channel-switching affordance in this header (skip/live-jump buttons are live-only too).
+  useEffect(() => {
+    if (numberNotFound === null) return
+    const timer = setTimeout(() => setNumberNotFound(null), 2000)
+    return () => clearTimeout(timer)
+  }, [numberNotFound])
+
+  const numericEntryDisplay = useNumericChannelEntry((num) => {
+    void findChannelByNumber(num).then((channel) => {
+      if (channel) play('live', channel.stream_id, channel.name, 'm3u8', channel.stream_icon, channel.tv_archive)
+      else setNumberNotFound(num)
+    })
+  }, nowPlaying?.kind === 'live')
+
   if (!nowPlaying) return null
 
   // A bitmap subtitle codec (PGS, VobSub, ...) can never be switched to — confirmed live to
@@ -831,6 +916,13 @@ export function Player(): JSX.Element | null {
     const currentIndex = hlsSubtitleTracks.findIndex((t) => t.id === hls.subtitleTrack)
     const nextIndex = currentIndex + 1
     hls.subtitleTrack = nextIndex >= hlsSubtitleTracks.length ? -1 : hlsSubtitleTracks[nextIndex].id
+  }
+
+  // Persisted (not just session-local) the same way volume/mute already are — a global
+  // preference rather than tracked per-channel, applied uniformly whenever anything plays.
+  function cycleVideoScaleMode(): void {
+    const currentIndex = VIDEO_SCALE_MODES.indexOf(videoScaleMode)
+    updateSettings({ videoScaleMode: VIDEO_SCALE_MODES[(currentIndex + 1) % VIDEO_SCALE_MODES.length] })
   }
 
   // Unlike subtitles there's no "off" state for audio — a source with alternate audio renditions
@@ -1034,6 +1126,25 @@ export function Player(): JSX.Element | null {
           )}
           <button
             className="player-control-btn"
+            onClick={cycleVideoScaleMode}
+            title="Cycle aspect ratio: Fit (letterboxed) → Zoom (crops to fill) → Stretch (fills exactly, may distort)"
+          >
+            🔲 {VIDEO_SCALE_MODE_LABELS[videoScaleMode]}
+          </button>
+          <button
+            className="player-control-btn"
+            onClick={cycleSleepTimer}
+            title="Cycle sleep timer: stops playback automatically after the chosen time"
+          >
+            ⏾{' '}
+            {sleepTimerMinutes === null
+              ? 'Sleep Timer'
+              : sleepTimerRemainingSeconds !== null
+                ? formatCountdown(sleepTimerRemainingSeconds)
+                : `${sleepTimerMinutes}m`}
+          </button>
+          <button
+            className="player-control-btn"
             onClick={() => setStatsVisible((v) => !v)}
             title={statsVisible ? 'Hide stream stats' : 'Show stream stats'}
           >
@@ -1084,6 +1195,11 @@ export function Player(): JSX.Element | null {
             <span>Buffering…</span>
           </div>
         )}
+        {(numericEntryDisplay || numberNotFound !== null) && (
+          <div className="numeric-entry-overlay">
+            {numericEntryDisplay ? `Channel ${numericEntryDisplay}` : `Channel ${numberNotFound} not found`}
+          </div>
+        )}
         {// Left-edge hover panel, live-only — see the channelInfoVisible mousemove effect above.
         // Deliberately pointer-events: none (see global.css) so it never intercepts the
         // click-to-pause/double-click-to-fullscreen handlers on the video underneath it.
@@ -1110,6 +1226,7 @@ export function Player(): JSX.Element | null {
         <video
           ref={videoRef}
           className="player-video"
+          style={{ objectFit: videoScaleMode }}
           // Native controls fight the channel bar on live: clicking the bottom strip (where
           // native controls render) gets consumed by their shadow DOM and never reaches this
           // onClick, and clicking anywhere else still double-fires the browser's own

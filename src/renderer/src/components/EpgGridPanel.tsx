@@ -3,6 +3,7 @@ import { useAppStore } from '../store/useAppStore'
 import { useHlsAttach } from '../lib/useHlsAttach'
 import { useResizableWidth } from '../lib/useResizableWidth'
 import { useDebouncedValue } from '../lib/useDebouncedValue'
+import { useNumericChannelEntry } from '../lib/useNumericChannelEntry'
 import { EpgGrid } from './EpgGrid'
 import type { LiveStream, ShortEpgProgram } from '../lib/types'
 
@@ -32,10 +33,15 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
   const epgRowDensity = useAppStore((s) => s.settings.epgRowDensity)
   const updateSettings = useAppStore((s) => s.updateSettings)
   const openChannelPreview = useAppStore((s) => s.openChannelPreview)
+  const findChannelByNumber = useAppStore((s) => s.findChannelByNumber)
   const compact = epgRowDensity === 'compact'
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const [muted, setMuted] = useState(true)
+  // Set briefly (see the effect below) when a typed channel number has no match — the numeric
+  // entry's own display already covers the "still typing" feedback, this covers "found nothing"
+  // once it commits.
+  const [numberNotFound, setNumberNotFound] = useState<number | null>(null)
 
   // Handle is on the panel's left edge (it's anchored to the right of the layout), so
   // dragging left should grow it — hence direction: -1. Wider bounds than the old
@@ -75,6 +81,22 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
   useEffect(() => {
     setMuted(true)
   }, [previewChannel?.stream_id])
+
+  useEffect(() => {
+    if (numberNotFound === null) return
+    const timer = setTimeout(() => setNumberNotFound(null), 2000)
+    return () => clearTimeout(timer)
+  }, [numberNotFound])
+
+  // Only active on the actual Live TV tab (fullWidth) — the docked preview panel elsewhere
+  // (Movies/Series/Favorites, when a live favorite is clicked) isn't a channel-browsing surface,
+  // so a typed number there would be surprising rather than useful.
+  const numericEntryDisplay = useNumericChannelEntry((num) => {
+    void findChannelByNumber(num).then((channel) => {
+      if (channel) watchFullscreen(channel)
+      else setNumberNotFound(num)
+    })
+  }, fullWidth)
 
   if (!previewChannel) {
     if (!fullWidth) return null
@@ -117,6 +139,11 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
       style={fullWidth ? undefined : { width }}
     >
       {!fullWidth && <div className="resize-handle resize-handle--left" onMouseDown={startDrag} />}
+      {(numericEntryDisplay || numberNotFound !== null) && (
+        <div className="numeric-entry-overlay">
+          {numericEntryDisplay ? `Channel ${numericEntryDisplay}` : `Channel ${numberNotFound} not found`}
+        </div>
+      )}
       <div className="detail-panel-scroll">
         <div className="epg-panel-top">
           <div

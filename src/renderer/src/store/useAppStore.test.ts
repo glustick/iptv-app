@@ -34,7 +34,8 @@ beforeEach(() => {
     nowPlaying: null,
     recentlyWatched: [],
     favorites: [],
-    favoriteGroups: []
+    favoriteGroups: [],
+    numericChannelCatalog: null
   })
 })
 
@@ -661,5 +662,43 @@ describe('exportBackup / importBackup', () => {
 
     expect(result).toEqual({ ok: false, imported: false, error: 'not a valid backup file' })
     expect(reload).not.toHaveBeenCalled()
+  })
+})
+
+describe('findChannelByNumber', () => {
+  beforeEach(() => {
+    useAppStore.setState({ numericChannelCatalog: null })
+  })
+
+  it('returns null immediately when there is no client', async () => {
+    useAppStore.setState({ client: null })
+
+    expect(await useAppStore.getState().findChannelByNumber(101)).toBeNull()
+  })
+
+  it('fetches the full catalog once, finds a match by num, and caches the catalog for next time', async () => {
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    const getLiveStreams = vi
+      .spyOn(client, 'getLiveStreams')
+      .mockResolvedValue([{ num: 101, stream_id: 1, name: 'Channel 101' } as unknown as LiveStream])
+    useAppStore.setState({ client })
+
+    const found = await useAppStore.getState().findChannelByNumber(101)
+    expect(found?.stream_id).toBe(1)
+    expect(getLiveStreams).toHaveBeenCalledTimes(1)
+
+    // A second lookup (even for a different, non-matching number) should reuse the cached
+    // catalog rather than re-fetching.
+    const notFound = await useAppStore.getState().findChannelByNumber(999)
+    expect(notFound).toBeNull()
+    expect(getLiveStreams).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns null when no channel matches the given number', async () => {
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    vi.spyOn(client, 'getLiveStreams').mockResolvedValue([{ num: 5, stream_id: 1 } as unknown as LiveStream])
+    useAppStore.setState({ client })
+
+    expect(await useAppStore.getState().findChannelByNumber(999)).toBeNull()
   })
 })

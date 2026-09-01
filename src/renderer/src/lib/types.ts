@@ -168,6 +168,10 @@ export interface EpisodeProgress {
 export type BufferProfile = 'smooth' | 'lowLatency'
 export type ClockFormat = '12h' | '24h'
 export type EpgRowDensity = 'comfortable' | 'compact'
+// Maps directly onto the <video> element's own object-fit values — 'contain' (the default,
+// letterboxed, no cropping), 'cover' (fills the screen, crops overflow), 'fill' (stretches
+// exactly to the player's bounds, may distort aspect ratio).
+export type VideoScaleMode = 'contain' | 'cover' | 'fill'
 
 // A saved OpenVPN configuration — a user can save more than one (different providers, or
 // different servers from the same provider), but only one can ever be the *active* tunnel at a
@@ -205,6 +209,7 @@ export interface AppSettings {
   // click-to-toggle) reads once activeVpnProfileId is already null. Only cleared if that exact
   // profile is later deleted, so it doesn't dangle pointing at a config that no longer exists.
   lastVpnProfileId: string | null
+  videoScaleMode: VideoScaleMode
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -220,7 +225,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   playerMuted: false,
   vpnProfiles: [],
   activeVpnProfileId: null,
-  lastVpnProfileId: null
+  lastVpnProfileId: null,
+  videoScaleMode: 'contain'
 }
 
 export type VpnStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
