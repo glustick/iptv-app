@@ -724,7 +724,14 @@ describe('real ffmpeg integration', () => {
         // -nostdin: this is a scripted/non-interactive invocation, and ffmpeg's own docs
         // recommend this explicitly to avoid it treating an open-but-unwritten stdin pipe (the
         // default for a plain child_process.spawn) as a live keyboard-command source.
-        ['-y', '-nostdin', '-i', segmentPath, '-f', 's16le', pcmPath],
+        // -threads 1: a real, documented category of ffmpeg crash under container CPU-quota
+        // limits (cgroups) is the decoder's automatic thread-count detection spawning more
+        // decode threads than the container's actual quota supports — plausible here since every
+        // earlier fix (the close/exit race, the 12s-duration EOF race, avoiding a pipe) addressed
+        // a real, confirmed issue in turn without stopping the SIGSEGV, pointing at something
+        // about the decode itself on this specific containerized Linux runner, not this test's
+        // own I/O timing.
+        ['-y', '-nostdin', '-threads', '1', '-i', segmentPath, '-f', 's16le', pcmPath],
         { stdio: ['ignore', 'ignore', 'pipe'] }
       )
       proc.stderr.on('data', (chunk: Buffer) => {
