@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { chmodSync, existsSync, readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync } from 'fs'
+import { chmodSync, existsSync, readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync, statSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
@@ -706,6 +706,16 @@ describe('real ffmpeg integration', () => {
   // resampling/AAC-encoding artifacts from the transcode itself.
   async function measureRmsAmplitude(segmentPath: string): Promise<number> {
     if (!ffmpegStaticPath) throw new Error('ffmpeg-static did not resolve a binary for this platform')
+    // Two CI-only failures so far both surfaced as ffmpeg apparently producing nothing beyond
+    // its own startup banner — but GitHub Actions' annotation messages are truncated to a fixed
+    // length, and that banner is ~900 bytes of constant, uninformative text that can easily eat
+    // the entire budget before anything genuinely diagnostic (an exit code, a real error line)
+    // ever gets included. Checking the file directly, and building any failure message with the
+    // useful bits *first* and only the tail of stderr, is what actually gets real information
+    // through a truncated annotation instead of just the banner again.
+    const fileInfo = existsSync(segmentPath)
+      ? `exists, ${statSync(segmentPath).size} bytes`
+      : 'does NOT exist at spawn time'
     return new Promise((resolve, reject) => {
       const chunks: Buffer[] = []
       let stderr = ''
@@ -725,10 +735,14 @@ describe('real ffmpeg integration', () => {
       // 'close', not 'exit' — 'exit' only signals the process terminated, not that its stdio
       // streams have finished delivering buffered data (a real, confirmed race elsewhere in
       // this exact file before this was rewritten).
-      proc.on('close', () => {
+      proc.on('close', (code, signal) => {
         const pcm = Buffer.concat(chunks)
         if (pcm.length < 2) {
-          reject(new Error(`ffmpeg produced no decoded PCM data:\n${stderr}`))
+          reject(
+            new Error(
+              `ffmpeg produced no decoded PCM data. file: ${segmentPath} (${fileInfo}); exit code: ${code}, signal: ${signal}; stdout bytes: ${pcm.length}; stderr tail: ${stderr.slice(-800)}`
+            )
+          )
           return
         }
         let sumOfSquares = 0
@@ -740,6 +754,22 @@ describe('real ffmpeg integration', () => {
         resolve(Math.sqrt(sumOfSquares / sampleCount))
       })
     })
+  }
+
+  // ffmpeg's HLS muxer only lists a segment in the playlist once that segment file is fully
+  // written and closed — startTranscode returning (playlist.m3u8 exists) should already imply
+  // this — but a slower/differently-scheduled CI filesystem is exactly the kind of environment
+  // where an assumption like that is worth actually confirming rather than trusting blindly:
+  // poll the segment's own size until it stops changing across two checks before handing it to
+  // ffmpeg for analysis.
+  async function waitForStableFileSize(path: string, checks = 5, intervalMs = 200): Promise<void> {
+    let lastSize = -1
+    for (let i = 0; i < checks; i++) {
+      const size = statSync(path).size
+      if (size > 0 && size === lastSize) return
+      lastSize = size
+      await new Promise((resolve) => setTimeout(resolve, intervalMs))
+    }
   }
 
   // Confirms audioStreamIndex genuinely selects a *specific* audio track from a source with more
@@ -762,15 +792,26 @@ describe('real ffmpeg integration', () => {
         '-f',
         'lavfi',
         '-i',
-        'testsrc=duration=6:size=320x240:rate=10',
+        // 12s (not the 6s this originally used), matching every other synthetic source built in
+        // this file — this is the real fix for the actual CI failure, found and reproduced
+        // locally (not just theorized): a *genuine* race against startTranscode's own
+        // proc.on('exit', ...) cleanup, which deletes the whole session directory on *any* exit,
+        // including a clean one (see 0.7.14's own account of the same race class elsewhere in
+        // this file). A 6s clip transcodes to completion and lets the producing ffmpeg process
+        // exit naturally well within the time this test's own analysis steps need, deleting the
+        // segment out from under them ("No such file or directory," reproduced directly by
+        // running this test enough times locally). 12s gives comfortable headroom for
+        // stopTranscode() (called explicitly, on this test's own schedule) to end the process
+        // first, rather than racing its natural EOF.
+        'testsrc=duration=12:size=320x240:rate=10',
         '-f',
         'lavfi',
         '-i',
-        'anullsrc=r=48000:cl=stereo:d=6',
+        'anullsrc=r=48000:cl=stereo:d=12',
         '-f',
         'lavfi',
         '-i',
-        'sine=frequency=440:duration=6',
+        'sine=frequency=440:duration=12',
         '-map',
         '0:v',
         '-map',
@@ -808,7 +849,9 @@ describe('real ffmpeg integration', () => {
       const defaultDir = join(defaultResult.playlistPath, '..')
       const defaultSegment = readdirSync(defaultDir).find((f) => f.endsWith('.ts'))
       if (!defaultSegment) throw new Error('no .ts segment was produced')
-      const defaultRms = await measureRmsAmplitude(join(defaultDir, defaultSegment))
+      const defaultSegmentPath = join(defaultDir, defaultSegment)
+      await waitForStableFileSize(defaultSegmentPath)
+      const defaultRms = await measureRmsAmplitude(defaultSegmentPath)
       await service.stopTranscode('real-audio-default')
 
       // audioStreamIndex: 1 — the second audio stream — should carry through the audible tone.
@@ -816,7 +859,9 @@ describe('real ffmpeg integration', () => {
       const chosenDir = join(chosenResult.playlistPath, '..')
       const chosenSegment = readdirSync(chosenDir).find((f) => f.endsWith('.ts'))
       if (!chosenSegment) throw new Error('no .ts segment was produced')
-      const chosenRms = await measureRmsAmplitude(join(chosenDir, chosenSegment))
+      const chosenSegmentPath = join(chosenDir, chosenSegment)
+      await waitForStableFileSize(chosenSegmentPath)
+      const chosenRms = await measureRmsAmplitude(chosenSegmentPath)
       await service.stopTranscode('real-audio-1')
 
       // 16-bit PCM: silence should read as essentially zero (allowing headroom for AAC
