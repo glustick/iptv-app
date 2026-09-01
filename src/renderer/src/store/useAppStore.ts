@@ -43,6 +43,10 @@ export type ConnectionStatus = 'idle' | 'connecting' | 'ready' | 'error'
 // rows scroll into view — fine at normal browsing speed, but flinging a scrollbar through a
 // large category can otherwise fire a burst of simultaneous get_short_epg requests. Module-
 // level (not store state) since it's plumbing, not something any component needs to render.
+// Sized for a small horizontal strip originally (0.5.0); now that History (0.7.32) is a
+// full-page tab in its own right, a low cap would feel sparse for anyone watching a lot in a
+// day — raised well past that.
+const RECENTLY_WATCHED_LIMIT = 100
 const MAX_CONCURRENT_SHORT_EPG_FETCHES = 4
 let activeShortEpgFetches = 0
 // `| Promise<void>` reflects reality (every entry pushed below is actually async) rather than
@@ -119,6 +123,9 @@ interface AppState {
 
   favorites: FavoriteEntry[]
   recentlyWatched: RecentlyWatchedEntry[]
+  // True only while refreshRecentlyWatched's catalog fetch is in flight — lets the History
+  // tab's Refresh button show a busy state and avoid firing a second overlapping refresh.
+  refreshingRecentlyWatched: boolean
   episodeProgress: Record<string, EpisodeProgress>
   settings: AppSettings
   unlockedCategoryIds: string[]
@@ -195,6 +202,7 @@ interface AppState {
   toggleFavorite: (entry: FavoriteEntry) => void
   isFavorited: (kind: MediaKind, id: number) => boolean
   clearRecentlyWatched: () => void
+  refreshRecentlyWatched: () => Promise<void>
 
   updateEpisodeProgress: (key: string, positionSeconds: number, durationSeconds: number) => void
 
@@ -254,6 +262,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   favorites: [],
   recentlyWatched: [],
+  refreshingRecentlyWatched: false,
   episodeProgress: {},
   settings: DEFAULT_SETTINGS,
   unlockedCategoryIds: [],
@@ -578,7 +587,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const entry: RecentlyWatchedEntry = { kind, streamId, name, icon, extension, tvArchive, watchedAt: Date.now() }
     const withoutDupe = recentlyWatched.filter((e) => !(e.kind === kind && e.streamId === streamId))
-    const updated = [entry, ...withoutDupe].slice(0, 30)
+    const updated = [entry, ...withoutDupe].slice(0, RECENTLY_WATCHED_LIMIT)
     set({ recentlyWatched: updated })
     saveRecentlyWatched(updated).catch((err) => console.error('[store] failed to save recently-watched:', err))
   },
@@ -641,6 +650,63 @@ export const useAppStore = create<AppState>((set, get) => ({
   clearRecentlyWatched: () => {
     set({ recentlyWatched: [] })
     saveRecentlyWatched([]).catch((err) => console.error('[store] failed to save recently-watched:', err))
+  },
+
+  // Best-effort refresh of stale name/icon info: an entry captures whatever the channel/movie
+  // was called at watch time, so a provider-side rename (or the channel/title disappearing
+  // from the lineup entirely) leaves it showing outdated info indefinitely otherwise. Manual
+  // (a button in the History tab), not automatic-on-open — this fetches the *entire* live/VOD
+  // catalog to cross-reference against, which on a large account (a real test account here runs
+  // ~24k live channels) is too heavy to redo unprompted every time the tab is opened.
+  //
+  // Deliberately update-only, never delete: an entry not found in the freshly-fetched catalog
+  // is ambiguous (genuinely removed by the provider, or just not visible right now — favorites
+  // and recently-watched are both stored globally, not per-profile, so a multi-profile setup
+  // could easily have an entry from a *different* provider than the one currently connected)
+  // and this codebase already accepts "recently watched" as a stable historical record rather
+  // than a live-validated one elsewhere (see the Quick wins note on this same limitation). Only
+  // updating what's confirmed still there keeps this safe to run without a new way to silently
+  // lose history entries that are still perfectly valid.
+  //
+  // Series entries are skipped entirely and left untouched — playTimeshift and series playback
+  // both store the *episode's* id as streamId (see RecentlyWatchedEntry), not a series_id, and
+  // there's no catalog endpoint that lists episodes directly to check one against.
+  refreshRecentlyWatched: async () => {
+    const { client, recentlyWatched, activeProfile, refreshingRecentlyWatched } = get()
+    if (!client || refreshingRecentlyWatched) return
+    const hasLive = recentlyWatched.some((e) => e.kind === 'live')
+    // An M3U playlist profile never has real VOD/series catalogs (see m3uClient.ts) — its
+    // getVodStreams() always resolves empty, which would otherwise read as "every movie entry
+    // was removed" rather than "this profile type doesn't have movies at all."
+    const hasMovie = activeProfile?.kind !== 'm3u' && recentlyWatched.some((e) => e.kind === 'movie')
+    if (!hasLive && !hasMovie) return
+
+    set({ refreshingRecentlyWatched: true })
+    try {
+      const [liveStreams, vodStreams] = await Promise.all([
+        hasLive ? client.getLiveStreams() : Promise.resolve<LiveStream[]>([]),
+        hasMovie ? client.getVodStreams() : Promise.resolve<VodStream[]>([])
+      ])
+      const liveById = new Map(liveStreams.map((s) => [s.stream_id, s]))
+      const vodById = new Map(vodStreams.map((s) => [s.stream_id, s]))
+
+      const updated = recentlyWatched.map((entry) => {
+        if (entry.kind === 'live' && hasLive) {
+          const current = liveById.get(entry.streamId)
+          if (current) return { ...entry, name: current.name, icon: current.stream_icon, tvArchive: current.tv_archive }
+        } else if (entry.kind === 'movie' && hasMovie) {
+          const current = vodById.get(entry.streamId)
+          if (current) return { ...entry, name: current.name, icon: current.stream_icon }
+        }
+        return entry
+      })
+      set({ recentlyWatched: updated })
+      saveRecentlyWatched(updated).catch((err) => console.error('[store] failed to save recently-watched:', err))
+    } catch (err) {
+      console.error('[store] failed to refresh recently-watched:', err)
+    } finally {
+      set({ refreshingRecentlyWatched: false })
+    }
   },
 
   updateEpisodeProgress: (key, positionSeconds, durationSeconds) => {

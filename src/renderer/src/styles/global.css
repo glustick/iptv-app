@@ -699,6 +699,12 @@ body.resizing-col {
   flex-shrink: 0;
 }
 
+.history-header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.history-refresh-button,
 .history-clear-button {
   background: none;
   border: 1px solid var(--border);
@@ -706,6 +712,15 @@ body.resizing-col {
   color: var(--text-dim);
   padding: 6px 12px;
   font-size: 12px;
+}
+
+.history-refresh-button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.history-refresh-button:disabled {
+  opacity: 0.6;
 }
 
 .history-clear-button:hover {

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { useAppStore } from './useAppStore'
 import { XtreamClient } from '../lib/xtream'
 import { DEFAULT_SETTINGS } from '../lib/types'
-import type { LiveStream, FavoriteEntry, VpnProfile } from '../lib/types'
+import type { LiveStream, VodStream, FavoriteEntry, RecentlyWatchedEntry, VpnProfile, XtreamProfile } from '../lib/types'
 
 // Same rationale as storage.test.ts: the vitest environment is plain Node (see
 // vitest.config.mts), so useAppStore's own calls into lib/storage.ts (updateSettings,
@@ -377,5 +377,153 @@ describe('auto-update actions', () => {
     useAppStore.getState().dismissUpdatePrompt()
 
     expect(useAppStore.getState().updateDismissed).toBe(true)
+  })
+})
+
+describe('recently-watched cap', () => {
+  it('play() caps recentlyWatched at 100 entries, keeping the most recent', () => {
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    vi.spyOn(client, 'getStreamUrl').mockReturnValue('http://example.com/stream')
+    useAppStore.setState({ client })
+
+    for (let i = 0; i < 105; i++) {
+      useAppStore.getState().play('live', i, `Channel ${i}`, 'm3u8', 'icon.png')
+    }
+
+    const { recentlyWatched } = useAppStore.getState()
+    expect(recentlyWatched).toHaveLength(100)
+    expect(recentlyWatched[0].streamId).toBe(104)
+    expect(recentlyWatched.find((e) => e.streamId === 0)).toBeUndefined()
+  })
+})
+
+describe('clearRecentlyWatched', () => {
+  it('empties recentlyWatched', () => {
+    useAppStore.setState({
+      recentlyWatched: [
+        { kind: 'live', streamId: 1, name: 'A', icon: '', extension: 'm3u8', tvArchive: 0, watchedAt: Date.now() }
+      ]
+    })
+
+    useAppStore.getState().clearRecentlyWatched()
+
+    expect(useAppStore.getState().recentlyWatched).toEqual([])
+  })
+})
+
+describe('refreshRecentlyWatched', () => {
+  function makeEntry(overrides: Partial<RecentlyWatchedEntry>): RecentlyWatchedEntry {
+    return {
+      kind: 'live',
+      streamId: 1,
+      name: 'Old Name',
+      icon: 'old-icon.png',
+      extension: 'm3u8',
+      tvArchive: 0,
+      watchedAt: Date.now(),
+      ...overrides
+    }
+  }
+
+  beforeEach(() => {
+    useAppStore.setState({ refreshingRecentlyWatched: false, activeProfile: null })
+  })
+
+  it('updates a live entry\'s name/icon/tvArchive from the current catalog', async () => {
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    vi.spyOn(client, 'getLiveStreams').mockResolvedValue([
+      { stream_id: 1, name: 'New Name', stream_icon: 'new-icon.png', tv_archive: 1 } as unknown as LiveStream
+    ])
+    useAppStore.setState({ client, recentlyWatched: [makeEntry({ streamId: 1 })] })
+
+    await useAppStore.getState().refreshRecentlyWatched()
+
+    const entry = useAppStore.getState().recentlyWatched[0]
+    expect(entry.name).toBe('New Name')
+    expect(entry.icon).toBe('new-icon.png')
+    expect(entry.tvArchive).toBe(1)
+  })
+
+  it('updates a movie entry the same way, from getVodStreams', async () => {
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    vi.spyOn(client, 'getVodStreams').mockResolvedValue([
+      { stream_id: 2, name: 'New Movie Name', stream_icon: 'new-poster.png' } as unknown as VodStream
+    ])
+    useAppStore.setState({
+      client,
+      recentlyWatched: [makeEntry({ kind: 'movie', streamId: 2, name: 'Old Movie Name' })]
+    })
+
+    await useAppStore.getState().refreshRecentlyWatched()
+
+    const entry = useAppStore.getState().recentlyWatched[0]
+    expect(entry.name).toBe('New Movie Name')
+    expect(entry.icon).toBe('new-poster.png')
+  })
+
+  it('leaves an entry untouched (does not delete it) when not found in the fetched catalog', async () => {
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    vi.spyOn(client, 'getLiveStreams').mockResolvedValue([])
+    const original = makeEntry({ streamId: 999, name: 'Possibly Removed Channel' })
+    useAppStore.setState({ client, recentlyWatched: [original] })
+
+    await useAppStore.getState().refreshRecentlyWatched()
+
+    expect(useAppStore.getState().recentlyWatched).toEqual([original])
+  })
+
+  it('never touches series entries — there is no per-episode catalog to check them against', async () => {
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    const getLive = vi.spyOn(client, 'getLiveStreams').mockResolvedValue([])
+    const getVod = vi.spyOn(client, 'getVodStreams').mockResolvedValue([])
+    const original = makeEntry({ kind: 'series', streamId: 5, name: 'Show — Episode 1' })
+    useAppStore.setState({ client, recentlyWatched: [original] })
+
+    await useAppStore.getState().refreshRecentlyWatched()
+
+    expect(useAppStore.getState().recentlyWatched).toEqual([original])
+    expect(getLive).not.toHaveBeenCalled()
+    expect(getVod).not.toHaveBeenCalled()
+  })
+
+  it('skips the VOD fetch entirely for an m3u profile, leaving movie entries untouched', async () => {
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    const getVod = vi.spyOn(client, 'getVodStreams').mockResolvedValue([])
+    const original = makeEntry({ kind: 'movie', streamId: 2, name: 'Movie From A Different Profile' })
+    useAppStore.setState({
+      client,
+      activeProfile: { id: 'p1', name: 'M3U Profile', kind: 'm3u' } as XtreamProfile,
+      recentlyWatched: [original]
+    })
+
+    await useAppStore.getState().refreshRecentlyWatched()
+
+    expect(getVod).not.toHaveBeenCalled()
+    expect(useAppStore.getState().recentlyWatched).toEqual([original])
+  })
+
+  it('is a no-op with no client, and does not throw', async () => {
+    useAppStore.setState({ client: null, recentlyWatched: [makeEntry({})] })
+
+    await expect(useAppStore.getState().refreshRecentlyWatched()).resolves.toBeUndefined()
+  })
+
+  it('sets refreshingRecentlyWatched while the fetch is in flight and clears it after', async () => {
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    let resolveFetch!: (streams: LiveStream[]) => void
+    vi.spyOn(client, 'getLiveStreams').mockReturnValue(
+      new Promise((resolve) => {
+        resolveFetch = resolve
+      })
+    )
+    useAppStore.setState({ client, recentlyWatched: [makeEntry({})] })
+
+    const pending = useAppStore.getState().refreshRecentlyWatched()
+    expect(useAppStore.getState().refreshingRecentlyWatched).toBe(true)
+
+    resolveFetch([])
+    await pending
+
+    expect(useAppStore.getState().refreshingRecentlyWatched).toBe(false)
   })
 })

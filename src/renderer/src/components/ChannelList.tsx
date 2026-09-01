@@ -224,6 +224,8 @@ export function ChannelList(): JSX.Element {
   const toggleFavorite = useAppStore((s) => s.toggleFavorite)
   const isFavorited = useAppStore((s) => s.isFavorited)
   const clearRecentlyWatched = useAppStore((s) => s.clearRecentlyWatched)
+  const refreshRecentlyWatched = useAppStore((s) => s.refreshRecentlyWatched)
+  const refreshingRecentlyWatched = useAppStore((s) => s.refreshingRecentlyWatched)
 
   const filteredVod = useFiltered(vodStreams, searchTerm, (c) => c.name)
   const filteredSeries = useFiltered(series, searchTerm, (c) => c.name)
@@ -281,14 +283,24 @@ export function ChannelList(): JSX.Element {
         <div className="history-header">
           <h3 className="section-heading">History</h3>
           {recentlyWatched.length > 0 && (
-            <button
-              className="history-clear-button"
-              onClick={() => {
-                if (window.confirm('Clear all watch history? This cannot be undone.')) clearRecentlyWatched()
-              }}
-            >
-              Clear All
-            </button>
+            <div className="history-header-actions">
+              <button
+                className="history-refresh-button"
+                onClick={() => void refreshRecentlyWatched()}
+                disabled={refreshingRecentlyWatched}
+                title="Re-check channel/movie names and icons against the current catalog"
+              >
+                {refreshingRecentlyWatched ? 'Refreshing…' : 'Refresh'}
+              </button>
+              <button
+                className="history-clear-button"
+                onClick={() => {
+                  if (window.confirm('Clear all watch history? This cannot be undone.')) clearRecentlyWatched()
+                }}
+              >
+                Clear All
+              </button>
+            </div>
           )}
         </div>
         <div className="history-grid-wrap">
