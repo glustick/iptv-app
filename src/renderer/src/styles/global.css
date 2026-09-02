@@ -994,6 +994,31 @@ body.resizing-col {
   accent-color: var(--accent);
 }
 
+/* VOD/series audio+subtitle dropdowns (Player.tsx) — deliberately plain <select> elements
+   rather than player-control-btn lookalikes, so it's visually obvious these open a native
+   options list instead of cycling on click like Live TV's track buttons do. */
+.player-track-select {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.player-track-select select {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 5px 6px;
+  font-size: 12px;
+  max-width: 160px;
+}
+
+.player-track-select select:disabled {
+  opacity: 0.5;
+}
+
 .player-body {
   flex: 1;
   /* Flex items default to min-height: auto, which sizes them to their content's intrinsic

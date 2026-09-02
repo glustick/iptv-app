@@ -202,9 +202,10 @@ export function Player(): JSX.Element | null {
   // #EXT-X-MEDIA:TYPE=SUBTITLES entries, live or not: a genuinely multi-language live channel's
   // own master playlist works exactly the same way here as the transcode fallback's own
   // (VOD/series-only, always exactly one track) generated one does — hls.js doesn't distinguish
-  // the two. (See subtitleTracks/switchSubtitleTrack below for the separate, ffmpeg-level notion
-  // of "which language could this be transcoded with" — that one restarts the whole transcode to
-  // switch; this one is just picking among renditions the current source already offers.)
+  // the two. (See vodSubtitleTracks/switchVodSubtitleTrack below for the separate, ffmpeg-level
+  // notion of "which language could this be transcoded with" — that one restarts the whole
+  // transcode to switch; this one is just picking among renditions the current source already
+  // offers.)
   const [hlsSubtitleTracks, setHlsSubtitleTracks] = useState<{ id: number; name: string }[]>([])
   const [activeHlsSubtitleTrack, setActiveHlsSubtitleTrack] = useState(-1)
   // Same idea as hlsSubtitleTracks above, but for #EXT-X-MEDIA:TYPE=AUDIO — unlike subtitles
@@ -229,16 +230,21 @@ export function Player(): JSX.Element | null {
     tryFallbackForSilentAudio,
     reset: resetTranscodeFallback,
     beginRun: beginTranscodeRun,
-    subtitleTracks,
-    activeSubtitleTrackIndex,
-    switchSubtitleTrack,
     hasFallbackActive,
     liveAudioTracks,
     probingLiveAudio,
     activeLiveAudioTrackIndex,
     probedLiveSubtitleTrackCount,
     probeLiveAudioTracks,
-    switchLiveAudioTrack
+    switchLiveAudioTrack,
+    vodAudioTracks,
+    vodSubtitleTracks,
+    probingVodTracks,
+    activeVodAudioIndex,
+    activeVodSubtitleIndex,
+    probeVodTracks,
+    switchVodAudioTrack,
+    switchVodSubtitleTrack
   } = useTranscodeFallback()
 
   // Channel identity changing (including to nothing, i.e. the player closing) is the only
@@ -763,6 +769,18 @@ export function Player(): JSX.Element | null {
     if (nowPlaying?.kind === 'live') void loadShortEpg(nowPlaying.streamId)
   }, [nowPlaying, loadShortEpg])
 
+  // VOD/series probes its own audio/subtitle tracks automatically on load (unlike Live TV's
+  // manual button — see probeVodTracks' own comment for why the two differ) against the
+  // original URL, never the transcoded one: probing is what decides whether a transcode even
+  // starts, so there's nothing else to probe against yet.
+  useEffect(() => {
+    if (nowPlaying && nowPlaying.kind !== 'live') {
+      void probeVodTracks(nowPlaying.url, (message) =>
+        console.error('[transcode] failed to probe VOD tracks:', message)
+      )
+    }
+  }, [nowPlaying, probeVodTracks])
+
   // Picture-in-Picture opens a genuine floating OS window (confirmed: it renders on top of
   // other apps, not just inside this one) tied to this video element — closing the player or
   // switching channels while it's open would otherwise leave that window floating on the
@@ -848,11 +866,6 @@ export function Player(): JSX.Element | null {
 
   if (!nowPlaying) return null
 
-  // A bitmap subtitle codec (PGS, VobSub, ...) can never be switched to — confirmed live to
-  // crash the whole transcode if attempted (see switchSubtitleTrack's own comment) — so the
-  // language button's visibility and its cycling both key off this, not the raw track count.
-  const switchableSubtitleTracks = subtitleTracks.filter((t) => t.supported)
-
   // The "currently playing" programme out of this channel's short EPG listings — the one whose
   // window actually contains right now, not just the first entry (get_short_epg can return
   // listings starting slightly in the future, e.g. right at a programme boundary).
@@ -928,11 +941,11 @@ export function Player(): JSX.Element | null {
 
   // Cycles Off -> first language -> second -> ... -> Off, entirely client-side and free/instant
   // — every track this cycles through is already loaded in the current source's own playlist,
-  // unlike the separate 🌐 button below (driven by subtitleTracks/switchSubtitleTrack), which
-  // picks a *different* language to transcode with and restarts the whole transcode to do it.
-  // A single-track source degrades to a plain on/off toggle automatically (cycling past the one
-  // track lands back on Off either way), so this replaces what used to be a separate, simpler
-  // toggle-only function without needing two code paths for the two cases.
+  // unlike the VOD subtitle dropdown below (driven by vodSubtitleTracks/switchVodSubtitleTrack),
+  // which picks a *different* language to transcode with and restarts the whole transcode to do
+  // it. A single-track source degrades to a plain on/off toggle automatically (cycling past the
+  // one track lands back on Off either way), so this replaces what used to be a separate,
+  // simpler toggle-only function without needing two code paths for the two cases.
   function cycleHlsSubtitleTrack(): void {
     const hls = hlsRef.current
     if (!hls || hlsSubtitleTracks.length === 0) return
@@ -1022,30 +1035,31 @@ export function Player(): JSX.Element | null {
           // rather than ever hiding Close.
           }
           <div className="player-header-controls" ref={controlsRef}>
-            {// Play/pause and skip are only added here for live TV — VOD/series already have full
-            // scrubbing via the native <video controls> bar below, and duplicating a second set
-            // of transport controls there would be redundant, not additive.
-            nowPlaying.kind === 'live' && (
-              <>
-                <button className="player-control-btn" onClick={() => skip(-SKIP_SECONDS_LONG)} title={`Back ${SKIP_SECONDS_LONG}s`}>
-                  ⏪ <span className="control-label">1m</span>
-                </button>
-                <button className="player-control-btn" onClick={() => skip(-SKIP_SECONDS)} title={`Back ${SKIP_SECONDS}s`}>
-                  ⏪ <span className="control-label">{SKIP_SECONDS}s</span>
-                </button>
-                <button className="player-control-btn" onClick={togglePlayPause} title={paused ? 'Play' : 'Pause'}>
-                  {paused ? '▶' : '⏸'}
-                </button>
-                <button className="player-control-btn" onClick={() => skip(SKIP_SECONDS)} title={`Forward ${SKIP_SECONDS}s`}>
-                  <span className="control-label">{SKIP_SECONDS}s</span> ⏩
-                </button>
-                <button className="player-control-btn" onClick={() => skip(SKIP_SECONDS_LONG)} title={`Forward ${SKIP_SECONDS_LONG}s`}>
-                  <span className="control-label">1m</span> ⏩
-                </button>
-                <button className="player-control-btn" onClick={goToLive} title="Jump to the current live transmission">
-                  🔴 <span className="control-label">Live</span>
-                </button>
-              </>
+            {// Play/pause and skip work identically for live TV (clamped to the DVR buffer) and
+            // VOD/series (clamped to [0, duration]) — see skip()'s own comment. Jumping to the
+            // live edge is the only piece that's live-only, since VOD/series has no such concept
+            // — it still keeps the native <video controls> bar below for full scrubbing, these
+            // buttons are additive for quick skips without reaching for the scrub bar.
+            }
+            <button className="player-control-btn" onClick={() => skip(-SKIP_SECONDS_LONG)} title={`Back ${SKIP_SECONDS_LONG}s`}>
+              ⏪ <span className="control-label">1m</span>
+            </button>
+            <button className="player-control-btn" onClick={() => skip(-SKIP_SECONDS)} title={`Back ${SKIP_SECONDS}s`}>
+              ⏪ <span className="control-label">{SKIP_SECONDS}s</span>
+            </button>
+            <button className="player-control-btn" onClick={togglePlayPause} title={paused ? 'Play' : 'Pause'}>
+              {paused ? '▶' : '⏸'}
+            </button>
+            <button className="player-control-btn" onClick={() => skip(SKIP_SECONDS)} title={`Forward ${SKIP_SECONDS}s`}>
+              <span className="control-label">{SKIP_SECONDS}s</span> ⏩
+            </button>
+            <button className="player-control-btn" onClick={() => skip(SKIP_SECONDS_LONG)} title={`Forward ${SKIP_SECONDS_LONG}s`}>
+              <span className="control-label">1m</span> ⏩
+            </button>
+            {nowPlaying.kind === 'live' && (
+              <button className="player-control-btn" onClick={goToLive} title="Jump to the current live transmission">
+                🔴 <span className="control-label">Live</span>
+              </button>
             )}
             <div className="player-volume">
               <button className="player-control-btn" onClick={toggleMute} title={muted ? 'Unmute' : 'Mute'}>
@@ -1140,31 +1154,67 @@ export function Player(): JSX.Element | null {
                 </span>
               </button>
             )}
-            {// Only ever shown when this title's source genuinely has more than one *convertible*
-            // subtitle track (see SubtitleTrackInfo.supported — a bitmap codec like PGS can't be
-            // switched to at all, confirmed live to crash the whole transcode if attempted) —
-            // switching means restarting the whole transcode fallback (see switchSubtitleTrack's
-            // own comment for why this app's ffmpeg build can't just carry every language at
-            // once), so this is deliberately a separate, clearly-labeled action from the free/
-            // instant CC on/off toggle above.
-            switchableSubtitleTracks.length > 1 && (
-              <button
-                className="player-control-btn"
-                onClick={() =>
-                  switchSubtitleTrack(
-                    nowPlaying.url,
-                    () => setReloadTick((t) => t + 1),
-                    (message) => setPlaybackError(`Failed to switch subtitle language: ${message}`)
-                  )
-                }
-                title="Switch subtitle language (restarts the audio/playback fix, can take a minute or two)"
-              >
-                🌐{' '}
-                <span className="control-label">
-                  {subtitleTracks.find((t) => t.index === activeSubtitleTrackIndex)?.language?.toUpperCase() ??
-                    `Track ${activeSubtitleTrackIndex + 1}`}
-                </span>
-              </button>
+            {// VOD/series track selection is a pair of dropdowns rather than the click-to-cycle
+            // buttons Live TV uses above — every option is visible up front, and switching either
+            // one restarts the whole transcode fallback (via switchVodAudioTrack/
+            // switchVodSubtitleTrack) carrying the OTHER dimension's current pick along unchanged.
+            // Tracks are probed automatically on load (see the probeVodTracks effect above), so
+            // these render as soon as nowPlaying flips to VOD/series, disabled until that resolves.
+            nowPlaying.kind !== 'live' && (
+              <>
+                <label className="player-track-select" title="Audio track">
+                  🗣
+                  <select
+                    value={activeVodAudioIndex}
+                    disabled={probingVodTracks || !vodAudioTracks || vodAudioTracks.length <= 1}
+                    onChange={(e) => {
+                      const index = Number(e.target.value)
+                      if (index === activeVodAudioIndex) return
+                      switchVodAudioTrack(
+                        nowPlaying.url,
+                        index,
+                        () => setReloadTick((t) => t + 1),
+                        (message) => setPlaybackError(`Failed to switch audio track: ${message}`)
+                      )
+                    }}
+                  >
+                    {probingVodTracks && <option>Checking…</option>}
+                    {!probingVodTracks && !vodAudioTracks && <option>Audio</option>}
+                    {!probingVodTracks &&
+                      vodAudioTracks?.length === 0 && <option value={activeVodAudioIndex}>No audio tracks found</option>}
+                    {vodAudioTracks?.map((t) => (
+                      <option key={t.index} value={t.index}>
+                        {`${t.language?.toUpperCase() ?? `Track ${t.index + 1}`} (${t.codec.toUpperCase()}, ${t.channelLayout})`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="player-track-select" title="Subtitles">
+                  💬
+                  <select
+                    value={activeVodSubtitleIndex}
+                    disabled={probingVodTracks || !vodSubtitleTracks || vodSubtitleTracks.filter((t) => t.supported).length === 0}
+                    onChange={(e) => {
+                      const index = Number(e.target.value)
+                      if (index === activeVodSubtitleIndex) return
+                      switchVodSubtitleTrack(
+                        nowPlaying.url,
+                        index,
+                        () => setReloadTick((t) => t + 1),
+                        (message) => setPlaybackError(`Failed to switch subtitle track: ${message}`)
+                      )
+                    }}
+                  >
+                    <option value={-1}>Off</option>
+                    {probingVodTracks && <option disabled>Checking…</option>}
+                    {vodSubtitleTracks?.map((t) => (
+                      <option key={t.index} value={t.index} disabled={!t.supported}>
+                        {`${t.language?.toUpperCase() ?? `Track ${t.index + 1}`}${t.supported ? '' : ' (unsupported)'}`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
             )}
             <button
               className="player-control-btn"
