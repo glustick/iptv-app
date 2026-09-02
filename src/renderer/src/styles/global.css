@@ -994,29 +994,58 @@ body.resizing-col {
   accent-color: var(--accent);
 }
 
-/* VOD/series audio+subtitle dropdowns (Player.tsx) — deliberately plain <select> elements
-   rather than player-control-btn lookalikes, so it's visually obvious these open a native
-   options list instead of cycling on click like Live TV's track buttons do. */
+/* VOD/series audio+subtitle dropdowns (Player.tsx). Same pill shape as player-control-btn so
+   they read as part of the same control row, but with an opaque fill (not "none" like the
+   buttons) — a transparent <select> here left the browser's own default control background
+   showing through, which washed out against the header's dark, blurred, translucent backdrop
+   and was the actual "hard to see" complaint. The select itself is unstyled-appearance with a
+   custom chevron drawn in, so it's visually obvious this opens a full options list rather than
+   cycling in place on click like Live TV's track buttons above do. */
 .player-track-select {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   flex-shrink: 0;
   font-size: 12px;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
+.player-track-select:has(select:disabled) {
+  opacity: 0.5;
+}
+
+.player-track-select:not(:has(select:disabled)):hover {
+  border-color: var(--accent);
 }
 
 .player-track-select select {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: none;
   color: var(--text);
-  padding: 5px 6px;
   font-size: 12px;
-  max-width: 160px;
+  max-width: 190px;
+  padding-right: 16px;
+  /* Chevron is baked into the select itself rather than left to the OS/browser's own arrow —
+     appearance: none above strips that, and this is what makes it read as a dropdown at all. */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5l3.5 3.5 3.5-3.5' stroke='%23e7e9ee' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right center;
+  background-size: 10px;
 }
 
 .player-track-select select:disabled {
-  opacity: 0.5;
+  cursor: default;
+}
+
+.player-track-select select:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .player-body {

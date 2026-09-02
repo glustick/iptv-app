@@ -1163,7 +1163,8 @@ export function Player(): JSX.Element | null {
             nowPlaying.kind !== 'live' && (
               <>
                 <label className="player-track-select" title="Audio track">
-                  🗣
+                  <span aria-hidden="true">🗣</span>
+                  <span className="control-label">Audio</span>
                   <select
                     value={activeVodAudioIndex}
                     disabled={probingVodTracks || !vodAudioTracks || vodAudioTracks.length <= 1}
@@ -1190,7 +1191,8 @@ export function Player(): JSX.Element | null {
                   </select>
                 </label>
                 <label className="player-track-select" title="Subtitles">
-                  💬
+                  <span aria-hidden="true">💬</span>
+                  <span className="control-label">Subtitles</span>
                   <select
                     value={activeVodSubtitleIndex}
                     disabled={probingVodTracks || !vodSubtitleTracks || vodSubtitleTracks.filter((t) => t.supported).length === 0}
