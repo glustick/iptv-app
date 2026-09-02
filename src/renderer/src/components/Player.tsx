@@ -8,6 +8,7 @@ import { VpnWarnings } from './VpnWarnings'
 import { useTranscodeFallback } from '../lib/useTranscodeFallback'
 import { useNumericChannelEntry } from '../lib/useNumericChannelEntry'
 import { useToolbarOverflow } from '../lib/useToolbarOverflow'
+import { useHoverAutoHide } from '../lib/useHoverAutoHide'
 import type { VideoScaleMode } from '../lib/types'
 
 const MAX_NETWORK_RETRIES = 4
@@ -19,6 +20,11 @@ const CHANNEL_BAR_AUTO_HIDE_MS = 6000
 // against the bar's footprint (see the hover-tracking effect below) without needing to measure
 // the actual DOM element, which only exists while the bar is rendered at all.
 const CHANNEL_BAR_HEIGHT_PX = 206
+// Same auto-hide-after-a-delay idea as the channel bar above, but for the header, seek bar, and
+// left-edge channel info panel — all three are purely hover-driven (see useHoverAutoHide), and
+// all three share this one delay (5s per explicit request) rather than each having its own,
+// unlike the channel bar's separately-tuned CHANNEL_BAR_AUTO_HIDE_MS above.
+const HOVER_AUTO_HIDE_MS = 5000
 const SKIP_SECONDS = 10
 const SKIP_SECONDS_LONG = 60
 // How often (and for how long) to poll for the "video decoding, audio never has" symptom — see
@@ -126,6 +132,19 @@ export function Player(): JSX.Element | null {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const hlsRef = useRef<Hls | null>(null)
   const playerRef = useRef<HTMLDivElement | null>(null)
+  // Mirrors "is playerRef.current actually attached right now" as real React state, purely so
+  // useHoverAutoHide's effects (which key off it, alongside their own `enabled`) have a genuine
+  // dependency change to react to once the node exists — a confirmed real bug otherwise: this
+  // component's own instance never unmounts across a close/reopen (it returns null before
+  // anything plays), so a plain useRef + a useEffect with an unchanging dependency array (e.g.
+  // the header's `enabled` is a hardcoded `true`) runs exactly once, on that very first render,
+  // with the ref still null — and never gets another chance to attach its listeners once the
+  // node genuinely appears. (channelInfoVisible/cursorNearBottom happened to dodge this by luck:
+  // their own `enabled` already flips false→true once a live channel starts, which is itself a
+  // real dependency change — but relying on that coincidence for every future caller isn't
+  // something to build on.) playerRef itself stays a plain ref — every other existing use of
+  // `playerRef.current` throughout this file is unaffected.
+  const [playerMounted, setPlayerMounted] = useState(false)
   // Detects actual overflow on the controls row itself (scrollWidth > clientWidth), not a fixed
   // window/header width — .player-header spans the full player edge-to-edge regardless of how
   // little room is actually left for buttons once a (possibly long) title takes its share, so a
@@ -142,10 +161,32 @@ export function Player(): JSX.Element | null {
   const [muted, setMuted] = useState(false)
   const [volume, setVolume] = useState(1)
   const [isFullscreen, setIsFullscreen] = useState(false)
-  const [headerVisible, setHeaderVisible] = useState(true)
   const [statsVisible, setStatsVisible] = useState(false)
-  const [cursorNearBottom, setCursorNearBottom] = useState(false)
-  const [channelInfoVisible, setChannelInfoVisible] = useState(false)
+  // Header, seek bar, and channel info panel are all purely hover-driven overlays with the exact
+  // same real bug otherwise: a plain position-only mousemove handler has no way to notice the
+  // cursor leaving the window entirely (no more mousemove events ever fire once it's outside the
+  // document), so whichever one happened to be visible at that moment stayed stuck visible
+  // forever — confirmed live, reported for the channel info panel specifically, but the same gap
+  // applies to all three. useHoverAutoHide (see its own doc comment) fixes this once, reused
+  // three times rather than three separate bespoke mousemove effects each missing the same case.
+  const [headerVisible, setHeaderVisible] = useHoverAutoHide(
+    playerRef,
+    (e, rect) => e.clientY < rect.top + rect.height * HEADER_REVEAL_ZONE_FRACTION,
+    HOVER_AUTO_HIDE_MS,
+    playerMounted
+  )
+  const [cursorNearBottom] = useHoverAutoHide(
+    playerRef,
+    (e, rect) => e.clientY > rect.top + rect.height * (1 - SEEKBAR_REVEAL_ZONE_FRACTION),
+    HOVER_AUTO_HIDE_MS,
+    playerMounted && nowPlaying?.kind === 'live'
+  )
+  const [channelInfoVisible] = useHoverAutoHide(
+    playerRef,
+    (e, rect) => e.clientX < rect.left + rect.width * CHANNEL_INFO_ZONE_FRACTION,
+    HOVER_AUTO_HIDE_MS,
+    playerMounted && nowPlaying?.kind === 'live'
+  )
   // null = off. A global "stop watching after N minutes" timer, not tied to any one channel —
   // deliberately survives a channel switch (see the effect below) since the point is winding
   // down a viewing session, not this specific channel. Player.tsx's own instance never actually
@@ -590,8 +631,25 @@ export function Player(): JSX.Element | null {
         autoHideTimer.current = setTimeout(() => setShowChannelBar(false), CHANNEL_BAR_AUTO_HIDE_MS)
       }
     }
+    // Cursor leaving the whole window/document is a case the mousemove tracking above can never
+    // see on its own — no more mousemove events fire once it's outside the document — so without
+    // this, the bar could stay open indefinitely if the cursor left while still over its
+    // footprint (the same real gap useHoverAutoHide's own doc comment documents, fixed the same
+    // way here since the channel bar's own auto-hide is click-toggled, not purely hover-shown,
+    // and so doesn't use that hook directly). relatedTarget === null is what distinguishes
+    // "left the document" from "moved to a different element still inside it."
+    function onDocumentMouseOut(e: MouseEvent): void {
+      if (e.relatedTarget !== null || !channelBarHovered.current) return
+      channelBarHovered.current = false
+      if (autoHideTimer.current) clearTimeout(autoHideTimer.current)
+      autoHideTimer.current = setTimeout(() => setShowChannelBar(false), CHANNEL_BAR_AUTO_HIDE_MS)
+    }
     container.addEventListener('mousemove', onMouseMove)
-    return () => container.removeEventListener('mousemove', onMouseMove)
+    document.addEventListener('mouseout', onDocumentMouseOut)
+    return () => {
+      container.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('mouseout', onDocumentMouseOut)
+    }
   }, [showChannelBar])
 
   // The channel bar only makes sense for live TV — hide it if playback switches to
@@ -690,41 +748,10 @@ export function Player(): JSX.Element | null {
 
   // The header starts visible every time a new title starts playing (or the player reopens) —
   // a normal "here are the controls" moment on load — and from then on is purely cursor-driven
-  // (see the mousemove effect below), in both windowed and fullscreen mode alike.
+  // (see the useHoverAutoHide call above), in both windowed and fullscreen mode alike.
   useEffect(() => {
     setHeaderVisible(true)
-  }, [nowPlaying])
-
-  // The seek bar (unlike the header/channel bar, which are click-toggled) reveals purely on
-  // cursor position — it's meant to be glanceable without an extra click, but shouldn't sit
-  // permanently over the picture either. Booleans bail out of re-rendering when the new value
-  // matches the current one, so this is cheap even at native mousemove frequency.
-  useEffect(() => {
-    const container = playerRef.current
-    if (!container || nowPlaying?.kind !== 'live') return
-    function onMouseMove(e: MouseEvent): void {
-      const rect = container!.getBoundingClientRect()
-      setCursorNearBottom(e.clientY > rect.top + rect.height * (1 - SEEKBAR_REVEAL_ZONE_FRACTION))
-    }
-    container.addEventListener('mousemove', onMouseMove)
-    return () => container.removeEventListener('mousemove', onMouseMove)
-  }, [nowPlaying])
-
-  // The header: purely hover-driven, in both windowed and fullscreen mode and for every content
-  // kind — cursor in the top 10% of the player reveals it, moving away instantly hides it again,
-  // no click needed. The player overlay is always a fixed, full-viewport layer (see
-  // .player-overlay in global.css) regardless of the Fullscreen API's own on/off state, so this
-  // works identically either way.
-  useEffect(() => {
-    const container = playerRef.current
-    if (!container) return
-    function onMouseMove(e: MouseEvent): void {
-      const rect = container!.getBoundingClientRect()
-      setHeaderVisible(e.clientY < rect.top + rect.height * HEADER_REVEAL_ZONE_FRACTION)
-    }
-    container.addEventListener('mousemove', onMouseMove)
-    return () => container.removeEventListener('mousemove', onMouseMove)
-  }, [nowPlaying])
+  }, [nowPlaying, setHeaderVisible])
 
   // The channel info panel needs this channel's short EPG (for the current programme's title
   // and description) on hand before the cursor ever reaches the left edge — fetching it lazily
@@ -735,20 +762,6 @@ export function Player(): JSX.Element | null {
   useEffect(() => {
     if (nowPlaying?.kind === 'live') void loadShortEpg(nowPlaying.streamId)
   }, [nowPlaying, loadShortEpg])
-
-  // Left-edge channel info panel: purely hover-driven like the header above, but along the
-  // player's own width and live-only — hovering elsewhere (VOD/series have no "now playing
-  // channel" concept in the same sense) never shows it.
-  useEffect(() => {
-    const container = playerRef.current
-    if (!container || nowPlaying?.kind !== 'live') return
-    function onMouseMove(e: MouseEvent): void {
-      const rect = container!.getBoundingClientRect()
-      setChannelInfoVisible(e.clientX < rect.left + rect.width * CHANNEL_INFO_ZONE_FRACTION)
-    }
-    container.addEventListener('mousemove', onMouseMove)
-    return () => container.removeEventListener('mousemove', onMouseMove)
-  }, [nowPlaying])
 
   // Picture-in-Picture opens a genuine floating OS window (confirmed: it renders on top of
   // other apps, not just inside this one) tied to this video element — closing the player or
@@ -969,7 +982,13 @@ export function Player(): JSX.Element | null {
   }
 
   return (
-    <div className="player-overlay" ref={playerRef}>
+    <div
+      className="player-overlay"
+      ref={(node) => {
+        playerRef.current = node
+        if (node && !playerMounted) setPlayerMounted(true)
+      }}
+    >
       <div className={`player-header player-header--overlay${!headerVisible ? ' player-header--hidden' : ''}`}>
         <span className="player-title">
           {nowPlaying.name}
