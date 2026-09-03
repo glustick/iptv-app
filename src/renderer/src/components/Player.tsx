@@ -939,37 +939,11 @@ export function Player(): JSX.Element | null {
     video.muted = !video.muted
   }
 
-  // Cycles Off -> first language -> second -> ... -> Off, entirely client-side and free/instant
-  // — every track this cycles through is already loaded in the current source's own playlist,
-  // unlike the VOD subtitle dropdown below (driven by vodSubtitleTracks/switchVodSubtitleTrack),
-  // which picks a *different* language to transcode with and restarts the whole transcode to do
-  // it. A single-track source degrades to a plain on/off toggle automatically (cycling past the
-  // one track lands back on Off either way), so this replaces what used to be a separate,
-  // simpler toggle-only function without needing two code paths for the two cases.
-  function cycleHlsSubtitleTrack(): void {
-    const hls = hlsRef.current
-    if (!hls || hlsSubtitleTracks.length === 0) return
-    const currentIndex = hlsSubtitleTracks.findIndex((t) => t.id === hls.subtitleTrack)
-    const nextIndex = currentIndex + 1
-    hls.subtitleTrack = nextIndex >= hlsSubtitleTracks.length ? -1 : hlsSubtitleTracks[nextIndex].id
-  }
-
   // Persisted (not just session-local) the same way volume/mute already are — a global
   // preference rather than tracked per-channel, applied uniformly whenever anything plays.
   function cycleVideoScaleMode(): void {
     const currentIndex = VIDEO_SCALE_MODES.indexOf(videoScaleMode)
     updateSettings({ videoScaleMode: VIDEO_SCALE_MODES[(currentIndex + 1) % VIDEO_SCALE_MODES.length] })
-  }
-
-  // Unlike subtitles there's no "off" state for audio — a source with alternate audio renditions
-  // still always has exactly one active — so this only ever cycles forward and wraps, never
-  // lands on an explicit off.
-  function cycleHlsAudioTrack(): void {
-    const hls = hlsRef.current
-    if (!hls || hlsAudioTracks.length < 2) return
-    const currentIndex = hlsAudioTracks.findIndex((t) => t.id === hls.audioTrack)
-    const nextIndex = (currentIndex + 1) % hlsAudioTracks.length
-    hls.audioTrack = hlsAudioTracks[nextIndex].id
   }
 
   function handleVolumeChange(e: React.ChangeEvent<HTMLInputElement>): void {
@@ -1076,10 +1050,27 @@ export function Player(): JSX.Element | null {
                 title="Volume"
               />
             </div>
-            {hlsAudioTracks.length > 1 && (
-              <button className="player-control-btn" onClick={cycleHlsAudioTrack} title="Switch audio language">
-                🗣 <span className="control-label">{hlsAudioTracks.find((t) => t.id === activeHlsAudioTrack)?.name ?? 'Audio'}</span>
-              </button>
+            {// hls.js's own, free/instant alternate-audio renditions — every option here is
+            // already loaded in the current source's own playlist, so picking one is just
+            // `hls.audioTrack = id`, no restart of anything.
+            hlsAudioTracks.length > 1 && (
+              <label className="player-track-select" title="Audio language">
+                <span aria-hidden="true">🗣</span>
+                <span className="control-label">Audio</span>
+                <select
+                  value={activeHlsAudioTrack}
+                  onChange={(e) => {
+                    const hls = hlsRef.current
+                    if (hls) hls.audioTrack = Number(e.target.value)
+                  }}
+                >
+                  {hlsAudioTracks.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
             )}
             {// A live channel's raw stream can carry audio tracks its HLS playlist never
             // advertises at all — hlsAudioTracks (above) only ever sees what the playlist
@@ -1090,69 +1081,90 @@ export function Player(): JSX.Element | null {
             // *different* transcode fallback (the automatic codec fix) is already active — but not
             // once this block's own switchLiveAudioTrack is what's driving hasFallbackActive
             // (liveAudioTracks !== null exactly identifies that case), or a user who's already
-            // picked a track could never see which one, or cycle to another.
+            // picked a track could never see which one, or switch to another. Unlike VOD's
+            // probeVodTracks (automatic on load), this stays gated behind an explicit "Check Audio
+            // Tracks" button — probing hits a second connection, and doing that unprompted for
+            // every one of a large live catalog's channels isn't worth it for what's usually a
+            // "no." Only once that check has actually run does this become a real dropdown
+            // listing every track found, rather than a button that only ever showed the current
+            // one — a proactive probe with a reactive-looking button underneath was the original
+            // complaint here.
             nowPlaying.kind === 'live' && hlsAudioTracks.length <= 1 && (!hasFallbackActive || liveAudioTracks !== null) && (
-              <button
-                className="player-control-btn"
-                disabled={probingLiveAudio || (liveAudioTracks !== null && liveAudioTracks.length <= 1)}
-                onClick={() => {
-                  if (liveAudioTracks === null) {
+              liveAudioTracks === null ? (
+                <button
+                  className="player-control-btn"
+                  disabled={probingLiveAudio}
+                  onClick={() =>
                     void probeLiveAudioTracks(nowPlaying.url, (message) =>
                       setPlaybackError(`Failed to check for extra audio tracks: ${message}`)
                     )
-                    return
                   }
-                  const currentPosition = liveAudioTracks.findIndex((t) => t.index === (activeLiveAudioTrackIndex ?? 0))
-                  const next = liveAudioTracks[(currentPosition + 1) % liveAudioTracks.length]
-                  switchLiveAudioTrack(
-                    nowPlaying.url,
-                    next.index,
-                    () => setReloadTick((t) => t + 1),
-                    (message) => setPlaybackError(`Failed to switch audio track: ${message}`)
-                  )
-                }}
-                title={
-                  liveAudioTracks === null
-                    ? 'Check whether this channel actually carries more audio tracks than its guide lists (opens a second connection briefly)'
-                    : liveAudioTracks.length > 1
-                      ? 'Switch to the next audio track found in this channel’s raw stream (restarts playback via a local remux, can take a few seconds)'
+                  title="Check whether this channel actually carries more audio tracks than its guide lists (opens a second connection briefly)"
+                >
+                  🎚 <span className="control-label">{probingLiveAudio ? 'Checking…' : 'Check Audio Tracks'}</span>
+                </button>
+              ) : (
+                <label
+                  className="player-track-select"
+                  title={
+                    liveAudioTracks.length > 1
+                      ? 'Switch to a different audio track found in this channel’s raw stream (restarts playback via a local remux, can take a few seconds)'
                       : `No extra audio tracks found in this channel's raw stream${probedLiveSubtitleTrackCount ? ` (${probedLiveSubtitleTrackCount} subtitle track${probedLiveSubtitleTrackCount > 1 ? 's' : ''} found, not yet switchable for Live TV)` : ' (no embedded subtitle tracks either)'}`
-                }
-              >
-                🎚{' '}
-                <span className="control-label">
-                  {probingLiveAudio
-                    ? 'Checking…'
-                    : liveAudioTracks === null
-                      ? 'Check Audio Tracks'
-                      : liveAudioTracks.length > 1
-                        ? (() => {
-                            const active = liveAudioTracks.find((t) => t.index === (activeLiveAudioTrackIndex ?? 0))
-                            return active
-                              ? `${active.language?.toUpperCase() ?? `Track ${active.index + 1}`} (${active.codec.toUpperCase()}, ${active.channelLayout})`
-                              : 'Audio'
-                          })()
-                        : 'No Extra Audio'}
-                </span>
-              </button>
+                  }
+                >
+                  <span aria-hidden="true">🎚</span>
+                  <span className="control-label">Audio</span>
+                  <select
+                    value={liveAudioTracks.length > 1 ? (activeLiveAudioTrackIndex ?? 0) : -1}
+                    disabled={liveAudioTracks.length <= 1}
+                    onChange={(e) => {
+                      const index = Number(e.target.value)
+                      if (index === (activeLiveAudioTrackIndex ?? 0)) return
+                      switchLiveAudioTrack(
+                        nowPlaying.url,
+                        index,
+                        () => setReloadTick((t) => t + 1),
+                        (message) => setPlaybackError(`Failed to switch audio track: ${message}`)
+                      )
+                    }}
+                  >
+                    {liveAudioTracks.length <= 1 ? (
+                      <option value={-1}>No Extra Audio</option>
+                    ) : (
+                      liveAudioTracks.map((t) => (
+                        <option key={t.index} value={t.index}>
+                          {`${t.language?.toUpperCase() ?? `Track ${t.index + 1}`} (${t.codec.toUpperCase()}, ${t.channelLayout})`}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </label>
+              )
             )}
-            {hlsSubtitleTracks.length > 0 && (
-              <button
-                className="player-control-btn"
-                onClick={cycleHlsSubtitleTrack}
-                title={
-                  hlsSubtitleTracks.length > 1
-                    ? 'Cycle subtitle language (or off)'
-                    : activeHlsSubtitleTrack === -1
-                      ? 'Turn subtitles on'
-                      : 'Turn subtitles off'
-                }
-              >
-                💬{' '}
-                <span className="control-label">
-                  {activeHlsSubtitleTrack === -1 ? 'CC Off' : (hlsSubtitleTracks.find((t) => t.id === activeHlsSubtitleTrack)?.name ?? 'CC On')}
-                </span>
-              </button>
+            {// Same free/instant hls.js rendition-picking as the audio dropdown above, plus an
+            // explicit Off option — unlike VOD's subtitle dropdown (driven by
+            // vodSubtitleTracks/switchVodSubtitleTrack), which picks a *different* language to
+            // transcode with and restarts the whole transcode to do it, this is just
+            // `hls.subtitleTrack = id`, already loaded in the current source's own playlist.
+            hlsSubtitleTracks.length > 0 && (
+              <label className="player-track-select" title="Subtitles">
+                <span aria-hidden="true">💬</span>
+                <span className="control-label">Subtitles</span>
+                <select
+                  value={activeHlsSubtitleTrack}
+                  onChange={(e) => {
+                    const hls = hlsRef.current
+                    if (hls) hls.subtitleTrack = Number(e.target.value)
+                  }}
+                >
+                  <option value={-1}>Off</option>
+                  {hlsSubtitleTracks.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
             )}
             {// VOD/series track selection is a pair of dropdowns rather than the click-to-cycle
             // buttons Live TV uses above — every option is visible up front, and switching either
