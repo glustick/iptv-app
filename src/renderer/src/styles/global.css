@@ -1043,6 +1043,22 @@ body.resizing-col {
   cursor: default;
 }
 
+/* The select's own closed-state background is deliberately transparent (the opaque fill lives
+   on .player-track-select, its parent) — but its *open* options list is a separate, browser-
+   rendered popup that doesn't inherit that parent fill at all. Left unstyled, Chromium renders
+   that popup with its own default (near-white) background while still inheriting this app's
+   light `color: var(--text)` from the select above, i.e. barely-visible light-on-light text —
+   reported live as "white on white." Setting both explicitly here is what actually fixes the
+   popup, independent of whatever the closed control looks like. */
+.player-track-select select option {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+.player-track-select select option:disabled {
+  color: var(--text-dim);
+}
+
 .player-track-select select:focus-visible {
   outline: 1px solid var(--accent);
   outline-offset: 2px;
