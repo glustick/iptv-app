@@ -31,6 +31,7 @@ import extractZip from 'extract-zip'
 import { createProxyServer, type UpstreamClientRequest } from './proxyServer'
 import { createFfmpegResolver } from './ffmpegResolver'
 import { createTranscodeService } from './transcodeService'
+import { createVpnRecoveryService } from './vpnRecoveryService'
 
 const execFileAsync = promisify(execFile)
 
@@ -45,6 +46,24 @@ const execFileAsync = promisify(execFile)
 const legacyUserDataPath = join(app.getPath('appData'), 'iptv-app')
 app.setName('AllisonIPTV')
 app.setPath('userData', legacyUserDataPath)
+
+// Required for the orphaned-VPN-session recovery below to be safe: without this, a second
+// concurrently running instance (e.g. the app opened twice) would find the first instance's own,
+// perfectly legitimate, still-in-use VPN recovery record and tear its live connection down out
+// from under it, having no way to tell "abandoned by a process that's gone" apart from "actively
+// owned by a process that's still very much running." A single-instance lock makes that
+// ambiguity impossible — if this process ever reaches app.whenReady() at all, no other instance
+// holds the lock, so any leftover record it finds there can only be a genuine orphan.
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindowRef) return
+    if (mainWindowRef.isMinimized()) mainWindowRef.restore()
+    mainWindowRef.focus()
+  })
+}
 
 // Electron's default behavior for either of these is a disruptive "A JavaScript error occurred
 // in the main process" dialog — and, depending on what's still running, sometimes takes the
@@ -61,6 +80,16 @@ process.on('unhandledRejection', (reason) => {
 })
 
 const store = new Store()
+
+// Deliberately not persisted through BACKUP_KEYS below — this is purely local recovery
+// bookkeeping for *this* machine's own openvpn process, not user data, and would be meaningless
+// (or actively wrong) on a different machine or after a restore. See vpnRecoveryService.ts's own
+// doc comment for why this exists and how it's used.
+const vpnRecoveryService = createVpnRecoveryService({
+  store,
+  connect: (opts, onConnect) => netConnect(opts, onConnect),
+  removeDir: (path) => rm(path, { recursive: true, force: true })
+})
 
 // Every top-level electron-store key a backup covers — kept as one list so export and import
 // can't drift out of sync with each other (export always writes exactly these keys; import only
@@ -407,6 +436,11 @@ async function cleanupVpnTempDir(): Promise<void> {
     await rm(vpnRuntime.tempDir, { recursive: true, force: true }).catch(() => {})
     vpnRuntime.tempDir = null
   }
+  // Called on every path that means "no longer this process's problem to clean up" (a failed
+  // connect, a clean disconnect, the management socket closing on its own) — so clearing the
+  // orphan-recovery record here too, rather than at each call site individually, keeps it from
+  // ever going stale while a connection this same process knows is already gone.
+  vpnRecoveryService.clearSession()
 }
 
 // macOS's TCC privacy protection blocks a root process spawned via sudo-prompt's elevated
@@ -539,6 +573,11 @@ async function startVpn(
     const routePreDownScript = await writeRouteScript(dir, 'route-pre-down', xtreamIp, 'delete', originalGateway)
     const managementPort = await findFreeLocalPort()
     const logPath = join(dir, 'openvpn.log')
+    // Recorded before openvpn is even spawned (not after a successful connect) so a crash at any
+    // point from here onward is still recoverable at next launch — terminateOrphanedSession
+    // treats "nothing listening on this port" as "already gone, nothing to clean up" either way,
+    // so recording early costs nothing if this attempt never actually gets OpenVPN running at all.
+    vpnRecoveryService.recordSession({ managementPort, tempDir: dir })
 
     // --script-security 2 is required for OpenVPN to run the route-up/route-pre-down scripts
     // at all — the default (1) only allows built-in executables, not user-defined scripts.
@@ -783,6 +822,13 @@ function buildAppMenu(): void {
 }
 
 app.whenReady().then(async () => {
+  // A rejected second instance already called app.quit() above, but that alone doesn't stop the
+  // rest of this synchronous setup from running before the quit sequence actually completes —
+  // without this guard, a second instance would still reach vpnRecoveryService's
+  // terminateOrphanedSession() and could tear down the first instance's own live, legitimate VPN
+  // connection out from under it (both processes share the same on-disk recovery record). See
+  // requestSingleInstanceLock's own comment at the top of this file.
+  if (!gotSingleInstanceLock) return
   electronApp.setAppUserModelId('com.iptv.app')
   buildAppMenu()
 
@@ -969,6 +1015,10 @@ app.whenReady().then(async () => {
       await rm(configDir, { recursive: true, force: true }).catch(() => {})
     }
   })
+
+  // Before the window ever appears — see vpnRecoveryService.ts's own doc comment for why this is
+  // safe and necessary even though this fresh process never itself started a VPN connection.
+  await vpnRecoveryService.terminateOrphanedSession()
 
   createWindow()
 
