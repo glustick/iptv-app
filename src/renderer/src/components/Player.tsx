@@ -650,11 +650,25 @@ export function Player(): JSX.Element | null {
       if (autoHideTimer.current) clearTimeout(autoHideTimer.current)
       autoHideTimer.current = setTimeout(() => setShowChannelBar(false), CHANNEL_BAR_AUTO_HIDE_MS)
     }
+    // Same idea, for a case document mouseout can't see either: fullscreen on one monitor while
+    // the cursor works in a different, unfocused window on a second one — the cursor never
+    // crosses this window's bounds at all, so neither mousemove nor mouseout ever fires, and the
+    // bar would otherwise stay open for as long as the other window has focus (confirmed live as
+    // a real, reported bug on exactly that two-monitor setup — see useHoverAutoHide's own doc
+    // comment for the identical fix applied there).
+    function onWindowBlur(): void {
+      if (!channelBarHovered.current) return
+      channelBarHovered.current = false
+      if (autoHideTimer.current) clearTimeout(autoHideTimer.current)
+      autoHideTimer.current = setTimeout(() => setShowChannelBar(false), CHANNEL_BAR_AUTO_HIDE_MS)
+    }
     container.addEventListener('mousemove', onMouseMove)
     document.addEventListener('mouseout', onDocumentMouseOut)
+    window.addEventListener('blur', onWindowBlur)
     return () => {
       container.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('mouseout', onDocumentMouseOut)
+      window.removeEventListener('blur', onWindowBlur)
     }
   }, [showChannelBar])
 
