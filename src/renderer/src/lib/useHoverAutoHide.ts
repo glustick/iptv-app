@@ -18,6 +18,17 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
  * window has focus, confirmed live as a real, reported bug on exactly that two-monitor setup.
  * Both arm the same hide timer leaving the zone normally would.
  *
+ * `window`'s own `focus` is the other half of that fix, confirmed live as a real, reported
+ * regression on Windows specifically: once blur hides something, Windows (unlike macOS) simply
+ * doesn't deliver `mousemove` to a window that isn't focused at all, at the OS level — so hovering
+ * back over the zone while the window is still unfocused does nothing at all, and nothing brings
+ * it back until the cursor happens to move *again* after the window is refocused. Treating
+ * regained focus the same as the "show on load" case (via the exact same reconciliation the
+ * external `show` setter already does — see its own comment below) fixes that: it reappears the
+ * instant the window is refocused if the cursor's last known position genuinely is in the zone,
+ * and otherwise still shows briefly before fading again, matching what a user regaining focus on
+ * the window would expect either way.
+ *
  * `isInZone` is read via a ref rather than as an effect dependency deliberately — the caller
  * almost never memoizes an inline arrow function like this, and a real bug confirmed live
  * elsewhere in this app (useNumericChannelEntry) showed exactly what goes wrong otherwise: a
@@ -67,6 +78,27 @@ export function useHoverAutoHide<T extends HTMLElement>(
   // actually last was, not just infer "outside" by default.
   const lastMouseEventRef = useRef<MouseEvent | null>(null)
 
+  // Declared before the effect below (which calls it on window focus) rather than after — safe
+  // regardless of source order since the effect's own callback only actually runs once React
+  // commits, well after this closure has been assigned, but keeping the reference straightforward
+  // to read matters here since the two are now genuinely coupled.
+  const show = useCallback(
+    (value: boolean) => {
+      if (hideTimerRef.current) {
+        clearTimeout(hideTimerRef.current)
+        hideTimerRef.current = null
+      }
+      setVisible(value)
+      if (!value) return
+      const container = containerRef.current
+      const lastEvent = lastMouseEventRef.current
+      const stillInZone = container && lastEvent ? isInZoneRef.current(lastEvent, container.getBoundingClientRect()) : false
+      hoveredRef.current = stillInZone
+      if (!stillInZone) hideTimerRef.current = setTimeout(() => setVisible(false), autoHideMs)
+    },
+    [autoHideMs, containerRef]
+  )
+
   useEffect(() => {
     const container = containerRef.current
     if (!container || !enabled) return
@@ -105,35 +137,26 @@ export function useHoverAutoHide<T extends HTMLElement>(
       armHideTimer()
     }
 
+    function onWindowFocus(): void {
+      show(true)
+    }
+
     container.addEventListener('mousemove', onMouseMove)
     document.addEventListener('mouseout', onDocumentMouseOut)
     window.addEventListener('blur', onWindowBlur)
+    window.addEventListener('focus', onWindowFocus)
     return () => {
       container.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('mouseout', onDocumentMouseOut)
       window.removeEventListener('blur', onWindowBlur)
+      window.removeEventListener('focus', onWindowFocus)
       if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
     }
     // containerRef is a stable ref object (from useRef); isInZone is deliberately read via
-    // isInZoneRef above instead of listed here — see this function's own doc comment.
+    // isInZoneRef above instead of listed here — see this function's own doc comment. show is
+    // deliberately omitted too — it only ever changes identity alongside autoHideMs/containerRef,
+    // which are already listed, so it can never actually go stale here.
   }, [containerRef, enabled, autoHideMs])
-
-  const show = useCallback(
-    (value: boolean) => {
-      if (hideTimerRef.current) {
-        clearTimeout(hideTimerRef.current)
-        hideTimerRef.current = null
-      }
-      setVisible(value)
-      if (!value) return
-      const container = containerRef.current
-      const lastEvent = lastMouseEventRef.current
-      const stillInZone = container && lastEvent ? isInZoneRef.current(lastEvent, container.getBoundingClientRect()) : false
-      hoveredRef.current = stillInZone
-      if (!stillInZone) hideTimerRef.current = setTimeout(() => setVisible(false), autoHideMs)
-    },
-    [autoHideMs, containerRef]
-  )
 
   return [visible, show]
 }

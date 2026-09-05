@@ -220,6 +220,11 @@ export function Player(): JSX.Element | null {
   // needlessly reset/rearm the timer) on every pixel; the position-tracking effect further
   // below manages the timer directly instead.
   const channelBarHovered = useRef(false)
+  // Every real mousemove over the player while the channel bar is open, regardless of whether it
+  // crossed the bar's own footprint boundary — read on window focus (see onWindowFocus below) to
+  // reconcile against where the cursor actually last was, the same reasoning useHoverAutoHide's
+  // own lastMouseEventRef documents.
+  const channelBarLastMouseEvent = useRef<MouseEvent | null>(null)
   const lastStreamKeyRef = useRef<string | null>(null)
   const [transcodeElapsedSeconds, setTranscodeElapsedSeconds] = useState(0)
 
@@ -624,6 +629,7 @@ export function Player(): JSX.Element | null {
     const container = playerRef.current
     if (!container || !showChannelBar) return
     function onMouseMove(e: MouseEvent): void {
+      channelBarLastMouseEvent.current = e
       const rect = container!.getBoundingClientRect()
       const overBar = e.clientY > rect.bottom - CHANNEL_BAR_HEIGHT_PX
       if (overBar === channelBarHovered.current) return
@@ -662,13 +668,35 @@ export function Player(): JSX.Element | null {
       if (autoHideTimer.current) clearTimeout(autoHideTimer.current)
       autoHideTimer.current = setTimeout(() => setShowChannelBar(false), CHANNEL_BAR_AUTO_HIDE_MS)
     }
+    // Reconciles against the last known cursor position on refocus — confirmed live as a real,
+    // reported regression on Windows specifically (see useHoverAutoHide's own doc comment for the
+    // full account): Windows simply doesn't deliver mousemove to an unfocused window at all, so a
+    // cursor genuinely still resting over the bar's footprint when the window regains focus would
+    // otherwise still get closed by whatever hide timer blur already armed, with nothing left to
+    // cancel it since no further mousemove ever arrives to say otherwise.
+    function onWindowFocus(): void {
+      const lastEvent = channelBarLastMouseEvent.current
+      const rect = container!.getBoundingClientRect()
+      const overBar = lastEvent ? lastEvent.clientY > rect.bottom - CHANNEL_BAR_HEIGHT_PX : false
+      channelBarHovered.current = overBar
+      if (overBar) {
+        if (autoHideTimer.current) {
+          clearTimeout(autoHideTimer.current)
+          autoHideTimer.current = null
+        }
+      } else if (!autoHideTimer.current) {
+        autoHideTimer.current = setTimeout(() => setShowChannelBar(false), CHANNEL_BAR_AUTO_HIDE_MS)
+      }
+    }
     container.addEventListener('mousemove', onMouseMove)
     document.addEventListener('mouseout', onDocumentMouseOut)
     window.addEventListener('blur', onWindowBlur)
+    window.addEventListener('focus', onWindowFocus)
     return () => {
       container.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('mouseout', onDocumentMouseOut)
       window.removeEventListener('blur', onWindowBlur)
+      window.removeEventListener('focus', onWindowFocus)
     }
   }, [showChannelBar])
 
