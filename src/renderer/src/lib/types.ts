@@ -172,6 +172,10 @@ export type EpgRowDensity = 'comfortable' | 'compact'
 // letterboxed, no cropping), 'cover' (fills the screen, crops overflow), 'fill' (stretches
 // exactly to the player's bounds, may distort aspect ratio).
 export type VideoScaleMode = 'contain' | 'cover' | 'fill'
+// How many simultaneous Live TV tiles Multi-View shows at once. Kept as a closed union (not a
+// bare number) to match this codebase's existing convention for every other persisted UI-mode
+// setting above, and because the layout CSS grid itself only has fixed rules for these two.
+export type MultiViewLayout = 2 | 4
 
 // A saved OpenVPN configuration — a user can save more than one (different providers, or
 // different servers from the same provider), but only one can ever be the *active* tunnel at a
@@ -210,6 +214,7 @@ export interface AppSettings {
   // profile is later deleted, so it doesn't dangle pointing at a config that no longer exists.
   lastVpnProfileId: string | null
   videoScaleMode: VideoScaleMode
+  multiViewLayout: MultiViewLayout
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -226,7 +231,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   vpnProfiles: [],
   activeVpnProfileId: null,
   lastVpnProfileId: null,
-  videoScaleMode: 'contain'
+  videoScaleMode: 'contain',
+  multiViewLayout: 2
 }
 
 export type VpnStatus = 'disconnected' | 'connecting' | 'connected' | 'error'

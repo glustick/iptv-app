@@ -8,6 +8,7 @@ import { Player } from './components/Player'
 import { PlayerErrorBoundary } from './components/PlayerErrorBoundary'
 import { SeriesModal } from './components/SeriesModal'
 import { EpgGridPanel } from './components/EpgGridPanel'
+import { MultiView } from './components/MultiView'
 import { PinPrompt } from './components/PinPrompt'
 import { SettingsPage } from './components/SettingsPage'
 import { AboutModal } from './components/AboutModal'
@@ -106,6 +107,11 @@ function App(): JSX.Element {
           // Live TV tab it replaces the separate list entirely instead of sitting docked
           // beside it — no point browsing the same channels twice.
           <EpgGridPanel fullWidth />
+        ) : viewMode === 'multiview' ? (
+          // Sidebar (category selection) stays mounted and visible here on purpose — its
+          // selected category is what scopes liveStreams for MultiView's own channel picker,
+          // the same way it already does for the Live TV tab itself.
+          <MultiView />
         ) : (
           <>
             <main className="content-area">

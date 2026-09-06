@@ -34,12 +34,13 @@ import type {
   EpisodeProgress,
   AppSettings,
   VpnStatus,
-  VpnProfile
+  VpnProfile,
+  MultiViewLayout
 } from '../lib/types'
 import { DEFAULT_SETTINGS, favoriteKey } from '../lib/types'
 import { shouldWarnOnVpnDisconnect } from '../lib/vpnStatus'
 
-export type ViewMode = 'live' | 'movies' | 'series' | 'favorites' | 'history'
+export type ViewMode = 'live' | 'movies' | 'series' | 'favorites' | 'history' | 'multiview'
 export type ConnectionStatus = 'idle' | 'connecting' | 'ready' | 'error'
 
 // Both the main EPG grid and the fullscreen channel-swap bar lazy-load per-row short EPG as
@@ -130,6 +131,18 @@ interface AppState {
 
   previewChannel: LiveStream | null
 
+  // Live TV only — one hls.js instance per filled slot, each a genuinely separate connection to
+  // the provider (see the gating note on singleConnectionAccount below, and MultiView.tsx's own
+  // comment for why this can only ever be verified end-to-end against synthetic local streams on
+  // this account). Sized to settings.multiViewLayout; index i is that grid position's channel,
+  // or null if empty. Deliberately kept here rather than as MultiView.tsx's own local state so
+  // switching away and back to the tab (which unmounts/remounts the tiles, tearing down and
+  // re-establishing each connection) restores the same assignments rather than starting empty.
+  multiViewSlots: (LiveStream | null)[]
+  // Which slot (if any) the channel picker overlay is currently choosing a channel for; null
+  // when the picker isn't open.
+  multiViewPickingSlot: number | null
+
   favorites: FavoriteEntry[]
   favoriteGroups: FavoriteGroup[]
   recentlyWatched: RecentlyWatchedEntry[]
@@ -214,6 +227,18 @@ interface AppState {
   openChannelPreview: (channel: LiveStream) => void
   closeChannelPreview: () => void
 
+  // Resizes multiViewSlots to match (existing assignments in still-valid indices survive;
+  // extra slots beyond the new, smaller size are dropped) and persists the choice.
+  setMultiViewLayout: (layout: MultiViewLayout) => void
+  // Opens the channel picker for this slot. Callers are expected to have already checked
+  // singleConnectionAccount themselves (see MultiView.tsx) — this action doesn't re-derive or
+  // enforce that gating itself, so it's not duplicated between the store and the one place that
+  // needs to explain *why* a slot can't be filled right now.
+  startPickingMultiViewSlot: (slotIndex: number) => void
+  cancelPickingMultiViewSlot: () => void
+  assignMultiViewChannel: (slotIndex: number, channel: LiveStream) => void
+  clearMultiViewSlot: (slotIndex: number) => void
+
   toggleFavorite: (entry: FavoriteEntry) => void
   isFavorited: (kind: MediaKind, id: number) => boolean
   // Assigns (or clears, via null) which group an already-favorited entry belongs to — a no-op
@@ -290,6 +315,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   previewChannel: null,
 
+  // Resized to match settings.multiViewLayout once init() has actually loaded settings (see
+  // there) — DEFAULT_SETTINGS.multiViewLayout (2) is just this field's own initial shape before
+  // that, consistent with every other field here that's properly populated by init().
+  multiViewSlots: Array(DEFAULT_SETTINGS.multiViewLayout).fill(null),
+  multiViewPickingSlot: null,
+
   favorites: [],
   favoriteGroups: [],
   recentlyWatched: [],
@@ -331,7 +362,15 @@ export const useAppStore = create<AppState>((set, get) => ({
         loadSettings()
       ])
       const activeId = await loadActiveProfileId()
-      set({ profiles, favorites, favoriteGroups, recentlyWatched, episodeProgress, settings })
+      set({
+        profiles,
+        favorites,
+        favoriteGroups,
+        recentlyWatched,
+        episodeProgress,
+        settings,
+        multiViewSlots: Array(settings.multiViewLayout).fill(null)
+      })
 
       if (typeof window !== 'undefined') {
         window.addEventListener('online', () => set({ isOnline: true }))
@@ -517,8 +556,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       searchTerm: ''
     })
     try {
+      // Multi-View's channel picker browses Live TV channels the exact same way the Live TV
+      // tab itself does (same Sidebar, same liveStreams), so it needs the same category fetch.
       const categories =
-        mode === 'live'
+        mode === 'live' || mode === 'multiview'
           ? await client.getLiveCategories()
           : mode === 'movies'
             ? await client.getVodCategories()
@@ -535,8 +576,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   requestCategory: (categoryId) => {
     const { settings, unlockedCategoryIds, viewMode } = get()
     // Namespaced by section since Xtream doesn't guarantee category_id uniqueness across
-    // Live/Movies/Series — see setCategoryLocked and loadSettings' migration.
-    const lockKey = categoryId ? `${viewMode}:${categoryId}` : null
+    // Live/Movies/Series — see setCategoryLocked and loadSettings' migration. Multi-View's
+    // channel picker browses the exact same Live TV categories as the 'live' tab itself (see
+    // setViewMode) — mapping it onto the same 'live' namespace here is what keeps a category
+    // locked under Live TV actually locked when reached this way too, instead of silently
+    // bypassable via a second, never-locked namespace of its own.
+    const lockSection = viewMode === 'multiview' ? 'live' : viewMode
+    const lockKey = categoryId ? `${lockSection}:${categoryId}` : null
     if (lockKey && settings.parentalPin && settings.lockedCategoryIds.includes(lockKey) && !unlockedCategoryIds.includes(lockKey)) {
       set({ pinPromptCategoryId: categoryId, pinPromptError: null })
       return
@@ -561,12 +607,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!client) return
     set({ selectedCategoryId: categoryId })
     try {
-      if (viewMode === 'live') {
+      if (viewMode === 'live' || viewMode === 'multiview') {
         const liveStreams = await client.getLiveStreams(categoryId ?? undefined)
         set({ liveStreams })
         // The EPG grid is now the primary way to browse live channels (there's no
         // separate clickable list next to it), so seed it with the first channel in
-        // the category instead of leaving it blank until something is clicked.
+        // the category instead of leaving it blank until something is clicked. Harmless
+        // for Multi-View too — nothing renders previewChannel there (EpgGridPanel isn't
+        // mounted in that mode), so this just primes state nothing currently reads.
         if (liveStreams.length > 0) get().openChannelPreview(liveStreams[0])
       } else if (viewMode === 'movies') {
         set({ vodStreams: await client.getVodStreams(categoryId ?? undefined) })
@@ -687,6 +735,28 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   closeChannelPreview: () => set({ previewChannel: null }),
+
+  setMultiViewLayout: (layout) => {
+    const { multiViewSlots } = get()
+    const resized = Array.from({ length: layout }, (_, i) => multiViewSlots[i] ?? null)
+    set({ multiViewSlots: resized })
+    get().updateSettings({ multiViewLayout: layout })
+  },
+
+  startPickingMultiViewSlot: (slotIndex) => set({ multiViewPickingSlot: slotIndex }),
+  cancelPickingMultiViewSlot: () => set({ multiViewPickingSlot: null }),
+
+  assignMultiViewChannel: (slotIndex, channel) => {
+    const slots = [...get().multiViewSlots]
+    slots[slotIndex] = channel
+    set({ multiViewSlots: slots, multiViewPickingSlot: null })
+  },
+
+  clearMultiViewSlot: (slotIndex) => {
+    const slots = [...get().multiViewSlots]
+    slots[slotIndex] = null
+    set({ multiViewSlots: slots })
+  },
 
   toggleFavorite: (entry) => {
     const key = favoriteKey(entry)

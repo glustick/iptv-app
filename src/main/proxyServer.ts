@@ -36,6 +36,54 @@ export interface UpstreamResponse {
   statusCode: number
   headers: Record<string, string | string[] | undefined>
   pipe(destination: ServerResponse): void
+  // Only needed for buffering a small .m3u8 playlist body to rewrite it (see rewriteM3u8ForProxy)
+  // — every other response (segments, API/EPG payloads) still just pipe()s straight through.
+  // Electron's real net.IncomingMessage genuinely supports these too, alongside pipe(); this is
+  // the same narrowed-structural-interface approach UpstreamClientRequest already documents.
+  on(event: 'data', listener: (chunk: Buffer) => void): this
+  on(event: 'end', listener: () => void): this
+}
+
+// M3U profiles route every request — including a channel's own per-stream playlist — through
+// /__fetch/<url-encoded absolute URL> (see its own route comment below), since unlike Xtream
+// there's no single base URL every request shares. That breaks the moment hls.js resolves a
+// RELATIVE reference *within* a fetched .m3u8 (a segment file, a nested variant playlist) —
+// relative-URL resolution happens against the URL the content was fetched from, which from the
+// browser's perspective is this proxy's own /__fetch/<one giant percent-encoded path segment>,
+// and replacing just that one segment (standard relative-resolution behavior) lands on
+// /__fetch/seg_00001.ts, not /__fetch/<the real upstream segment URL, encoded> — confirmed live
+// against a real synthetic multi-segment HLS channel, every segment request 502ing. Rewriting
+// every URI reference inside a fetched .m3u8 to its own already-correct, absolute-path
+// /__fetch/<encoded> form — resolved server-side against the real upstream URL, which this
+// proxy has and the browser doesn't — is what makes nested references transparent regardless of
+// how many playlist levels a provider's stream actually has. Also rewrites references that are
+// *already* absolute (e.g. a CDN-hosted segment) — left alone, the browser would fetch those
+// directly, bypassing this proxy (and whatever CORS/VPN handling it provides) entirely.
+export function rewriteM3u8ForProxy(body: string, sourceUrl: URL): string {
+  function rewriteRef(ref: string): string {
+    try {
+      const resolved = new URL(ref, sourceUrl)
+      return `/__fetch/${encodeURIComponent(resolved.href)}`
+    } catch {
+      return ref
+    }
+  }
+  return body
+    .split('\n')
+    .map((line) => {
+      const trimmed = line.trim()
+      if (!trimmed) return line
+      if (trimmed.startsWith('#')) {
+        // Tag lines can carry their own URI reference as an attribute — EXT-X-KEY (decryption),
+        // EXT-X-MAP (fragmented-MP4 init segment), EXT-X-MEDIA (alternate audio/subtitle
+        // renditions) all use this exact `URI="..."` shape.
+        return line.replace(/URI="([^"]+)"/g, (_match, ref: string) => `URI="${rewriteRef(ref)}"`)
+      }
+      // Any other non-blank, non-comment line is itself a URI — a segment or a nested/variant
+      // playlist reference, HLS's own convention for what a plain line in a playlist means.
+      return rewriteRef(trimmed)
+    })
+    .join('\n')
 }
 
 export interface ProxyServerDeps {
@@ -290,7 +338,34 @@ export function createProxyServer(deps: ProxyServerDeps): Server {
         delete headers['content-encoding']
         delete headers['content-length']
         res.writeHead(upstreamRes.statusCode, headers)
-        upstreamRes.pipe(res)
+        // Only the /__fetch/ path (M3U profiles) needs this — see rewriteM3u8ForProxy's own
+        // comment for why. The Xtream path (proxyTargetBase-relative) doesn't have the same
+        // problem: a channel's own relative segment references there already resolve correctly
+        // against this proxy's own origin, which is what proxyTargetBase-relative resolution
+        // already targets.
+        //
+        // Keyed strictly on the .m3u8 extension (the same signal isM3u8/getSourceUrl already
+        // use throughout this app, e.g. Player.tsx/useHlsAttach.ts's own sourceUrl.endsWith
+        // ('.m3u8') checks) rather than the response's content-type — confirmed live this
+        // matters: a real server can (and this app's own m3u.ts-facing test fixture did) serve
+        // the *outer*, application-level .m3u provider playlist with the exact same generic
+        // audio/x-mpegurl content-type an actual .m3u8 media playlist uses. Rewriting that outer
+        // file's own channel-entry lines here — before lib/m3uClient.ts's own parser ever sees
+        // them — would store an already-/__fetch/-wrapped URL as if it were the raw channel URL,
+        // which getStreamUrl() then wraps a second time, doubly-encoding it into something no
+        // longer parseable at all. The outer .m3u is deliberately left completely untouched:
+        // m3uClient.ts's own parser already resolves everything in it directly against the
+        // real playlist URL, with no proxy involvement needed.
+        const isM3u8Fetch = req.url?.startsWith('/__fetch/') && target.pathname.toLowerCase().endsWith('.m3u8')
+        if (isM3u8Fetch) {
+          const chunks: Buffer[] = []
+          upstreamRes.on('data', (chunk) => chunks.push(chunk))
+          upstreamRes.on('end', () => {
+            res.end(rewriteM3u8ForProxy(Buffer.concat(chunks).toString('utf8'), target))
+          })
+        } else {
+          upstreamRes.pipe(res)
+        }
       })
       upstreamReq.on('error', giveUpOrRetry)
       // `.pipe()` only carries data forward — it does nothing when the *destination* goes

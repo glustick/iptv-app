@@ -80,6 +80,69 @@ describe('locked-category namespacing (requestCategory / setCategoryLocked)', ()
 
     expect(useAppStore.getState().settings.lockedCategoryIds).toEqual(['live:7'])
   })
+
+  it("maps 'multiview' onto the same 'live' lock namespace, so a category locked under Live TV is still locked when reached via Multi-View's channel picker", () => {
+    useAppStore.setState({ settings: { ...DEFAULT_SETTINGS, parentalPin: '1234' }, viewMode: 'live' })
+    useAppStore.getState().setCategoryLocked('live:12', true)
+
+    useAppStore.setState({ viewMode: 'multiview' })
+    useAppStore.getState().requestCategory('12')
+
+    expect(useAppStore.getState().pinPromptCategoryId).toBe('12')
+  })
+})
+
+describe('Multi-View', () => {
+  const channelA = { stream_id: 1, name: 'Channel A' } as unknown as LiveStream
+  const channelB = { stream_id: 2, name: 'Channel B' } as unknown as LiveStream
+
+  beforeEach(() => {
+    useAppStore.setState({ multiViewSlots: [null, null], multiViewPickingSlot: null })
+  })
+
+  it('assigns a channel to the requested slot and closes the picker', () => {
+    useAppStore.getState().startPickingMultiViewSlot(1)
+    expect(useAppStore.getState().multiViewPickingSlot).toBe(1)
+
+    useAppStore.getState().assignMultiViewChannel(1, channelA)
+
+    expect(useAppStore.getState().multiViewSlots).toEqual([null, channelA])
+    expect(useAppStore.getState().multiViewPickingSlot).toBeNull()
+  })
+
+  it('cancelling the picker leaves every slot untouched', () => {
+    useAppStore.getState().startPickingMultiViewSlot(0)
+    useAppStore.getState().cancelPickingMultiViewSlot()
+
+    expect(useAppStore.getState().multiViewPickingSlot).toBeNull()
+    expect(useAppStore.getState().multiViewSlots).toEqual([null, null])
+  })
+
+  it('clears a single slot without disturbing the others', () => {
+    useAppStore.setState({ multiViewSlots: [channelA, channelB] })
+
+    useAppStore.getState().clearMultiViewSlot(0)
+
+    expect(useAppStore.getState().multiViewSlots).toEqual([null, channelB])
+  })
+
+  it('growing the layout pads with empty slots and keeps existing assignments', () => {
+    useAppStore.setState({ multiViewSlots: [channelA, channelB] })
+
+    useAppStore.getState().setMultiViewLayout(4)
+
+    expect(useAppStore.getState().multiViewSlots).toEqual([channelA, channelB, null, null])
+    expect(useAppStore.getState().settings.multiViewLayout).toBe(4)
+  })
+
+  it('shrinking the layout drops assignments that no longer fit', () => {
+    useAppStore.setState({ multiViewSlots: [channelA, channelB, null, null] })
+
+    useAppStore.getState().setMultiViewLayout(2)
+
+    expect(useAppStore.getState().multiViewSlots).toEqual([channelA, channelB])
+    expect(useAppStore.getState().settings.multiViewLayout).toBe(2)
+  })
 })
 
 describe('submitPinAttempt', () => {

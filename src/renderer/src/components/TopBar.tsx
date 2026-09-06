@@ -5,7 +5,8 @@ const TABS: { mode: ViewMode; label: string }[] = [
   { mode: 'movies', label: 'Movies' },
   { mode: 'series', label: 'Series' },
   { mode: 'favorites', label: 'Favorites' },
-  { mode: 'history', label: 'History' }
+  { mode: 'history', label: 'History' },
+  { mode: 'multiview', label: 'Multi-View' }
 ]
 
 export function TopBar(): JSX.Element {
@@ -44,11 +45,13 @@ export function TopBar(): JSX.Element {
         onChange={(e) => setSearchTerm(e.target.value)}
       />
 
-      {viewMode === 'live' && (
+      {(viewMode === 'live' || viewMode === 'multiview') && (
         // A hover-only title attribute on the input itself is easy to never discover — this
         // makes the limitation visible up front instead of only explaining it to someone who
         // happens to hover, since a search that silently "finds nothing" for an unbrowsed
-        // channel's programme otherwise reads as a bug, not an API limitation.
+        // channel's programme otherwise reads as a bug, not an API limitation. Multi-View's own
+        // channel picker filters by this exact same searchTerm against the exact same
+        // liveStreams, so it has the identical limitation.
         <span
           className="search-hint"
           title="Matches channel names, and programme titles for channels already scrolled into view"

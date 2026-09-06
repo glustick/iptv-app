@@ -2,7 +2,13 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { createServer as createHttpServer, request as httpRequest, type IncomingMessage, type Server } from 'http'
 import { EventEmitter } from 'events'
 import { AddressInfo } from 'net'
-import { createProxyServer, type ProxyServerDeps, type UpstreamClientRequest, type UpstreamResponse } from './proxyServer'
+import {
+  createProxyServer,
+  rewriteM3u8ForProxy,
+  type ProxyServerDeps,
+  type UpstreamClientRequest,
+  type UpstreamResponse
+} from './proxyServer'
 
 // Real Node http.request-backed stand-in for Electron's net.request, satisfying exactly the
 // UpstreamClientRequest surface createProxyServer actually calls (see proxyServer.ts's own doc
@@ -35,6 +41,13 @@ function createNodeHttpUpstreamRequest(opts: { method: string | undefined; url: 
         headers: res.headers,
         pipe: (dest) => {
           res.pipe(dest)
+        },
+        // res is a genuine Node http.IncomingMessage (a real Readable stream) — forwarding
+        // straight to its own .on() is enough to satisfy this narrowed interface's 'data'/'end',
+        // the same way pipe() above just forwards to its real pipe().
+        on: (event: 'data' | 'end', listener: (...args: any[]) => void) => {
+          res.on(event, listener)
+          return upstreamRes
         }
       }
       emitter.emit('response', upstreamRes)
@@ -137,6 +150,40 @@ async function startProxy(deps: ProxyServerDeps): Promise<Server> {
   openServers.push(server)
   return server
 }
+
+describe('rewriteM3u8ForProxy', () => {
+  const source = new URL('http://origin.example/hls/playlist.m3u8')
+
+  it('rewrites a plain relative segment line', () => {
+    const out = rewriteM3u8ForProxy('#EXTM3U\nseg_00000.ts\n', source)
+    expect(out).toContain(`/__fetch/${encodeURIComponent('http://origin.example/hls/seg_00000.ts')}`)
+  })
+
+  it('rewrites a relative reference one directory up', () => {
+    const out = rewriteM3u8ForProxy('#EXTM3U\n../seg_00000.ts\n', source)
+    expect(out).toContain(`/__fetch/${encodeURIComponent('http://origin.example/seg_00000.ts')}`)
+  })
+
+  it('rewrites an already-absolute segment line too', () => {
+    const out = rewriteM3u8ForProxy('#EXTM3U\nhttp://cdn.example/seg.ts\n', source)
+    expect(out).toContain(`/__fetch/${encodeURIComponent('http://cdn.example/seg.ts')}`)
+  })
+
+  it('rewrites a URI="..." attribute on a tag line (EXT-X-MAP, EXT-X-KEY, EXT-X-MEDIA, ...)', () => {
+    const out = rewriteM3u8ForProxy('#EXT-X-MAP:URI="init.mp4"\n', source)
+    expect(out).toBe(`#EXT-X-MAP:URI="/__fetch/${encodeURIComponent('http://origin.example/hls/init.mp4')}"\n`)
+  })
+
+  it('leaves plain comment/tag lines with no URI reference untouched', () => {
+    const out = rewriteM3u8ForProxy('#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n', source)
+    expect(out).toBe('#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n')
+  })
+
+  it('leaves blank lines untouched', () => {
+    const out = rewriteM3u8ForProxy('#EXTM3U\n\nseg.ts\n', source)
+    expect(out.split('\n')[1]).toBe('')
+  })
+})
 
 describe('createProxyServer', () => {
   it('proxies a request to the configured origin and stamps permissive CORS headers', async () => {
@@ -267,6 +314,99 @@ describe('createProxyServer', () => {
 
       expect(res.statusCode).toBe(502)
       expect(res.body).toContain('Invalid proxied URL')
+    })
+
+    // Found live, not anticipated: a real synthetic multi-segment HLS channel's every segment
+    // request 502'd once actually played. Root cause: hls.js resolves a *relative* reference
+    // inside a fetched .m3u8 (a segment file, a nested variant playlist) against the URL it was
+    // fetched from — which, from the browser's perspective, is this proxy's own
+    // /__fetch/<one giant percent-encoded path segment>. Standard relative-URL resolution
+    // replaces just that one segment, landing on /__fetch/seg_00001.ts instead of
+    // /__fetch/<the real upstream segment URL, encoded> — with nothing at that path to serve.
+    it('rewrites a relative segment reference inside a fetched .m3u8 into its own working /__fetch/ URL', async () => {
+      const { url: originUrl, server: origin } = await startMockOrigin((req, res) => {
+        if (req.url === '/hls/playlist.m3u8') {
+          res.writeHead(200, { 'content-type': 'application/vnd.apple.mpegurl' })
+          // A relative reference, exactly like a real provider's own multi-segment playlist —
+          // resolved against playlist.m3u8's own location, not the proxy's.
+          res.end('#EXTM3U\n#EXTINF:4,\nseg_00000.ts\n#EXT-X-ENDLIST\n')
+        } else if (req.url === '/hls/seg_00000.ts') {
+          res.writeHead(200, { 'content-type': 'video/mp2t' })
+          res.end('segment-bytes')
+        } else {
+          res.writeHead(404)
+          res.end()
+        }
+      })
+      openServers.push(origin)
+      const proxy = await startProxy(makeDeps({ getProxyTargetBase: () => null }))
+
+      const playlistRes = await fetchViaProxy(proxy, `/__fetch/${encodeURIComponent(`${originUrl}/hls/playlist.m3u8`)}`)
+      expect(playlistRes.statusCode).toBe(200)
+      const rewrittenLine = playlistRes.body.split('\n').find((l) => l.includes('seg_00000.ts'))
+      expect(rewrittenLine).toBe(`/__fetch/${encodeURIComponent(`${originUrl}/hls/seg_00000.ts`)}`)
+
+      // Confirms the rewritten reference is actually fetchable, not just correctly *shaped* —
+      // the real bug's symptom was a 502 on exactly this follow-up request.
+      const segmentRes = await fetchViaProxy(proxy, rewrittenLine!)
+      expect(segmentRes.statusCode).toBe(200)
+      expect(segmentRes.body).toBe('segment-bytes')
+    })
+
+    it('rewrites an already-absolute reference too, so it still goes through this proxy rather than being fetched directly', async () => {
+      const { url: originUrl, server: origin } = await startMockOrigin((req, res) => {
+        if (req.url === '/hls/playlist.m3u8') {
+          res.writeHead(200, { 'content-type': 'application/vnd.apple.mpegurl' })
+          res.end(`#EXTM3U\n#EXTINF:4,\n${originUrl}/cdn/seg_00000.ts\n#EXT-X-ENDLIST\n`)
+        } else {
+          res.writeHead(404)
+          res.end()
+        }
+      })
+      openServers.push(origin)
+      const proxy = await startProxy(makeDeps({ getProxyTargetBase: () => null }))
+
+      const res = await fetchViaProxy(proxy, `/__fetch/${encodeURIComponent(`${originUrl}/hls/playlist.m3u8`)}`)
+
+      expect(res.body).toContain(`/__fetch/${encodeURIComponent(`${originUrl}/cdn/seg_00000.ts`)}`)
+      expect(res.body).not.toContain(`${originUrl}/cdn/seg_00000.ts\n`)
+    })
+
+    it('leaves a non-.m3u8 /__fetch/ response (e.g. a segment) untouched', async () => {
+      const { url: originUrl, server: origin } = await startMockOrigin((_req, res) => {
+        res.writeHead(200, { 'content-type': 'video/mp2t' })
+        res.end('raw-binary-ish-content')
+      })
+      openServers.push(origin)
+      const proxy = await startProxy(makeDeps({ getProxyTargetBase: () => null }))
+
+      const res = await fetchViaProxy(proxy, `/__fetch/${encodeURIComponent(`${originUrl}/seg.ts`)}`)
+
+      expect(res.body).toBe('raw-binary-ish-content')
+    })
+
+    // Caught live, not anticipated: a real server can (and this app's own m3uClient.ts always
+    // does, via its "audio/x-mpegurl" fetch) serve the *outer*, application-level .m3u provider
+    // playlist with the exact same generic mpegurl-family content-type an actual .m3u8 HLS media
+    // playlist uses. An earlier version of this fix keyed off content-type as well as the
+    // extension, which rewrote the outer playlist's own channel-entry lines here — before
+    // lib/m3uClient.ts's own client-side parser ever saw them — storing an already-/__fetch/-
+    // wrapped URL as the "raw" channel URL. getStreamUrl() then wrapped that a second time,
+    // producing a doubly-encoded URL nothing could parse (every channel 502ing from the very
+    // first request, confirmed live). The extension is now the only signal (matching
+    // Player.tsx/useHlsAttach.ts's own sourceUrl.endsWith('.m3u8') convention) specifically so
+    // a same-content-type .m3u file is never mistaken for one.
+    it('leaves the outer .m3u provider playlist untouched even when served with an mpegurl-family content-type', async () => {
+      const { url: originUrl, server: origin } = await startMockOrigin((_req, res) => {
+        res.writeHead(200, { 'content-type': 'audio/x-mpegurl' })
+        res.end('#EXTM3U\n#EXTINF:-1,Channel One\nhttp://channel.example/ch1/playlist.m3u8\n')
+      })
+      openServers.push(origin)
+      const proxy = await startProxy(makeDeps({ getProxyTargetBase: () => null }))
+
+      const res = await fetchViaProxy(proxy, `/__fetch/${encodeURIComponent(`${originUrl}/playlist.m3u`)}`)
+
+      expect(res.body).toBe('#EXTM3U\n#EXTINF:-1,Channel One\nhttp://channel.example/ch1/playlist.m3u8\n')
     })
   })
 
