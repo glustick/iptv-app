@@ -1,9 +1,15 @@
-import { FormEvent, useState } from 'react'
+import { FormEvent, useEffect, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import type { ProfileKind } from '../lib/types'
 
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+}
+
 export function LoginScreen(): JSX.Element {
   const profiles = useAppStore((s) => s.profiles)
+  const activeProfile = useAppStore((s) => s.activeProfile)
   const status = useAppStore((s) => s.status)
   const error = useAppStore((s) => s.error)
   const addProfile = useAppStore((s) => s.addProfile)
@@ -19,6 +25,22 @@ export function LoginScreen(): JSX.Element {
   const [epgUrl, setEpgUrl] = useState('')
 
   const connecting = status === 'connecting'
+
+  // A silent "Connecting…" with no indication of elapsed time reads as a hang, not "still
+  // working on it" — the exact lesson this app already learned for the VOD playback fallback
+  // (see Player.tsx's own transcodeElapsedSeconds/formatElapsed). Confirmed live: a genuinely
+  // unreachable provider server takes a full 90s here (the proxy's 45s timeout, then one retry)
+  // before this screen ever shows *why* — with nothing but a static button label the whole time,
+  // that reads as broken even though the eventual error is completely accurate.
+  const [connectElapsedSeconds, setConnectElapsedSeconds] = useState(0)
+  useEffect(() => {
+    if (!connecting) {
+      setConnectElapsedSeconds(0)
+      return
+    }
+    const interval = setInterval(() => setConnectElapsedSeconds((s) => s + 1), 1000)
+    return () => clearInterval(interval)
+  }, [connecting])
 
   async function handleSubmit(e: FormEvent): Promise<void> {
     e.preventDefault()
@@ -116,7 +138,7 @@ export function LoginScreen(): JSX.Element {
           {error && <div className="login-error">{error}</div>}
 
           <button type="submit" disabled={connecting}>
-            {connecting ? 'Connecting…' : 'Connect'}
+            {connecting ? `Connecting… (${formatElapsed(connectElapsedSeconds)})` : 'Connect'}
           </button>
         </form>
 
@@ -129,7 +151,11 @@ export function LoginScreen(): JSX.Element {
                   <button className="profile-connect" onClick={() => connect(p.id)} disabled={connecting}>
                     {p.name}
                     <span className="profile-meta">
-                      {p.kind === 'm3u' ? p.m3uUrl : `${p.username}@${p.server}`}
+                      {connecting && activeProfile?.id === p.id
+                        ? `Connecting… (${formatElapsed(connectElapsedSeconds)})`
+                        : p.kind === 'm3u'
+                          ? p.m3uUrl
+                          : `${p.username}@${p.server}`}
                     </span>
                   </button>
                   <button className="profile-remove" onClick={() => removeProfile(p.id)} title="Remove">
