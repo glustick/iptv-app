@@ -1058,11 +1058,14 @@ app.whenReady().then(async () => {
   // only ever calls this from an explicit "Restart now" click, never automatically.
   ipcMain.handle('update:install', () => autoUpdater.quitAndInstall())
 
-  if (!is.dev) {
-    autoUpdater.checkForUpdates().catch((err) => {
-      console.error('[auto-update] check failed:', err)
-    })
-  }
+  // The launch-time check is triggered from the renderer's init() now (see useAppStore.ts),
+  // not fired from here. Firing it this early, straight from main, raced webContents' own
+  // load: if checkForUpdates() resolved (or update-available fired) before the page had
+  // attached its ipcRenderer listener, the event was simply lost — send() doesn't queue for a
+  // listener that isn't registered yet — so a real update could go unnoticed. Triggering it by
+  // IPC from init(), after its listeners are already registered, removes that race and lets the
+  // check gate the auto-connect step, per the request that the app check for an update before
+  // connecting.
 }).catch((err) => {
   console.error('[main] app initialization failed:', err)
 })

@@ -12,8 +12,19 @@ import { useHoverAutoHide } from '../lib/useHoverAutoHide'
 import type { VideoScaleMode } from '../lib/types'
 
 const MAX_NETWORK_RETRIES = 4
+// A short pause before actually retrying a failed network load, rather than reloading the
+// instant the previous attempt failed. Some causes of a "fatal" NETWORK_ERROR resolve on their
+// own within a couple of seconds (a live playlist's segment sequence briefly not reconciling
+// against the previous one, e.g. when the provider's own encoder restarts) — with no delay at
+// all, hls.js's own internal escalation of a non-fatal parsing/playlist issue straight to fatal
+// (there being no alternate quality level for it to switch to instead, per this app's own
+// established finding that these providers serve one flat rendition per channel — see
+// getLevelSwitchAction in hls.js's error-controller) could burn through every one of
+// MAX_NETWORK_RETRIES within a fraction of a second, giving up long before the same brief blip
+// would have cleared on its own.
+const NETWORK_RETRY_DELAY_MS = 2000
 const MAX_MEDIA_ERROR_RECOVERIES = 3
-const MEDIA_ERROR_RESET_AFTER_MS = 15000
+const ERROR_RESET_AFTER_MS = 15000
 const PROGRESS_SAVE_INTERVAL_MS = 5000
 const CHANNEL_BAR_AUTO_HIDE_MS = 6000
 // Mirrors .player-channel-bar's own fixed CSS height exactly — used to test cursor position
@@ -313,7 +324,8 @@ export function Player(): JSX.Element | null {
     beginTranscodeRun()
     let networkRetryCount = 0
     let mediaErrorRecoveryCount = 0
-    let mediaErrorResetTimer: ReturnType<typeof setTimeout> | null = null
+    let errorResetTimer: ReturnType<typeof setTimeout> | null = null
+    let networkRetryTimer: ReturnType<typeof setTimeout> | null = null
     let progressInterval: ReturnType<typeof setInterval> | null = null
     let silentAudioCheckTimer: ReturnType<typeof setInterval> | null = null
 
@@ -325,22 +337,27 @@ export function Player(): JSX.Element | null {
     const handleWaiting = (): void => {
       setBuffering(true)
       // Still recovering — don't let a stretch of genuinely uninterrupted playback earlier
-      // in the session forgive a media error that's actively recurring right now.
-      if (mediaErrorResetTimer) {
-        clearTimeout(mediaErrorResetTimer)
-        mediaErrorResetTimer = null
+      // in the session forgive an error that's actively recurring right now.
+      if (errorResetTimer) {
+        clearTimeout(errorResetTimer)
+        errorResetTimer = null
       }
     }
     const handlePlaying = (): void => {
       setBuffering(false)
-      // A stretch of real, uninterrupted playback means whatever caused an earlier media
-      // error is very likely no longer happening — reset the recovery count so a later,
-      // unrelated blip gets its own full set of attempts instead of inheriting exhausted
-      // ones from a problem that already resolved itself.
-      if (mediaErrorResetTimer) clearTimeout(mediaErrorResetTimer)
-      mediaErrorResetTimer = setTimeout(() => {
+      // A stretch of real, uninterrupted playback means whatever caused an earlier media or
+      // network error is very likely no longer happening — reset both recovery counts so a
+      // later, unrelated blip gets its own full set of attempts instead of inheriting counts
+      // left over from a problem that already resolved itself. Previously only the media-error
+      // count was ever reset here — networkRetryCount had no reset at all, so a channel that hit
+      // occasional, individually-harmless network blips spread out over a long viewing session
+      // (each one recovering fine on its own) could still eventually exhaust MAX_NETWORK_RETRIES
+      // and fatally give up on one that would otherwise have recovered exactly like the others.
+      if (errorResetTimer) clearTimeout(errorResetTimer)
+      errorResetTimer = setTimeout(() => {
         mediaErrorRecoveryCount = 0
-      }, MEDIA_ERROR_RESET_AFTER_MS)
+        networkRetryCount = 0
+      }, ERROR_RESET_AFTER_MS)
     }
     const handleCanPlay = (): void => setBuffering(false)
     video.addEventListener('waiting', handleWaiting)
@@ -399,7 +416,31 @@ export function Player(): JSX.Element | null {
         liveMaxLatencyDurationCount: isLiveContent ? (smooth ? 10 : 6) : 2_000_000,
         fragLoadingMaxRetry: 6,
         levelLoadingMaxRetry: 6,
-        manifestLoadingMaxRetry: 6
+        manifestLoadingMaxRetry: 6,
+        // Fixes a real, reported "levelParsingError, gave up after 4 tries" on a channel that
+        // was confirmed live to actually be fine (playable elsewhere). Root-caused directly
+        // against the real account/channel (Sky News, via this provider): the channel's live
+        // playlist doesn't refresh with a consistently mergeable segment-sequence timeline —
+        // essentially every reload disagreed with the previous one enough for hls.js's own
+        // internal reconciliation to call it a "media sequence mismatch" and, since this
+        // provider serves one flat rendition per channel (no alternate quality level for hls.js
+        // to fall back to instead — an established finding elsewhere in this app), immediately
+        // escalate that from a non-fatal event straight to a fatal one. Confirmed live that this
+        // isn't a rare blip either: it recurred roughly every playlist refresh (~10s) for over a
+        // minute straight, and neither a resume-in-place retry nor even a full teardown-and-
+        // recreate of the whole hls.js instance (tried first, before this) ever avoided hitting
+        // the identical mismatch again shortly after — the provider's playlist itself doesn't
+        // present a timeline hls.js's stricter reconciliation can ever agree with, regardless of
+        // how fresh the player's own state is. This is exactly what hls.js's own (off-by-
+        // default) ignorePlaylistParsingErrors option exists for: it only suppresses this class
+        // of "couldn't reconcile/verify structural details of an already-loading level's
+        // playlist" issue (checked directly against hls.js 1.7.1's own source — every one of its
+        // few emission sites is individually gated behind this exact flag), not a genuinely
+        // empty/malformed playlist (that still surfaces as its own distinct, ungated
+        // LEVEL_EMPTY_ERROR/MANIFEST_PARSING_ERROR either way) — i.e. it makes this player
+        // tolerate the same kind of playlist inconsistency other, less strict players already
+        // silently do, without also silencing a genuinely broken stream.
+        ignorePlaylistParsingErrors: true
       })
       hlsRef.current = hls
       hls.loadSource(sourceUrl)
@@ -470,7 +511,8 @@ export function Player(): JSX.Element | null {
           case Hls.ErrorTypes.NETWORK_ERROR:
             networkRetryCount += 1
             if (networkRetryCount <= MAX_NETWORK_RETRIES) {
-              hls.startLoad()
+              if (networkRetryTimer) clearTimeout(networkRetryTimer)
+              networkRetryTimer = setTimeout(() => hls.startLoad(), NETWORK_RETRY_DELAY_MS)
             } else {
               setPlaybackError(`Playback error: ${data.details} (gave up after ${MAX_NETWORK_RETRIES} retries)`)
               hls.destroy()
@@ -591,7 +633,8 @@ export function Player(): JSX.Element | null {
       video.removeEventListener('waiting', handleWaiting)
       video.removeEventListener('playing', handlePlaying)
       video.removeEventListener('canplay', handleCanPlay)
-      if (mediaErrorResetTimer) clearTimeout(mediaErrorResetTimer)
+      if (errorResetTimer) clearTimeout(errorResetTimer)
+      if (networkRetryTimer) clearTimeout(networkRetryTimer)
       if (progressInterval) clearInterval(progressInterval)
       if (silentAudioCheckTimer) clearInterval(silentAudioCheckTimer)
       if (nowPlaying.kind === 'series' && video.duration > 0 && !Number.isNaN(video.duration)) {

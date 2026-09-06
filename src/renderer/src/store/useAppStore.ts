@@ -428,6 +428,21 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({ updateError: payload.message, updateDownloadPercent: null })
       })
 
+      // Check for an update before auto-connecting, not just as a background courtesy check
+      // that happens to land at some point after. The listeners above are already registered
+      // by this point, so a genuine update-available event can't be lost to the race the old
+      // main-process-triggered check had (see src/main/index.ts). Bounded to a few seconds so
+      // an unreachable GitHub Releases API can't turn into the exact silent-hang feeling just
+      // fixed for the connect flow itself (see LoginScreen.tsx's connectElapsedSeconds) — if
+      // the check is still running when the timeout fires, connecting proceeds anyway and the
+      // prompt can still pop up later if the check eventually does resolve.
+      await Promise.race([
+        get()
+          .checkForUpdates()
+          .catch(() => {}),
+        new Promise<void>((resolve) => setTimeout(resolve, 5000))
+      ])
+
       const active = profiles.find((p) => p.id === activeId) ?? profiles[0]
       if (active) {
         await get().connect(active.id)

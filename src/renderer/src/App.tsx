@@ -86,7 +86,12 @@ function App(): JSX.Element {
   }, [])
 
   if (status !== 'ready') {
-    return <LoginScreen />
+    return (
+      <>
+        <LoginScreen />
+        <UpdatePrompt />
+      </>
+    )
   }
 
   return (
