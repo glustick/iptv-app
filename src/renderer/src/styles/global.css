@@ -2268,3 +2268,21 @@ body.resizing-col {
   display: flex;
   flex-direction: column;
 }
+
+/* This modal's own category + search controls — without these, narrowing the list down at all
+   meant reaching Sidebar/TopBar behind it, which .modal-overlay's own fixed, full-viewport
+   backdrop covers entirely (see MultiViewChannelPicker.tsx's own comment on why). */
+.multiview-picker-filters {
+  display: flex;
+  gap: 10px;
+  padding-bottom: 12px;
+  flex-shrink: 0;
+}
+
+.multiview-picker-filters .player-track-select select {
+  max-width: 220px;
+}
+
+.multiview-picker-search {
+  flex: 1;
+}
