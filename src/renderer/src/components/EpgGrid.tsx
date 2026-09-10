@@ -64,6 +64,8 @@ function EpgRow({
   const loadShortEpg = useAppStore((s) => s.loadShortEpg)
   const toggleEpgReminder = useAppStore((s) => s.toggleEpgReminder)
   const isEpgReminderSet = useAppStore((s) => s.isEpgReminderSet)
+  const toggleHiddenLiveChannel = useAppStore((s) => s.toggleHiddenLiveChannel)
+  const hiddenLiveStreamIds = useAppStore((s) => s.settings.hiddenLiveStreamIds)
 
   // Rows are virtualized, so this only fires for channels actually scrolled into view —
   // fine even against a 24k-channel catalog. This is also the workaround for providers
@@ -94,14 +96,27 @@ function EpgRow({
       onDoubleClick={() => onWatchFullscreen(channel)}
       title={`${channel.name} (double-click for fullscreen)`}
     >
-      <button className="epg-row-channel" onClick={() => onSelectChannel(channel)}>
-        {channel.stream_icon ? (
-          <img src={channel.stream_icon} alt="" loading="lazy" />
-        ) : (
-          <span className="epg-row-channel-icon placeholder" />
-        )}
-        <span className="epg-row-channel-name">{channel.name}</span>
-      </button>
+      <div className="epg-row-channel-wrap">
+        <button className="epg-row-channel" onClick={() => onSelectChannel(channel)}>
+          {channel.stream_icon ? (
+            <img src={channel.stream_icon} alt="" loading="lazy" />
+          ) : (
+            <span className="epg-row-channel-icon placeholder" />
+          )}
+          <span className="epg-row-channel-name">{channel.name}</span>
+        </button>
+        <button
+          className="epg-hide-button"
+          title={hiddenLiveStreamIds.includes(channel.stream_id) ? 'Show channel' : 'Hide channel'}
+          aria-label={hiddenLiveStreamIds.includes(channel.stream_id) ? `Show ${channel.name}` : `Hide ${channel.name}`}
+          onClick={(e) => {
+            e.stopPropagation()
+            toggleHiddenLiveChannel(channel.stream_id)
+          }}
+        >
+          {hiddenLiveStreamIds.includes(channel.stream_id) ? '👁' : '⊘'}
+        </button>
+      </div>
       <div className="epg-row-timeline">
         {listings === undefined && <div className="epg-row-loading" />}
         {visible.map((p, i) => {

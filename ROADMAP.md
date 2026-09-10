@@ -114,7 +114,9 @@ Recommended enhancements for future development, roughly ordered by priority wit
 
 - **0.7.53** fixed the Windows two-display overlay issue and added persistent EPG programme reminders. The player header, seek bar, channel information panel, and channel bar now also reconcile visibility on document visibility changes, while channel-bar timers consistently clear stale handles and re-check the last pointer position when the bar opens. Future EPG programmes have a bell control to set or remove a reminder; reminders persist in `epg_reminders`, are included in backups, expire automatically after the programme ends, and trigger one native desktop notification five minutes before start. Reminder timing and expiry are covered by dedicated unit tests. The dual-display behavior still needs confirmation on the user's Windows test machine.
 
-What's below is a fresh list, reflecting where things stand after 0.7.53.
+- **0.7.55** added hidden Live TV channels for large-catalog organization. Each EPG row can hide or restore a channel, hidden IDs persist in settings and backups, and the main guide, Multi-View picker, and fullscreen channel bar filter them consistently. A “Show hidden” mode keeps hidden channels recoverable without deleting favorites or history; store tests cover hiding, restoring, and toggling that mode.
+
+What's below is a fresh list, reflecting where things stand after 0.7.55.
 
 ## Player controls
 

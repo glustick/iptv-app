@@ -32,6 +32,9 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
   const detailPanelWidth = useAppStore((s) => s.settings.detailPanelWidth)
   const epgRowDensity = useAppStore((s) => s.settings.epgRowDensity)
   const updateSettings = useAppStore((s) => s.updateSettings)
+  const hiddenLiveStreamIds = useAppStore((s) => s.settings.hiddenLiveStreamIds)
+  const showHiddenLiveChannels = useAppStore((s) => s.showHiddenLiveChannels)
+  const setShowHiddenLiveChannels = useAppStore((s) => s.setShowHiddenLiveChannels)
   const openChannelPreview = useAppStore((s) => s.openChannelPreview)
   const findChannelByNumber = useAppStore((s) => s.findChannelByNumber)
   const compact = epgRowDensity === 'compact'
@@ -54,9 +57,10 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
 
   const debouncedSearch = useDebouncedValue(searchTerm, 150)
   const channels = useMemo(() => {
-    if (!debouncedSearch.trim()) return liveStreams
+    const source = showHiddenLiveChannels ? liveStreams : liveStreams.filter((c) => !hiddenLiveStreamIds.includes(c.stream_id))
+    if (!debouncedSearch.trim()) return source
     const needle = debouncedSearch.toLowerCase()
-    return liveStreams.filter((c) => {
+    return source.filter((c) => {
       if (c.name.toLowerCase().includes(needle)) return true
       // Also matches programme titles, but only for channels whose short EPG has already
       // been loaded (rows scrolled near at some point) — get_short_epg is per-channel with
@@ -66,7 +70,7 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
       const listings = shortEpgByStream[c.stream_id]
       return listings?.some((p) => p.title.toLowerCase().includes(needle)) ?? false
     })
-  }, [liveStreams, debouncedSearch, shortEpgByStream])
+  }, [liveStreams, debouncedSearch, shortEpgByStream, hiddenLiveStreamIds, showHiddenLiveChannels])
 
   // Suppress the small preview's own stream while the fullscreen player has one open for
   // the same account — most Xtream providers cap concurrent connections quite low (often
@@ -181,13 +185,20 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
           rowHeight={compact ? 26 : 40}
           compact={compact}
           extraNavControls={
-            <button
-              className="epg-density-toggle"
-              onClick={() => updateSettings({ epgRowDensity: compact ? 'comfortable' : 'compact' })}
-              title={compact ? 'Switch to comfortable row height' : 'Switch to compact row height (shows more channels)'}
-            >
-              {compact ? '▤ Comfortable' : '▤ Compact'}
-            </button>
+            <>
+              <button
+                className="epg-density-toggle"
+                onClick={() => updateSettings({ epgRowDensity: compact ? 'comfortable' : 'compact' })}
+                title={compact ? 'Switch to comfortable row height' : 'Switch to compact row height (shows more channels)'}
+              >
+                {compact ? '▤ Comfortable' : '▤ Compact'}
+              </button>
+              {hiddenLiveStreamIds.length > 0 && (
+                <button className="epg-density-toggle" onClick={() => setShowHiddenLiveChannels(!showHiddenLiveChannels)}>
+                  {showHiddenLiveChannels ? 'Hide hidden' : `Show hidden (${hiddenLiveStreamIds.length})`}
+                </button>
+              )}
+            </>
           }
           onSelectChannel={openChannelPreview}
           onWatchFullscreen={watchFullscreen}

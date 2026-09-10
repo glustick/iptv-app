@@ -35,7 +35,24 @@ beforeEach(() => {
     recentlyWatched: [],
     favorites: [],
     favoriteGroups: [],
-    numericChannelCatalog: null
+    numericChannelCatalog: null,
+    showHiddenLiveChannels: false
+  })
+})
+
+describe('hidden Live TV channels', () => {
+  it('hides and restores a channel while persisting the setting', () => {
+    useAppStore.getState().toggleHiddenLiveChannel(42)
+    expect(useAppStore.getState().settings.hiddenLiveStreamIds).toEqual([42])
+
+    useAppStore.getState().toggleHiddenLiveChannel(42)
+    expect(useAppStore.getState().settings.hiddenLiveStreamIds).toEqual([])
+  })
+
+  it('toggles showing hidden channels independently from the hidden list', () => {
+    useAppStore.getState().setShowHiddenLiveChannels(true)
+    expect(useAppStore.getState().showHiddenLiveChannels).toBe(true)
+    expect(useAppStore.getState().settings.hiddenLiveStreamIds).toEqual([])
   })
 })
 

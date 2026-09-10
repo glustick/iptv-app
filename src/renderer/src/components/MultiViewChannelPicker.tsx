@@ -34,19 +34,23 @@ export function MultiViewChannelPicker(): JSX.Element | null {
   const clockFormat = useAppStore((s) => s.settings.clockFormat)
   const assignMultiViewChannel = useAppStore((s) => s.assignMultiViewChannel)
   const cancelPickingMultiViewSlot = useAppStore((s) => s.cancelPickingMultiViewSlot)
+  const hiddenLiveStreamIds = useAppStore((s) => s.settings.hiddenLiveStreamIds)
+  const showHiddenLiveChannels = useAppStore((s) => s.showHiddenLiveChannels)
+  const setShowHiddenLiveChannels = useAppStore((s) => s.setShowHiddenLiveChannels)
 
   const debouncedSearch = useDebouncedValue(searchTerm, 150)
   // Same derivation EpgGridPanel uses for its own channel list — kept in sync deliberately so
   // this picker's search behaves identically to browsing Live TV directly.
   const channels = useMemo(() => {
-    if (!debouncedSearch.trim()) return liveStreams
+    const source = showHiddenLiveChannels ? liveStreams : liveStreams.filter((c) => !hiddenLiveStreamIds.includes(c.stream_id))
+    if (!debouncedSearch.trim()) return source
     const needle = debouncedSearch.toLowerCase()
-    return liveStreams.filter((c) => {
+    return source.filter((c) => {
       if (c.name.toLowerCase().includes(needle)) return true
       const listings = shortEpgByStream[c.stream_id]
       return listings?.some((p) => p.title.toLowerCase().includes(needle)) ?? false
     })
-  }, [liveStreams, debouncedSearch, shortEpgByStream])
+  }, [liveStreams, debouncedSearch, shortEpgByStream, hiddenLiveStreamIds, showHiddenLiveChannels])
 
   if (pickingSlot === null) return null
 
@@ -89,6 +93,11 @@ export function MultiViewChannelPicker(): JSX.Element | null {
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
           />
+          {hiddenLiveStreamIds.length > 0 && (
+            <button className="epg-density-toggle" onClick={() => setShowHiddenLiveChannels(!showHiddenLiveChannels)}>
+              {showHiddenLiveChannels ? 'Hide hidden' : `Show hidden (${hiddenLiveStreamIds.length})`}
+            </button>
+          )}
         </div>
         <EpgGrid
           channels={channels}

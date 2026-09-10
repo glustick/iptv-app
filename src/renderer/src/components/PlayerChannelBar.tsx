@@ -17,6 +17,8 @@ export function PlayerChannelBar(): JSX.Element {
   const play = useAppStore((s) => s.play)
   const playTimeshift = useAppStore((s) => s.playTimeshift)
   const openChannelPreview = useAppStore((s) => s.openChannelPreview)
+  const hiddenLiveStreamIds = useAppStore((s) => s.settings.hiddenLiveStreamIds)
+  const showHiddenLiveChannels = useAppStore((s) => s.showHiddenLiveChannels)
 
   // liveStreams reflects whatever category was last browsed in the main grid — if fullscreen
   // was entered some other way (e.g. picked from Favorites or Recently Watched), the actual
@@ -25,8 +27,9 @@ export function PlayerChannelBar(): JSX.Element {
   // given (see the store), so the stand-in built here gets real catch-up availability instead
   // of always guessing "no catch-up".
   const channels = useMemo(() => {
-    if (nowPlaying?.kind !== 'live') return liveStreams
-    if (liveStreams.some((c) => c.stream_id === nowPlaying.streamId)) return liveStreams
+    const filtered = showHiddenLiveChannels ? liveStreams : liveStreams.filter((c) => !hiddenLiveStreamIds.includes(c.stream_id))
+    if (nowPlaying?.kind !== 'live') return filtered
+    if (filtered.some((c) => c.stream_id === nowPlaying.streamId)) return filtered
     const placeholder: LiveStream = {
       num: -1,
       name: nowPlaying.name,
@@ -41,8 +44,8 @@ export function PlayerChannelBar(): JSX.Element {
       direct_source: '',
       tv_archive_duration: 0
     }
-    return [placeholder, ...liveStreams]
-  }, [liveStreams, nowPlaying])
+    return [placeholder, ...filtered]
+  }, [liveStreams, nowPlaying, hiddenLiveStreamIds, showHiddenLiveChannels])
 
   // Scrolled to once, right when the bar opens, so the channel actually playing is immediately
   // visible instead of the list always starting at the top — a lazy useState initializer rather

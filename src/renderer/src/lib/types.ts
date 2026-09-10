@@ -217,6 +217,7 @@ export interface AppSettings {
   lastVpnProfileId: string | null
   videoScaleMode: VideoScaleMode
   multiViewLayout: MultiViewLayout
+  hiddenLiveStreamIds: number[]
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -234,7 +235,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   activeVpnProfileId: null,
   lastVpnProfileId: null,
   videoScaleMode: 'contain',
-  multiViewLayout: 2
+  multiViewLayout: 2,
+  hiddenLiveStreamIds: []
 }
 
 export type VpnStatus = 'disconnected' | 'connecting' | 'connected' | 'error'

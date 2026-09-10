@@ -11,6 +11,9 @@ export function Sidebar(): JSX.Element | null {
   const unlockedCategoryIds = useAppStore((s) => s.unlockedCategoryIds)
   const sidebarWidth = useAppStore((s) => s.settings.sidebarWidth)
   const updateSettings = useAppStore((s) => s.updateSettings)
+  const hiddenCount = useAppStore((s) => s.settings.hiddenLiveStreamIds.length)
+  const showHidden = useAppStore((s) => s.showHiddenLiveChannels)
+  const setShowHidden = useAppStore((s) => s.setShowHiddenLiveChannels)
 
   const { width, startDrag } = useResizableWidth(sidebarWidth, 1, {
     min: 160,
@@ -34,6 +37,11 @@ export function Sidebar(): JSX.Element | null {
     // to scroll (240 categories on a real test account made this very reproducible).
     <div className="sidebar" style={{ width }}>
       <nav className="sidebar-scroll">
+        {viewMode === 'live' && hiddenCount > 0 && (
+          <button className={showHidden ? 'category active' : 'category'} onClick={() => setShowHidden(!showHidden)}>
+            {showHidden ? 'Hide hidden channels' : `Show hidden channels (${hiddenCount})`}
+          </button>
+        )}
         <button
           className={selectedCategoryId === null ? 'category active' : 'category'}
           onClick={() => requestCategory(null)}

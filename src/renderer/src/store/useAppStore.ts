@@ -145,6 +145,7 @@ interface AppState {
   // Which slot (if any) the channel picker overlay is currently choosing a channel for; null
   // when the picker isn't open.
   multiViewPickingSlot: number | null
+  showHiddenLiveChannels: boolean
 
   favorites: FavoriteEntry[]
   favoriteGroups: FavoriteGroup[]
@@ -242,6 +243,8 @@ interface AppState {
   cancelPickingMultiViewSlot: () => void
   assignMultiViewChannel: (slotIndex: number, channel: LiveStream) => void
   clearMultiViewSlot: (slotIndex: number) => void
+  toggleHiddenLiveChannel: (streamId: number) => void
+  setShowHiddenLiveChannels: (show: boolean) => void
 
   toggleFavorite: (entry: FavoriteEntry) => void
   isFavorited: (kind: MediaKind, id: number) => boolean
@@ -327,6 +330,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   // that, consistent with every other field here that's properly populated by init().
   multiViewSlots: Array(DEFAULT_SETTINGS.multiViewLayout).fill(null),
   multiViewPickingSlot: null,
+  showHiddenLiveChannels: false,
 
   favorites: [],
   favoriteGroups: [],
@@ -782,6 +786,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     slots[slotIndex] = null
     set({ multiViewSlots: slots })
   },
+
+  toggleHiddenLiveChannel: (streamId) => {
+    const hidden = get().settings.hiddenLiveStreamIds
+    const hiddenLiveStreamIds = hidden.includes(streamId) ? hidden.filter((id) => id !== streamId) : [...hidden, streamId]
+    get().updateSettings({ hiddenLiveStreamIds })
+  },
+
+  setShowHiddenLiveChannels: (show) => set({ showHiddenLiveChannels: show }),
 
   toggleFavorite: (entry) => {
     const key = favoriteKey(entry)
