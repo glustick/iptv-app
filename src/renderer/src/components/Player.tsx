@@ -654,10 +654,24 @@ export function Player(): JSX.Element | null {
   // left the bottom of the screen).
   useEffect(() => {
     if (autoHideTimer.current) clearTimeout(autoHideTimer.current)
-    if (!showChannelBar || channelBarHovered.current) return
-    autoHideTimer.current = setTimeout(() => setShowChannelBar(false), CHANNEL_BAR_AUTO_HIDE_MS)
+    autoHideTimer.current = null
+    if (!showChannelBar) return
+
+    const container = playerRef.current
+    const lastEvent = channelBarLastMouseEvent.current
+    if (container && lastEvent) {
+      channelBarHovered.current = lastEvent.clientY > container.getBoundingClientRect().bottom - CHANNEL_BAR_HEIGHT_PX
+    }
+    if (channelBarHovered.current) return
+
+    autoHideTimer.current = setTimeout(() => {
+      autoHideTimer.current = null
+      channelBarHovered.current = false
+      setShowChannelBar(false)
+    }, CHANNEL_BAR_AUTO_HIDE_MS)
     return () => {
       if (autoHideTimer.current) clearTimeout(autoHideTimer.current)
+      autoHideTimer.current = null
     }
   }, [showChannelBar, nowPlaying])
 
@@ -671,6 +685,14 @@ export function Player(): JSX.Element | null {
   useEffect(() => {
     const container = playerRef.current
     if (!container || !showChannelBar) return
+    function scheduleHide(): void {
+      if (autoHideTimer.current) clearTimeout(autoHideTimer.current)
+      autoHideTimer.current = setTimeout(() => {
+        autoHideTimer.current = null
+        channelBarHovered.current = false
+        setShowChannelBar(false)
+      }, CHANNEL_BAR_AUTO_HIDE_MS)
+    }
     function onMouseMove(e: MouseEvent): void {
       channelBarLastMouseEvent.current = e
       const rect = container!.getBoundingClientRect()
@@ -683,7 +705,7 @@ export function Player(): JSX.Element | null {
           autoHideTimer.current = null
         }
       } else {
-        autoHideTimer.current = setTimeout(() => setShowChannelBar(false), CHANNEL_BAR_AUTO_HIDE_MS)
+        scheduleHide()
       }
     }
     // Cursor leaving the whole window/document is a case the mousemove tracking above can never
@@ -696,8 +718,7 @@ export function Player(): JSX.Element | null {
     function onDocumentMouseOut(e: MouseEvent): void {
       if (e.relatedTarget !== null || !channelBarHovered.current) return
       channelBarHovered.current = false
-      if (autoHideTimer.current) clearTimeout(autoHideTimer.current)
-      autoHideTimer.current = setTimeout(() => setShowChannelBar(false), CHANNEL_BAR_AUTO_HIDE_MS)
+      scheduleHide()
     }
     // Same idea, for a case document mouseout can't see either: fullscreen on one monitor while
     // the cursor works in a different, unfocused window on a second one — the cursor never
@@ -708,8 +729,7 @@ export function Player(): JSX.Element | null {
     function onWindowBlur(): void {
       if (!channelBarHovered.current) return
       channelBarHovered.current = false
-      if (autoHideTimer.current) clearTimeout(autoHideTimer.current)
-      autoHideTimer.current = setTimeout(() => setShowChannelBar(false), CHANNEL_BAR_AUTO_HIDE_MS)
+      scheduleHide()
     }
     // Reconciles against the last known cursor position on refocus — confirmed live as a real,
     // reported regression on Windows specifically (see useHoverAutoHide's own doc comment for the
@@ -728,7 +748,7 @@ export function Player(): JSX.Element | null {
           autoHideTimer.current = null
         }
       } else if (!autoHideTimer.current) {
-        autoHideTimer.current = setTimeout(() => setShowChannelBar(false), CHANNEL_BAR_AUTO_HIDE_MS)
+        scheduleHide()
       }
     }
     container.addEventListener('mousemove', onMouseMove)
@@ -740,6 +760,8 @@ export function Player(): JSX.Element | null {
       document.removeEventListener('mouseout', onDocumentMouseOut)
       window.removeEventListener('blur', onWindowBlur)
       window.removeEventListener('focus', onWindowFocus)
+      if (autoHideTimer.current) clearTimeout(autoHideTimer.current)
+      autoHideTimer.current = null
     }
   }, [showChannelBar])
 

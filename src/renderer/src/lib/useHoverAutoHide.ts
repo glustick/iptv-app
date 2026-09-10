@@ -141,15 +141,28 @@ export function useHoverAutoHide<T extends HTMLElement>(
       show(true)
     }
 
+    function onVisibilityChange(): void {
+      if (document.visibilityState === 'hidden') {
+        if (hoveredRef.current) {
+          hoveredRef.current = false
+          armHideTimer()
+        }
+      } else {
+        show(true)
+      }
+    }
+
     container.addEventListener('mousemove', onMouseMove)
     document.addEventListener('mouseout', onDocumentMouseOut)
     window.addEventListener('blur', onWindowBlur)
     window.addEventListener('focus', onWindowFocus)
+    document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
       container.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('mouseout', onDocumentMouseOut)
       window.removeEventListener('blur', onWindowBlur)
       window.removeEventListener('focus', onWindowFocus)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
       if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
     }
     // containerRef is a stable ref object (from useRef); isInZone is deliberately read via
