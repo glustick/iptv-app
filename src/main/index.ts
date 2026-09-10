@@ -7,6 +7,7 @@ import {
   net,
   session,
   nativeImage,
+  Notification,
   Menu,
   safeStorage,
   type MenuItemConstructorOptions
@@ -109,6 +110,7 @@ const BACKUP_KEYS = [
   'favorite_groups',
   'recently_watched',
   'episode_progress',
+  'epg_reminders',
   'settings'
 ] as const
 
@@ -851,6 +853,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('store:get', (_event, key: string) => store.get(key))
   ipcMain.handle('store:set', (_event, key: string, value: unknown) => store.set(key, value))
   ipcMain.handle('store:delete', (_event, key: string) => store.delete(key))
+  ipcMain.handle('notification:show', (_event, title: string, body: string) => {
+    new Notification({ title, body }).show()
+  })
 
   // Exports every BACKUP_KEYS entry into one JSON file the user picks a location for — a plain
   // native Save dialog rather than anything auto-triggered, since this is meant for a deliberate

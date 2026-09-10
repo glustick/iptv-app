@@ -22,6 +22,7 @@ function App(): JSX.Element {
   const viewMode = useAppStore((s) => s.viewMode)
   const openAbout = useAppStore((s) => s.openAbout)
   const retryConnection = useAppStore((s) => s.retryConnection)
+  const checkEpgReminders = useAppStore((s) => s.checkEpgReminders)
 
   useEffect(() => {
     // init() catches its own errors internally (see useAppStore.ts) and always resolves —
@@ -29,6 +30,12 @@ function App(): JSX.Element {
     // no-floating-promises lint rule.
     void init()
   }, [init])
+
+  useEffect(() => {
+    void checkEpgReminders()
+    const interval = setInterval(() => void checkEpgReminders(), 30_000)
+    return () => clearInterval(interval)
+  }, [checkEpgReminders])
 
   // The About modal renders at App's root, outside the fullscreen player's own DOM subtree —
   // while truly fullscreen (the Fullscreen API only paints the fullscreened element and its

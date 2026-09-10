@@ -11,6 +11,10 @@ interface StoreAPI {
   delete: (key: string) => Promise<void>
 }
 
+interface NotificationsAPI {
+  show: (title: string, body: string) => Promise<void>
+}
+
 interface ProxyAPI {
   getBaseUrl: () => Promise<string>
   setTarget: (baseUrl: string) => Promise<void>
@@ -84,6 +88,7 @@ declare global {
     api: {
       app: AppInfoAPI
       store: StoreAPI
+      notifications: NotificationsAPI
       backup: BackupAPI
       proxy: ProxyAPI
       transcode: TranscodeAPI

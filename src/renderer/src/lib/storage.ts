@@ -1,4 +1,5 @@
 import type { XtreamProfile, FavoriteEntry, FavoriteGroup, RecentlyWatchedEntry, EpisodeProgress, AppSettings } from './types'
+import type { EpgReminder } from './reminders'
 import { DEFAULT_SETTINGS } from './types'
 
 const PROFILES_KEY = 'xtream_profiles'
@@ -8,6 +9,7 @@ const FAVORITE_GROUPS_KEY = 'favorite_groups'
 const RECENTLY_WATCHED_KEY = 'recently_watched'
 const EPISODE_PROGRESS_KEY = 'episode_progress'
 const SETTINGS_KEY = 'settings'
+const EPG_REMINDERS_KEY = 'epg_reminders'
 
 function hasElectronApi(): boolean {
   return typeof window !== 'undefined' && 'api' in window
@@ -83,6 +85,14 @@ export async function loadEpisodeProgress(): Promise<Record<string, EpisodeProgr
 
 export async function saveEpisodeProgress(progress: Record<string, EpisodeProgress>): Promise<void> {
   return saveJson(EPISODE_PROGRESS_KEY, progress)
+}
+
+export async function loadEpgReminders(): Promise<EpgReminder[]> {
+  return loadJson(EPG_REMINDERS_KEY, [])
+}
+
+export async function saveEpgReminders(reminders: EpgReminder[]): Promise<void> {
+  return saveJson(EPG_REMINDERS_KEY, reminders)
 }
 
 // The parental PIN used to be stored as plain text in electron-store's JSON file, on the same

@@ -16,6 +16,9 @@ const api = {
     set: (key: string, value: unknown) => ipcRenderer.invoke('store:set', key, value),
     delete: (key: string) => ipcRenderer.invoke('store:delete', key)
   },
+  notifications: {
+    show: (title: string, body: string) => ipcRenderer.invoke('notification:show', title, body) as Promise<void>
+  },
   backup: {
     // Resolves the chosen file path on success, null on cancel — never rejects for "the user
     // just closed the dialog," only for a genuine write failure.

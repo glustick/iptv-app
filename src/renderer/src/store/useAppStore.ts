@@ -16,6 +16,8 @@ import {
   saveRecentlyWatched,
   loadEpisodeProgress,
   saveEpisodeProgress,
+  loadEpgReminders,
+  saveEpgReminders,
   loadSettings,
   saveSettings
 } from '../lib/storage'
@@ -39,6 +41,7 @@ import type {
 } from '../lib/types'
 import { DEFAULT_SETTINGS, favoriteKey } from '../lib/types'
 import { shouldWarnOnVpnDisconnect } from '../lib/vpnStatus'
+import { createReminder, reminderId, splitDueReminders, type EpgReminder } from '../lib/reminders'
 
 export type ViewMode = 'live' | 'movies' | 'series' | 'favorites' | 'history' | 'multiview'
 export type ConnectionStatus = 'idle' | 'connecting' | 'ready' | 'error'
@@ -150,6 +153,7 @@ interface AppState {
   // tab's Refresh button show a busy state and avoid firing a second overlapping refresh.
   refreshingRecentlyWatched: boolean
   episodeProgress: Record<string, EpisodeProgress>
+  epgReminders: EpgReminder[]
   settings: AppSettings
   unlockedCategoryIds: string[]
   pinPromptCategoryId: string | null
@@ -253,6 +257,9 @@ interface AppState {
   refreshRecentlyWatched: () => Promise<void>
 
   updateEpisodeProgress: (key: string, positionSeconds: number, durationSeconds: number) => void
+  toggleEpgReminder: (streamId: number, channelName: string, program: ShortEpgProgram) => void
+  isEpgReminderSet: (streamId: number, programId: string) => boolean
+  checkEpgReminders: () => Promise<void>
 
   updateSettings: (patch: Partial<AppSettings>) => void
   setCategoryLocked: (categoryId: string, locked: boolean) => void
@@ -326,6 +333,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   recentlyWatched: [],
   refreshingRecentlyWatched: false,
   episodeProgress: {},
+  epgReminders: [],
   settings: DEFAULT_SETTINGS,
   unlockedCategoryIds: [],
   pinPromptCategoryId: null,
@@ -353,12 +361,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   // with nothing but a console error to say why.
   init: async () => {
     try {
-      const [profiles, favorites, favoriteGroups, recentlyWatched, episodeProgress, settings] = await Promise.all([
+      const [profiles, favorites, favoriteGroups, recentlyWatched, episodeProgress, epgReminders, settings] = await Promise.all([
         loadProfiles(),
         loadFavorites(),
         loadFavoriteGroups(),
         loadRecentlyWatched(),
         loadEpisodeProgress(),
+        loadEpgReminders(),
         loadSettings()
       ])
       const activeId = await loadActiveProfileId()
@@ -368,6 +377,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         favoriteGroups,
         recentlyWatched,
         episodeProgress,
+        epgReminders,
         settings,
         multiViewSlots: Array(settings.multiViewLayout).fill(null)
       })
@@ -888,6 +898,37 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     set({ episodeProgress: updated })
     saveEpisodeProgress(updated).catch((err) => console.error('[store] failed to save episode progress:', err))
+  },
+
+  toggleEpgReminder: (streamId, channelName, program) => {
+    const id = reminderId(streamId, program.id)
+    const reminders = get().epgReminders.some((reminder) => reminder.id === id)
+      ? get().epgReminders.filter((reminder) => reminder.id !== id)
+      : [...get().epgReminders, createReminder(streamId, channelName, program)]
+    set({ epgReminders: reminders })
+    void saveEpgReminders(reminders)
+  },
+
+  isEpgReminderSet: (streamId, programId) => get().epgReminders.some((reminder) => reminder.id === reminderId(streamId, programId)),
+
+  checkEpgReminders: async () => {
+    const now = Date.now()
+    const { due, active } = splitDueReminders(get().epgReminders, now)
+    if (active.length !== get().epgReminders.length) {
+      set({ epgReminders: active })
+      await saveEpgReminders(active)
+    }
+    if (due.length === 0 || typeof window === 'undefined' || !window.api?.notifications) return
+    const notifiedAt = Date.now()
+    const dueIds = new Set(due.map((reminder) => reminder.id))
+    const updated = active.map((reminder) => (dueIds.has(reminder.id) ? { ...reminder, notifiedAt } : reminder))
+    set({ epgReminders: updated })
+    await saveEpgReminders(updated)
+    await Promise.all(
+      due.map((reminder) =>
+        window.api.notifications.show('Programme reminder', `${reminder.programTitle} starts soon on ${reminder.channelName}`)
+      )
+    )
   },
 
   updateSettings: (patch) => {

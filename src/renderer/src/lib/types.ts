@@ -117,6 +117,8 @@ export interface ShortEpgProgram {
   stop_timestamp: string
 }
 
+export type { EpgReminder } from './reminders'
+
 export type MediaKind = 'live' | 'movie' | 'series'
 
 // A user-named way to organize favorites (e.g. "Sports", "Kids") — deliberately just an id/name

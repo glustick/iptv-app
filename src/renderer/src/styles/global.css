@@ -1807,6 +1807,27 @@ body.resizing-col {
   white-space: nowrap;
 }
 
+.epg-reminder-button {
+  position: absolute;
+  top: 3px;
+  z-index: 2;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: rgba(11, 13, 18, 0.75);
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.epg-reminder-button:hover,
+.epg-reminder-button--set {
+  color: var(--accent);
+}
+
 .epg-now-indicator {
   position: absolute;
   top: 0;

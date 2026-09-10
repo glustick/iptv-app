@@ -62,6 +62,8 @@ function EpgRow({
   const channel = channels[index]
   const shortEpgByStream = useAppStore((s) => s.shortEpgByStream)
   const loadShortEpg = useAppStore((s) => s.loadShortEpg)
+  const toggleEpgReminder = useAppStore((s) => s.toggleEpgReminder)
+  const isEpgReminderSet = useAppStore((s) => s.isEpgReminderSet)
 
   // Rows are virtualized, so this only fires for channels actually scrolled into view —
   // fine even against a 24k-channel catalog. This is also the workaround for providers
@@ -109,20 +111,37 @@ function EpgRow({
           const width = Math.max(pct(stopMs, windowStart, windowEnd) - left, 2)
           const isPast = stopMs <= now
           const canCatchUp = isPast && channel.tv_archive === 1
+          const isUpcoming = startMs > now
+          const reminderSet = isEpgReminderSet(channel.stream_id, p.id)
           return (
-            <button
-              key={`${p.id}-${i}`}
-              className={`epg-block${isPast ? ' epg-block--past' : ''}${canCatchUp ? ' epg-block--catchup' : ''}`}
-              style={{ left: `${left}%`, width: `${width}%` }}
-              title={`${formatTime(p.start_timestamp, clockFormat)} – ${formatTime(p.stop_timestamp, clockFormat)}\n${p.title}${p.description ? '\n' + p.description : ''}`}
-              onClick={(e) => {
-                e.stopPropagation()
-                if (canCatchUp) onWatchTimeshift(channel, p)
-                else onSelectChannel(channel)
-              }}
-            >
-              <span className="epg-block-label">{p.title}</span>
-            </button>
+            <span key={`${p.id}-${i}`}>
+              <button
+                className={`epg-block${isPast ? ' epg-block--past' : ''}${canCatchUp ? ' epg-block--catchup' : ''}`}
+                style={{ left: `${left}%`, width: `${width}%` }}
+                title={`${formatTime(p.start_timestamp, clockFormat)} – ${formatTime(p.stop_timestamp, clockFormat)}\n${p.title}${p.description ? '\n' + p.description : ''}`}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (canCatchUp) onWatchTimeshift(channel, p)
+                  else onSelectChannel(channel)
+                }}
+              >
+                <span className="epg-block-label">{p.title}</span>
+              </button>
+              {isUpcoming && (
+                <button
+                  className={`epg-reminder-button${reminderSet ? ' epg-reminder-button--set' : ''}`}
+                  style={{ left: `calc(${left + width}% - 28px)` }}
+                  title={reminderSet ? 'Remove programme reminder' : 'Set programme reminder'}
+                  aria-label={reminderSet ? `Remove reminder for ${p.title}` : `Set reminder for ${p.title}`}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    toggleEpgReminder(channel.stream_id, channel.name, p)
+                  }}
+                >
+                  {reminderSet ? '🔔' : '🔕'}
+                </button>
+              )}
+            </span>
           )
         })}
         {showNowLine && <div className="epg-now-indicator" style={{ left: `${nowPct}%` }} />}
