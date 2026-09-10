@@ -110,7 +110,9 @@ export function useHoverAutoHide<T extends HTMLElement>(
 
     function onMouseMove(e: MouseEvent): void {
       lastMouseEventRef.current = e
-      const rect = container!.getBoundingClientRect()
+      const currentContainer = containerRef.current
+      if (!currentContainer) return
+      const rect = currentContainer.getBoundingClientRect()
       const inZone = isInZoneRef.current(e, rect)
       if (inZone === hoveredRef.current) return
       hoveredRef.current = inZone
@@ -127,6 +129,13 @@ export function useHoverAutoHide<T extends HTMLElement>(
 
     function onDocumentMouseOut(e: MouseEvent): void {
       if (e.relatedTarget !== null || !hoveredRef.current) return
+      const currentContainer = containerRef.current
+      if (currentContainer && isInZoneRef.current(e, currentContainer.getBoundingClientRect())) {
+        // Cursor hit the outer boundary of the window while inside the reveal zone (e.g. y <= 0
+        // in fullscreen on Windows, where Chromium emits mouseout with relatedTarget: null).
+        // The cursor has not actually left the reveal zone — ignore this boundary exit.
+        return
+      }
       hoveredRef.current = false
       armHideTimer()
     }
@@ -152,13 +161,13 @@ export function useHoverAutoHide<T extends HTMLElement>(
       }
     }
 
-    container.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mousemove', onMouseMove)
     document.addEventListener('mouseout', onDocumentMouseOut)
     window.addEventListener('blur', onWindowBlur)
     window.addEventListener('focus', onWindowFocus)
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
-      container.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('mouseout', onDocumentMouseOut)
       window.removeEventListener('blur', onWindowBlur)
       window.removeEventListener('focus', onWindowFocus)

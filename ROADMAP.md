@@ -117,8 +117,9 @@ Recommended enhancements for future development, roughly ordered by priority wit
 - **0.7.54** added persistent EPG programme reminders. Future EPG programmes have a bell control to set or remove a reminder; reminders persist in `epg_reminders`, are included in backups, expire automatically after the programme ends, and trigger one native desktop notification five minutes before start. Reminder timing and expiry are covered by dedicated unit tests.
 
 - **0.7.55** added hidden Live TV channels for large-catalog organization. Each EPG row can hide or restore a channel, hidden IDs persist in settings and backups, and the main guide, Multi-View picker, and fullscreen channel bar filter them consistently. A “Show hidden” mode keeps hidden channels recoverable without deleting favorites or history; store tests cover hiding, restoring, and toggling that mode.
+- **0.7.56** fixed the player top toolbar failing to appear in fullscreen on Windows. Resynchronized `playerMounted` in `Player.tsx` on node unmount so `useHoverAutoHide` re-attaches listeners across subsequent stream opens; shifted mousemove listening to `window`; guarded `onDocumentMouseOut` against false-positive exits when cursor coordinates rest at the screen boundary (`clientY <= 0`); expanded the reveal zone to 15% with a 90px minimum; added a top-area click-to-reveal fallback in `handlePlayAreaClick`; and suppressed the Electron menu bar on enter-full-screen.
 
-What's below is a fresh list, reflecting where things stand after 0.7.55.
+What's below is a fresh list, reflecting where things stand after 0.7.56.
 
 ## Player controls
 

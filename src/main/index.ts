@@ -772,6 +772,15 @@ function createWindow(): void {
     mainWindow.show()
   })
 
+  // On Windows/Linux, entering fullscreen should completely suppress the menu bar so it
+  // doesn't intercept or steal mouse events near the top edge of the screen.
+  mainWindow.on('enter-full-screen', () => {
+    mainWindow.setMenuBarVisibility(false)
+  })
+  mainWindow.on('leave-full-screen', () => {
+    mainWindow.setMenuBarVisibility(false)
+  })
+
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url).catch((err) => console.error('[main] failed to open external URL:', err))
     return { action: 'deny' }

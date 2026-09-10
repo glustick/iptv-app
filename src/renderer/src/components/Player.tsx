@@ -93,10 +93,11 @@ const BOTTOM_ZONE_PX = 220
 // windowed or truly fullscreen.
 const SEEKBAR_REVEAL_ZONE_FRACTION = 0.2
 // The header reveals purely on cursor position, in both windowed and fullscreen mode and for
-// every content kind — cursor in the top 10% of the player shows it, moving away hides it again,
-// no click needed. A fraction of the player's own height (not a fixed pixel count) so it tracks
-// "top 10% of the player" regardless of window size.
-const HEADER_REVEAL_ZONE_FRACTION = 0.1
+// every content kind — cursor in the top 15% of the player (or at least 90px, to ensure a
+// generous hit target on scaled displays where 10% was barely taller than the 60px toolbar itself)
+// shows it, moving away hides it again, no click needed.
+const HEADER_REVEAL_ZONE_FRACTION = 0.15
+const HEADER_MIN_ZONE_PX = 90
 // Same idea as the header above, but along the left edge and live-only: cursor in the left 10%
 // of the player reveals the channel info panel (icon, name, current programme + description),
 // moving away hides it again. A fraction of the player's own width for the same reason the
@@ -182,9 +183,9 @@ export function Player(): JSX.Element | null {
   // three times rather than three separate bespoke mousemove effects each missing the same case.
   const [headerVisible, setHeaderVisible] = useHoverAutoHide(
     playerRef,
-    (e, rect) => e.clientY < rect.top + rect.height * HEADER_REVEAL_ZONE_FRACTION,
+    (e, rect) => e.clientY < rect.top + Math.max(rect.height * HEADER_REVEAL_ZONE_FRACTION, HEADER_MIN_ZONE_PX),
     HOVER_AUTO_HIDE_MS,
-    playerMounted
+    Boolean(playerMounted && nowPlaying)
   )
   const [cursorNearBottom] = useHoverAutoHide(
     playerRef,
@@ -1072,6 +1073,13 @@ export function Player(): JSX.Element | null {
       setShowChannelBar(!showChannelBar)
       return
     }
+    // Clicking near the top edge in live mode (where the toolbar lives) toggles/reveals
+    // the controls rather than pausing, providing an immediate mouse fallback if hover
+    // tracking is interrupted by OS boundary events.
+    if (e.clientY < Math.max(window.innerHeight * HEADER_REVEAL_ZONE_FRACTION, HEADER_MIN_ZONE_PX)) {
+      setHeaderVisible(!headerVisible)
+      return
+    }
     togglePlayPause()
   }
 
@@ -1080,7 +1088,8 @@ export function Player(): JSX.Element | null {
       className="player-overlay"
       ref={(node) => {
         playerRef.current = node
-        if (node && !playerMounted) setPlayerMounted(true)
+        const isAttached = node !== null
+        if (playerMounted !== isAttached) setPlayerMounted(isAttached)
       }}
     >
       <div className={`player-header player-header--overlay${!headerVisible ? ' player-header--hidden' : ''}`}>
