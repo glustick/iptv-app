@@ -232,7 +232,7 @@ export function SettingsPage(): JSX.Element | null {
           <h3>EPG sources</h3>
           <p className="settings-hint">
             Providers only send listings for roughly the rest of today per channel. Adding a full
-            guide (any XMLTV URL — e.g. one of iptv-org&apos;s country feeds at
+            guide (any XMLTV URL, plain or .xml.gz — e.g. one of iptv-org&apos;s country feeds at
             iptv-org.github.io/epg) fills in later days and channels your provider doesn&apos;t
             cover. Channels are matched by EPG id first, then by name; your provider&apos;s own
             listings always win where they exist.

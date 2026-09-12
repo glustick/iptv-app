@@ -156,6 +156,26 @@ export function mergeShortEpg(primary: ShortEpgProgram[], secondary: ShortEpgPro
   )
 }
 
+/**
+ * Decodes a fetched EPG document's bytes, transparently handling the gzipped form many guide
+ * providers serve (.xml.gz files — where the gzip is the file itself, NOT a Content-Encoding
+ * transfer fetch would already have decompressed). Detection is by gzip magic bytes (1f 8b)
+ * rather than URL extension or content-type: providers label these inconsistently (text/plain,
+ * application/octet-stream, …) and URLs carry query strings, but the two leading bytes are
+ * unambiguous — plain XML never starts with them, and a transfer-level gzip has already been
+ * transparently decoded by fetch before the bytes get here, so there's no double-decompression
+ * risk either.
+ */
+export async function decodeMaybeGzipBytes(buffer: ArrayBuffer): Promise<string> {
+  if (buffer.byteLength < 2) return new TextDecoder().decode(buffer)
+  const head = new Uint8Array(buffer, 0, 2)
+  if (head[0] === 0x1f && head[1] === 0x8b) {
+    const stream = new Blob([buffer]).stream().pipeThrough(new DecompressionStream('gzip'))
+    return new Response(stream).text()
+  }
+  return new TextDecoder().decode(buffer)
+}
+
 function normalizeName(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, '')
 }

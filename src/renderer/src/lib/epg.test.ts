@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest'
+import { gzipSync } from 'node:zlib'
 import {
   parseXmltv,
   getCurrentProgramme,
   getNextProgramme,
   xmltvProgrammesToShort,
   mergeShortEpg,
-  matchXmltvChannels
+  matchXmltvChannels,
+  decodeMaybeGzipBytes
 } from './epg'
 import type { LiveStream, ShortEpgProgram } from './types'
 
@@ -192,6 +194,26 @@ describe('mergeShortEpg', () => {
       { ...shortProgram('Bad', 0, 0), start_timestamp: 'not-a-number', stop_timestamp: 'nope' }
     ])
     expect(merged.map((p) => p.title)).toEqual(['P'])
+  })
+})
+
+describe('decodeMaybeGzipBytes', () => {
+  it('decompresses a gzip-compressed guide (the .xml.gz form many providers serve)', async () => {
+    const gzipped = gzipSync(Buffer.from(SAMPLE_XML, 'utf8'))
+    const xml = await decodeMaybeGzipBytes(gzipped.buffer.slice(gzipped.byteOffset, gzipped.byteOffset + gzipped.byteLength))
+    expect(xml).toBe(SAMPLE_XML)
+    // And the decompressed output parses as a normal guide.
+    expect(parseXmltv(xml).channels.get('chan.one')?.displayName).toBe('Channel One')
+  })
+
+  it('passes plain XML through untouched', async () => {
+    const xml = await decodeMaybeGzipBytes(new TextEncoder().encode(SAMPLE_XML).buffer)
+    expect(xml).toBe(SAMPLE_XML)
+  })
+
+  it('handles degenerate short bodies without throwing', async () => {
+    expect(await decodeMaybeGzipBytes(new ArrayBuffer(0))).toBe('')
+    expect(await decodeMaybeGzipBytes(new Uint8Array([0x3c]).buffer)).toBe('<')
   })
 })
 

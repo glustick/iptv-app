@@ -7,6 +7,7 @@ import {
   matchXmltvChannels,
   mergeShortEpg,
   xmltvProgrammesToShort,
+  decodeMaybeGzipBytes,
   type EpgData
 } from '../lib/epg'
 import {
@@ -747,15 +748,16 @@ export const useAppStore = create<AppState>((set, get) => ({
         // longer means "today's window is all you get."
       }
     }
-    // 2. User-added third-party guides (any XMLTV URL), fetched through the same /__fetch/
-    //    passthrough every other cross-origin request uses. Sources load sequentially — a slow
-    //    one shouldn't hold the earlier ones' data hostage.
+    // 2. User-added third-party guides (any XMLTV URL — plain XML or the .xml.gz form many
+    //    guide providers serve, decompressed transparently), fetched through the same
+    //    /__fetch/ passthrough every other cross-origin request uses. Sources load
+    //    sequentially — a slow one shouldn't hold the earlier ones' data hostage.
     for (const url of settings.customEpgUrls) {
       try {
         if (!proxyBase) throw new Error('Proxy base URL not available')
         const res = await fetch(`${proxyBase}/__fetch/${encodeURIComponent(url)}`)
         if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`)
-        sources.push(parseXmltv(await res.text()))
+        sources.push(parseXmltv(await decodeMaybeGzipBytes(await res.arrayBuffer())))
       } catch (err) {
         console.error(`[epg] failed to load custom EPG source ${url}:`, err)
       }

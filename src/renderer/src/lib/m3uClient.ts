@@ -1,5 +1,5 @@
 import { parseM3u, type M3uChannel } from './m3u'
-import { parseXmltv, xmltvProgrammesToShort, type EpgData } from './epg'
+import { parseXmltv, xmltvProgrammesToShort, decodeMaybeGzipBytes, type EpgData } from './epg'
 import type { IptvClient } from './iptvClient'
 import type {
   XtreamAuthResponse,
@@ -56,7 +56,10 @@ export class M3uClient implements IptvClient {
     if (!res.ok) {
       throw new Error(`${label} request failed: ${res.status} ${res.statusText}`)
     }
-    return res.text()
+    // Gzip-sniffed so an EPG URL in the common .xml.gz form just works — x-tvg-url values
+    // point at those constantly. Harmless for the playlist itself: plain text never starts
+    // with the gzip magic bytes, so that path is byte-for-byte identical to before.
+    return decodeMaybeGzipBytes(await res.arrayBuffer())
   }
 
   /** Live TV only — see the class doc comment for why there's no VOD/series equivalent here. */

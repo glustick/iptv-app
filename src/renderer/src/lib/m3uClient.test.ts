@@ -43,7 +43,9 @@ function mockFetchText(byUrl: (url: string) => { ok: boolean; status?: number; t
       ok: result.ok,
       status: result.status ?? (result.ok ? 200 : 500),
       statusText: result.ok ? 'OK' : 'Error',
-      text: () => Promise.resolve(result.text)
+      text: () => Promise.resolve(result.text),
+      // fetchText reads bytes (for gzip sniffing) — provide the same text as UTF-8 bytes.
+      arrayBuffer: () => Promise.resolve(new TextEncoder().encode(result.text).buffer)
     })
   }) as unknown as typeof fetch
 }
