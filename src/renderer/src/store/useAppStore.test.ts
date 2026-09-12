@@ -33,7 +33,11 @@ beforeEach(() => {
     shortEpgByStream: {},
     shortEpgFetchedAt: {},
     epgSources: [],
+    epgSourceLabels: [],
+    providerGuideAvailable: null,
     epgSourcesStatus: 'idle',
+    epgSourceIssues: {},
+    epgSourceMatchStats: [],
     nowPlaying: null,
     recentlyWatched: [],
     favorites: [],
@@ -383,6 +387,135 @@ describe('short-EPG concurrency queue (loadShortEpg)', () => {
       'Pool Tomorrow'
     ])
     expect(useAppStore.getState().shortEpgFetchedAt[90105]).toBeGreaterThan(0)
+  })
+})
+
+describe('EPG source loading (loadEpgSources)', () => {
+  const GOOD_XML = `<?xml version="1.0"?>
+<tv>
+  <channel id="c1"><display-name>Channel One</display-name></channel>
+  <programme start="20300101120000 +0000" stop="20300101130000 +0000" channel="c1"><title>Show</title></programme>
+</tv>`
+
+  function mockFetchBody(byUrl: (url: string) => { ok: boolean; status?: number; body: string }): void {
+    global.fetch = vi.fn((url: string) => {
+      const result = byUrl(url)
+      return Promise.resolve({
+        ok: result.ok,
+        status: result.status ?? (result.ok ? 200 : 500),
+        statusText: result.ok ? 'OK' : 'Error',
+        arrayBuffer: async () => new TextEncoder().encode(result.body).buffer
+      })
+    }) as unknown as typeof fetch
+  }
+
+  function makeClient(): XtreamClient {
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    // Simulates the common provider that blocks xmltv.php — that path must stay silent.
+    vi.spyOn(client, 'getFullEpgXml').mockRejectedValue(new Error('403 Forbidden'))
+    return client
+  }
+
+  function makeLiveStream(streamId: number, name: string): LiveStream {
+    return {
+      num: streamId,
+      name,
+      stream_type: 'live',
+      stream_id: streamId,
+      stream_icon: '',
+      epg_channel_id: null,
+      added: '',
+      category_id: '1',
+      custom_sid: null,
+      tv_archive: 0,
+      direct_source: '',
+      tv_archive_duration: 0
+    }
+  }
+
+  it('flags a source that loads but has no channels or programmes (wrong format), visibly', async () => {
+    mockFetchBody(() => ({ ok: true, body: 'Weekly Schedule\nMonday: News at 6\n' }))
+    useAppStore.setState({
+      client: makeClient(),
+      proxyBase: 'http://proxy',
+      settings: { ...DEFAULT_SETTINGS, customEpgUrls: ['http://guides.example.com/schedule.txt'] }
+    })
+
+    await useAppStore.getState().loadEpgSources()
+
+    expect(useAppStore.getState().epgSourceIssues['http://guides.example.com/schedule.txt']).toMatch(
+      /didn't look like an XMLTV guide/
+    )
+    expect(useAppStore.getState().epgSources).toHaveLength(0)
+  })
+
+  it('flags an HTTP failure per source and keeps loading the others', async () => {
+    mockFetchBody((url) => (url.includes('bad') ? { ok: false, status: 503, body: '' } : { ok: true, body: GOOD_XML }))
+    useAppStore.setState({
+      client: makeClient(),
+      proxyBase: 'http://proxy',
+      settings: {
+        ...DEFAULT_SETTINGS,
+        customEpgUrls: ['http://guides.example.com/bad.xml', 'http://guides.example.com/good.xml']
+      }
+    })
+
+    await useAppStore.getState().loadEpgSources()
+
+    expect(useAppStore.getState().epgSourceIssues['http://guides.example.com/bad.xml']).toMatch(
+      /Couldn't load: HTTP 503/
+    )
+    expect(useAppStore.getState().epgSourceIssues['http://guides.example.com/good.xml']).toBeUndefined()
+    expect(useAppStore.getState().epgSources).toHaveLength(1)
+  })
+
+  it('clears a prior issue once the same source loads as a real guide', async () => {
+    let body = 'not a guide'
+    mockFetchBody(() => ({ ok: true, body }))
+    useAppStore.setState({
+      client: makeClient(),
+      proxyBase: 'http://proxy',
+      settings: { ...DEFAULT_SETTINGS, customEpgUrls: ['http://guides.example.com/g.xml'] }
+    })
+
+    await useAppStore.getState().loadEpgSources()
+    expect(useAppStore.getState().epgSourceIssues['http://guides.example.com/g.xml']).toBeDefined()
+
+    body = GOOD_XML
+    await useAppStore.getState().loadEpgSources()
+    expect(useAppStore.getState().epgSourceIssues['http://guides.example.com/g.xml']).toBeUndefined()
+    expect(useAppStore.getState().epgSources).toHaveLength(1)
+  })
+
+  it('reports per-source match statistics, including unmatched channel names', async () => {
+    mockFetchBody(() => ({ ok: true, body: GOOD_XML }))
+    useAppStore.setState({
+      client: makeClient(),
+      proxyBase: 'http://proxy',
+      settings: { ...DEFAULT_SETTINGS, customEpgUrls: ['http://guides.example.com/g.xml'] },
+      liveStreams: [
+        { ...makeLiveStream(31, 'Channel One'), epg_channel_id: null }, // name match
+        { ...makeLiveStream(32, 'Totally Different Channel'), epg_channel_id: null } // no match
+      ]
+    })
+
+    await useAppStore.getState().loadEpgSources()
+
+    const stats = useAppStore.getState().epgSourceMatchStats
+    // Provider guide (blocked in makeClient) reports unavailable; the custom source reports
+    // 1-of-2 matched by name, with the unmatched channel listed by name.
+    expect(stats[0]).toMatchObject({ source: 'Provider guide (xmltv.php)', available: false })
+    expect(stats[1]).toMatchObject({
+      source: 'http://guides.example.com/g.xml',
+      available: true,
+      loadedChannels: 2,
+      matched: 1,
+      byId: 0,
+      byName: 1
+    })
+    expect(stats[1].unmatchedNames).toEqual(['Totally Different Channel'])
+    // And the matched channel actually got prefilled into the grid's cache.
+    expect(useAppStore.getState().shortEpgByStream[31]?.[0]?.title).toBe('Show')
   })
 })
 

@@ -60,6 +60,12 @@ describe('parseXmltv', () => {
     expect(channels.size).toBe(0)
     expect(programmesByChannel.size).toBe(0)
   })
+
+  it('skips a leading BOM/preamble before the XML root (.txt files that are really XMLTV)', () => {
+    const { channels } = parseXmltv(`\uFEFFWeekly schedule — provider X (do not edit)\n${SAMPLE_XML}`)
+    expect(channels.get('chan.one')?.displayName).toBe('Channel One')
+    expect(channels.get('chan.two')?.displayName).toBe('Channel Two')
+  })
 })
 
 describe('getCurrentProgramme / getNextProgramme', () => {
@@ -223,14 +229,14 @@ describe('matchXmltvChannels', () => {
     <channel id="NameMatch.uk"><display-name>BBC One</display-name></channel>
   </tv>`)
 
-  it('matches by exact epg_channel_id first', () => {
+  it('matches by exact epg_channel_id first, reporting the method', () => {
     const matches = matchXmltvChannels([makeStream({ stream_id: 7, name: 'Whatever', epg_channel_id: 'provider.1' })], guide)
-    expect(matches.get(7)).toBe('provider.1')
+    expect(matches.get(7)).toEqual({ channelId: 'provider.1', method: 'id' })
   })
 
-  it('falls back to a normalized display-name match when the id is absent', () => {
+  it('falls back to a normalized display-name match when the id is absent, reporting the method', () => {
     const matches = matchXmltvChannels([makeStream({ stream_id: 8, name: 'BBC  One!' })], guide)
-    expect(matches.get(8)).toBe('NameMatch.uk')
+    expect(matches.get(8)).toEqual({ channelId: 'NameMatch.uk', method: 'name' })
   })
 
   it('leaves unmatched streams out of the result entirely', () => {

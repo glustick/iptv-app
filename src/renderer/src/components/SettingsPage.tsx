@@ -28,6 +28,8 @@ export function SettingsPage(): JSX.Element | null {
   const addCustomEpgUrl = useAppStore((s) => s.addCustomEpgUrl)
   const removeCustomEpgUrl = useAppStore((s) => s.removeCustomEpgUrl)
   const epgSourcesStatus = useAppStore((s) => s.epgSourcesStatus)
+  const epgSourceIssues = useAppStore((s) => s.epgSourceIssues)
+  const epgSourceMatchStats = useAppStore((s) => s.epgSourceMatchStats)
 
   const [pinDraft, setPinDraft] = useState('')
   // Only set when opening the log fails (no active connection, or the file hasn't been written
@@ -234,8 +236,9 @@ export function SettingsPage(): JSX.Element | null {
             Providers only send listings for roughly the rest of today per channel. Adding a full
             guide (any XMLTV URL, plain or .xml.gz — e.g. one of iptv-org&apos;s country feeds at
             iptv-org.github.io/epg) fills in later days and channels your provider doesn&apos;t
-            cover. Channels are matched by EPG id first, then by name; your provider&apos;s own
-            listings always win where they exist.
+            cover. Plain-text or PDF schedules can&apos;t be parsed — only the XMLTV form, however
+            the file is named. Channels are matched by EPG id first, then by name; your
+            provider&apos;s own listings always win where they exist.
           </p>
           {settings.customEpgUrls.length > 0 && (
             <ul className="lock-list">
@@ -251,6 +254,7 @@ export function SettingsPage(): JSX.Element | null {
                       Remove
                     </button>
                   </label>
+                  {epgSourceIssues[url] && <p className="epg-source-issue">⚠ {epgSourceIssues[url]}</p>}
                 </li>
               ))}
             </ul>
@@ -272,6 +276,41 @@ export function SettingsPage(): JSX.Element | null {
               Add source
             </button>
           </div>
+          {epgSourceMatchStats.length > 0 && (
+            <div className="epg-match-report">
+              <h4>Guide matching</h4>
+              {epgSourceMatchStats.map((stat) => (
+                <div key={stat.source} className="epg-match-row">
+                  <p className="epg-match-line">
+                    {stat.available ? (
+                      stat.loadedChannels === 0 ? (
+                        <span>
+                          <strong>{stat.source}</strong> — loaded. Open a channel category to see its matching.
+                        </span>
+                      ) : (
+                        <span>
+                          <strong>{stat.source}</strong> — matched {stat.matched} of {stat.loadedChannels} loaded
+                          channels ({stat.byId} by EPG id, {stat.byName} by name)
+                        </span>
+                      )
+                    ) : (
+                      <span>
+                        <strong>{stat.source}</strong> — unavailable (blocked or disabled by this provider)
+                      </span>
+                    )}
+                  </p>
+                  {stat.available && stat.matched < stat.loadedChannels && stat.loadedChannels > 0 && (
+                    <p className="epg-match-unmatched" title="First 30 unmatched channel names in the loaded category">
+                      No match for: {stat.unmatchedNames.join(', ')}
+                      {stat.loadedChannels - stat.matched > stat.unmatchedNames.length
+                        ? ` … and ${stat.loadedChannels - stat.matched - stat.unmatchedNames.length} more`
+                        : ''}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
           {epgSourcesStatus === 'loading' && <p className="settings-hint">Loading guide sources…</p>}
         </section>
 

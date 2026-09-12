@@ -2078,6 +2078,50 @@ body.resizing-col {
   white-space: nowrap;
 }
 
+/* Per-source load diagnostics (wrong format, HTTP error) — visible only inside the affected
+   source's row, so a broken source explains itself instead of silently doing nothing. */
+.epg-source-issue {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--danger);
+  white-space: normal;
+}
+
+/* Guide-matching report: one block per source, a one-line verdict plus a capped list of the
+   channel names that found no counterpart in that guide — the diagnostic for "why doesn't
+   channel X have listings from source Y". */
+.epg-match-report {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.epg-match-report h4 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.epg-match-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.epg-match-line {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.epg-match-unmatched {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+  opacity: 0.8;
+  overflow-wrap: anywhere;
+}
+
 .pin-set-row {
   display: flex;
   gap: 8px;

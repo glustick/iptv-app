@@ -91,6 +91,17 @@ function runNextShortEpgFetch(): void {
   void next()
 }
 
+/** One row of the per-source EPG match report shown in Settings — see applyEpgPool. */
+export interface EpgSourceMatchStats {
+  source: string
+  available: boolean
+  loadedChannels: number
+  matched: number
+  byId: number
+  byName: number
+  unmatchedNames: string[]
+}
+
 export interface NowPlaying {
   kind: MediaKind
   streamId: number
@@ -142,7 +153,20 @@ interface AppState {
   // (settings.customEpgUrls) in order. Used to fill gaps the per-channel get_short_epg window
   // can't — see loadEpgSources/applyEpgPool. Empty when no guide is available or fetchable.
   epgSources: EpgData[]
+  // Label for each entry in epgSources, index-aligned: the provider guide's display name or
+  // the custom URL it was fetched from — what applyEpgPool's match report calls each source.
+  epgSourceLabels: string[]
+  // true/false once an Xtream connect has tried the provider's own xmltv.php guide; null on
+  // M3U profiles (their playlist guide never enters the pool as a separate source).
+  providerGuideAvailable: boolean | null
   epgSourcesStatus: 'idle' | 'loading' | 'ready'
+  // Per-source matching report for Settings — what each guide matched against the
+  // currently-loaded channels, by which join method, and which names found no counterpart.
+  epgSourceMatchStats: EpgSourceMatchStats[]
+  // Why a user-added EPG source contributed nothing, keyed by its URL ("" = it didn't) — wrong
+  // format, HTTP error, etc. Provider-guide failures are deliberately not tracked here; see
+  // loadEpgSources' own comment for why.
+  epgSourceIssues: Record<string, string>
   shortEpgByStream: Record<number, ShortEpgProgram[]>
   // When each stream's shortEpgByStream entry was last refreshed from the provider (not set for
   // entries prefilled from a guide pool — those want the provider's fresher data as soon as
@@ -361,7 +385,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   numericChannelCatalog: null,
 
   epgSources: [],
+  epgSourceLabels: [],
+  providerGuideAvailable: null,
   epgSourcesStatus: 'idle',
+  epgSourceIssues: {},
+  epgSourceMatchStats: [],
   shortEpgByStream: {},
   shortEpgFetchedAt: {},
   proxyBase: null,
@@ -583,7 +611,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         shortEpgByStream: {},
         shortEpgFetchedAt: {},
         epgSources: [],
+        epgSourceLabels: [],
+        providerGuideAvailable: null,
         epgSourcesStatus: 'idle',
+        epgSourceIssues: {},
+        epgSourceMatchStats: [],
         proxyBase
       })
       shortEpgFailedAt.clear()
@@ -626,7 +658,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Every piece of EPG state is provider-scoped — see connect()'s own comment about
       // stream-id collisions across profiles for why these can't survive a disconnect.
       epgSources: [],
+      epgSourceLabels: [],
+      providerGuideAvailable: null,
       epgSourcesStatus: 'idle',
+      epgSourceIssues: {},
+      epgSourceMatchStats: [],
       shortEpgByStream: {},
       shortEpgFetchedAt: {},
       proxyBase: null,
@@ -736,13 +772,25 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!client) return
     set({ epgSourcesStatus: 'loading' })
     const sources: EpgData[] = []
+    // Aligned index-for-index with `sources` — applyEpgPool's match report needs to know which
+    // label each loaded guide goes with (and whether entry 0 is the provider's own guide).
+    const labels: string[] = []
+    let providerGuideAvailable: boolean | null = null
+    // Per-custom-source diagnostics, surfaced in Settings — a source the user explicitly added
+    // must fail visibly (wrong format, HTTP error) instead of silently contributing nothing.
+    // The provider's own guide is deliberately exempt: most resellers simply block xmltv.php,
+    // and warning about that every single session would be noise, not signal.
+    const issues: Record<string, string> = {}
     // 1. The provider's own full guide. M3U profiles skip it: their playlist's guide is already
     //    what M3uClient.getShortEpg serves per channel, so pooling it again would only duplicate
     //    data under a second matching pass.
     if (activeProfile?.kind !== 'm3u') {
       try {
         sources.push(parseXmltv(await client.getFullEpgXml()))
+        labels.push('Provider guide (xmltv.php)')
+        providerGuideAvailable = true
       } catch {
+        providerGuideAvailable = false
         // Many Xtream resellers restrict or disable xmltv.php entirely (this app's own test
         // account 403s on it) — the whole point of the sources below is that this failing no
         // longer means "today's window is all you get."
@@ -757,29 +805,73 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (!proxyBase) throw new Error('Proxy base URL not available')
         const res = await fetch(`${proxyBase}/__fetch/${encodeURIComponent(url)}`)
         if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`)
-        sources.push(parseXmltv(await decodeMaybeGzipBytes(await res.arrayBuffer())))
+        const parsed = parseXmltv(await decodeMaybeGzipBytes(await res.arrayBuffer()))
+        // A document with no channels or no programmes can't contribute anything (matching
+        // needs both) — far and away the most common cause is a plain-text or PDF schedule in
+        // a slot meant for a machine-readable XMLTV guide, so say exactly that.
+        if (parsed.channels.size === 0 || parsed.programmesByChannel.size === 0) {
+          issues[url] =
+            "Loaded, but didn't look like an XMLTV guide (no channels or programmes found). Plain-text or PDF schedules can't be parsed — if this source really is a guide, use its XML or .xml.gz form."
+        } else {
+          sources.push(parsed)
+          labels.push(url)
+        }
       } catch (err) {
+        issues[url] = `Couldn't load: ${err instanceof Error ? err.message : String(err)}`
         console.error(`[epg] failed to load custom EPG source ${url}:`, err)
       }
     }
-    set({ epgSources: sources, epgSourcesStatus: 'ready' })
+    set({ epgSources: sources, epgSourceLabels: labels, providerGuideAvailable, epgSourcesStatus: 'ready', epgSourceIssues: issues })
     get().applyEpgPool()
   },
 
   applyEpgPool: () => {
-    const { epgSources, liveStreams, shortEpgByStream, shortEpgFetchedAt } = get()
-    if (epgSources.length === 0 || liveStreams.length === 0) return
+    const { epgSources, epgSourceLabels, providerGuideAvailable, liveStreams, shortEpgByStream, shortEpgFetchedAt } = get()
     // First source (in loadEpgSources' priority order) with programmes for a channel wins —
     // the provider's own guide outranks a third party's, and earlier custom URLs outrank later
     // ones.
     const pool = new Map<number, ShortEpgProgram[]>()
-    for (const source of epgSources) {
-      for (const [streamId, channelId] of matchXmltvChannels(liveStreams, source)) {
-        if (pool.has(streamId)) continue
-        const programmes = source.programmesByChannel.get(channelId)
-        if (programmes?.length) pool.set(streamId, xmltvProgrammesToShort(programmes, channelId))
-      }
+    // Per-source matching report for Settings — what a source actually did against the
+    // currently-loaded channels, including how much of its matching rests on the weaker
+    // name join and which channel names found no counterpart at all.
+    const stats: EpgSourceMatchStats[] = []
+    if (providerGuideAvailable === false) {
+      stats.push({ source: 'Provider guide (xmltv.php)', available: false, loadedChannels: liveStreams.length, matched: 0, byId: 0, byName: 0, unmatchedNames: [] })
     }
+    epgSources.forEach((source, index) => {
+      const matches = matchXmltvChannels(liveStreams, source)
+      let byId = 0
+      let byName = 0
+      const unmatchedNames: string[] = []
+      for (const stream of liveStreams) {
+        const match = matches.get(stream.stream_id)
+        const programmes = match ? source.programmesByChannel.get(match.channelId) : undefined
+        if (match && programmes?.length) {
+          if (match.method === 'id') byId += 1
+          else byName += 1
+        } else {
+          // Cap the list — against a large category this is diagnostic material, not a roster.
+          if (unmatchedNames.length < 30) unmatchedNames.push(stream.name)
+        }
+      }
+      const label = index === 0 && providerGuideAvailable === true ? 'Provider guide (xmltv.php)' : epgSourceLabels[index] ?? `Source ${index + 1}`
+      stats.push({
+        source: label,
+        available: true,
+        loadedChannels: liveStreams.length,
+        matched: byId + byName,
+        byId,
+        byName,
+        unmatchedNames
+      })
+      for (const [streamId, match] of matches) {
+        if (pool.has(streamId)) continue
+        const programmes = source.programmesByChannel.get(match.channelId)
+        if (programmes?.length) pool.set(streamId, xmltvProgrammesToShort(programmes, match.channelId))
+      }
+    })
+    set({ epgSourceMatchStats: stats })
+    if (epgSources.length === 0 || liveStreams.length === 0) return
     if (pool.size === 0) return
     const nextShort = { ...shortEpgByStream }
     let changed = false

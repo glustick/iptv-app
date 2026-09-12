@@ -45,7 +45,15 @@ function parseXmltvDate(value: string): Date {
 
 export function parseXmltv(xml: string): EpgData {
   const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' })
-  const doc = parser.parse(xml) as { tv?: { channel?: unknown; programme?: unknown } }
+  // Lenient to preamble: a leading BOM or stray text before the XML root (e.g. a ".txt" file
+  // that is really XMLTV with junk on top, which providers do hand out) shouldn't kill the
+  // whole guide — everything before the first <?xml/<tv tag is skipped. No XML tag found at
+  // all (-1) keeps the input unchanged, producing the empty guide loadEpgSources then flags
+  // as "didn't look like an XMLTV guide" rather than a mystery.
+  const rootStart = xml.search(/<\?xml|<tv[\s>]/i)
+  const doc = parser.parse(rootStart > 0 ? xml.slice(rootStart) : xml) as {
+    tv?: { channel?: unknown; programme?: unknown }
+  }
   const tv = doc.tv ?? {}
 
   const channels = new Map<string, EpgChannel>()
@@ -180,6 +188,12 @@ function normalizeName(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
+/** One matched channel: which guide channel it resolved to, and by which join method. */
+export interface XmltvChannelMatch {
+  channelId: string
+  method: 'id' | 'name'
+}
+
 /**
  * Indexes this app's live channels against one XMLTV guide's own channel list — the join that
  * makes third-party guides usable at all, since their channel ids follow their own convention
@@ -190,10 +204,12 @@ function normalizeName(value: string): string {
  *   2. the guide channel's display-name normalized-equals the stream's name (the practical
  *      cross-provider join: most guides label channels the way users see them)
  * Only the first guide channel matching a given stream wins, so a guide with both "BBC One"
- * and "BBC One HD" resolves deterministically rather than double-booking one stream.
+ * and "BBC One HD" resolves deterministically rather than double-booking one stream. The
+ * method is reported alongside each match so callers can surface how much of a source's
+ * matching rests on the weaker name join.
  */
-export function matchXmltvChannels(liveStreams: LiveStream[], epg: EpgData): Map<number, string> {
-  const matches = new Map<number, string>()
+export function matchXmltvChannels(liveStreams: LiveStream[], epg: EpgData): Map<number, XmltvChannelMatch> {
+  const matches = new Map<number, XmltvChannelMatch>()
   const byNormName = new Map<string, string>()
   for (const [id, channel] of epg.channels) {
     const normalized = normalizeName(channel.displayName)
@@ -202,12 +218,12 @@ export function matchXmltvChannels(liveStreams: LiveStream[], epg: EpgData): Map
   for (const stream of liveStreams) {
     if (matches.has(stream.stream_id)) continue
     if (stream.epg_channel_id && epg.channels.has(stream.epg_channel_id)) {
-      matches.set(stream.stream_id, stream.epg_channel_id)
+      matches.set(stream.stream_id, { channelId: stream.epg_channel_id, method: 'id' })
       continue
     }
     const normalized = normalizeName(stream.name)
     const byName = normalized ? byNormName.get(normalized) : undefined
-    if (byName) matches.set(stream.stream_id, byName)
+    if (byName) matches.set(stream.stream_id, { channelId: byName, method: 'name' })
   }
   return matches
 }
