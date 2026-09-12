@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { useAppStore } from './useAppStore'
 import { XtreamClient } from '../lib/xtream'
 import { DEFAULT_SETTINGS } from '../lib/types'
-import type { LiveStream, VodStream, FavoriteEntry, RecentlyWatchedEntry, VpnProfile, XtreamProfile } from '../lib/types'
+import type { LiveStream, VodStream, FavoriteEntry, RecentlyWatchedEntry, VpnProfile, XtreamProfile, ShortEpgProgram } from '../lib/types'
 
 // Same rationale as storage.test.ts: the vitest environment is plain Node (see
 // vitest.config.mts), so useAppStore's own calls into lib/storage.ts (updateSettings,
@@ -31,6 +31,9 @@ beforeEach(() => {
     pinPromptCategoryId: null,
     pinPromptError: null,
     shortEpgByStream: {},
+    shortEpgFetchedAt: {},
+    epgSources: [],
+    epgSourcesStatus: 'idle',
     nowPlaying: null,
     recentlyWatched: [],
     favorites: [],
@@ -260,6 +263,21 @@ describe('short-EPG concurrency queue (loadShortEpg)', () => {
     }
   }
 
+  function makeShortProgram(title: string, startSec: number, stopSec: number, id = title): ShortEpgProgram {
+    return {
+      id,
+      epg_id: '',
+      title,
+      lang: '',
+      start: new Date(startSec * 1000).toISOString(),
+      end: new Date(stopSec * 1000).toISOString(),
+      description: '',
+      channel_id: '',
+      start_timestamp: String(startSec),
+      stop_timestamp: String(stopSec)
+    }
+  }
+
   it('caps concurrent get_short_epg requests at 4, queueing the rest', async () => {
     const { client, resolveNext, callCount } = makeControllableClient()
     useAppStore.setState({ client })
@@ -288,14 +306,83 @@ describe('short-EPG concurrency queue (loadShortEpg)', () => {
     await Promise.all(pendingCalls)
   })
 
-  it('does not re-fetch a stream whose short EPG is already loaded', async () => {
+  it('does not re-fetch a stream whose short EPG is loaded, fresh, and spans now', async () => {
     const { client, resolveNext, callCount } = makeControllableClient()
-    useAppStore.setState({ client, shortEpgByStream: { 90101: [] } })
+    // A currently-airing programme (far-future stop) fetched just now — the one cached state
+    // that must suppress a refetch.
+    const now = Math.floor(Date.now() / 1000)
+    useAppStore.setState({
+      client,
+      shortEpgByStream: { 90101: [{ ...makeShortProgram('Now', now - 60, now + 3600) }] },
+      shortEpgFetchedAt: { 90101: Date.now() }
+    })
 
     await Promise.resolve(useAppStore.getState().loadShortEpg(90101))
 
     expect(callCount()).toBe(0)
     void resolveNext
+  })
+
+  it('re-fetches when cached data no longer spans now, even freshly fetched', async () => {
+    // The "app stayed open past midnight / rest-of-today window ran out" case that used to
+    // blank every channel until restart.
+    const { client, resolveNext, callCount } = makeControllableClient()
+    const past = Math.floor(Date.now() / 1000) - 7200
+    useAppStore.setState({
+      client,
+      shortEpgByStream: { 90102: [makeShortProgram('Already Over', past - 3600, past)] },
+      shortEpgFetchedAt: { 90102: Date.now() }
+    })
+
+    const pending = useAppStore.getState().loadShortEpg(90102)
+    expect(callCount()).toBe(1)
+    resolveNext(90102)
+    await pending
+  })
+
+  it('re-fetches a guide-pool prefill (no fetchedAt) to get the provider’s fresher data', async () => {
+    const { client, resolveNext, callCount } = makeControllableClient()
+    const now = Math.floor(Date.now() / 1000)
+    useAppStore.setState({
+      client,
+      shortEpgByStream: { 90103: [makeShortProgram('Pool Prefill', now, now + 86400)] },
+      shortEpgFetchedAt: {}
+    })
+
+    const pending = useAppStore.getState().loadShortEpg(90103)
+    expect(callCount()).toBe(1)
+    resolveNext(90103)
+    await pending
+  })
+
+  it('caches an honest empty on failure and applies the failure cooldown to retries', async () => {
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    vi.spyOn(client, 'getShortEpg').mockRejectedValue(new Error('boom'))
+    useAppStore.setState({ client, shortEpgByStream: {}, shortEpgFetchedAt: {} })
+
+    await useAppStore.getState().loadShortEpg(90104)
+
+    // Not undefined (= eternal shimmer) — an honest empty the grid renders as "No programme data".
+    expect(useAppStore.getState().shortEpgByStream[90104]).toEqual([])
+    // Within the cooldown window, a retry attempt is skipped entirely…
+    await useAppStore.getState().loadShortEpg(90104)
+    expect(client.getShortEpg).toHaveBeenCalledTimes(1)
+  })
+
+  it('merges provider listings with a pool prefill instead of replacing it', async () => {
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    const now = Math.floor(Date.now() / 1000)
+    vi.spyOn(client, 'getShortEpg').mockResolvedValue([makeShortProgram('Provider Now', now - 60, now + 1800, 'p1')])
+    const poolEntry = makeShortProgram('Pool Tomorrow', now + 86400, now + 90000, 'pool1')
+    useAppStore.setState({ client, shortEpgByStream: { 90105: [poolEntry] }, shortEpgFetchedAt: {} })
+
+    await useAppStore.getState().loadShortEpg(90105)
+
+    expect(useAppStore.getState().shortEpgByStream[90105].map((p) => p.title)).toEqual([
+      'Provider Now',
+      'Pool Tomorrow'
+    ])
+    expect(useAppStore.getState().shortEpgFetchedAt[90105]).toBeGreaterThan(0)
   })
 })
 

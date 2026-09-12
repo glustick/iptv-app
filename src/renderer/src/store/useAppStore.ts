@@ -2,7 +2,13 @@ import { create } from 'zustand'
 import { XtreamClient } from '../lib/xtream'
 import { M3uClient } from '../lib/m3uClient'
 import type { IptvClient } from '../lib/iptvClient'
-import { parseXmltv, type EpgData } from '../lib/epg'
+import {
+  parseXmltv,
+  matchXmltvChannels,
+  mergeShortEpg,
+  xmltvProgrammesToShort,
+  type EpgData
+} from '../lib/epg'
 import {
   loadProfiles,
   saveProfiles,
@@ -55,6 +61,18 @@ export type ConnectionStatus = 'idle' | 'connecting' | 'ready' | 'error'
 // day — raised well past that.
 const RECENTLY_WATCHED_LIMIT = 100
 const MAX_CONCURRENT_SHORT_EPG_FETCHES = 4
+// A cached short-EPG entry is considered fresh for this long even if it still spans "now" —
+// providers update their guides (late additions, schedule changes) continuously, and this is
+// also what picks up the next day's listings once the provider publishes them. Entries that no
+// longer span "now" (data exhausted, or the app crossed midnight on a "rest of today" provider
+// window) are refetchable regardless of this TTL — that's the case that used to blank out every
+// channel for the rest of a long-running session.
+const SHORT_EPG_TTL_MS = 15 * 60 * 1000
+// A channel whose get_short_epg just failed waits this long before another attempt, so a
+// dead/erroring channel can't be hammered by rows remounting on every scroll — but unlike the
+// old behavior (failure = shimmer forever, or worse, empty cached forever), it does get
+// retried.
+const SHORT_EPG_FAILURE_COOLDOWN_MS = 60 * 1000
 let activeShortEpgFetches = 0
 // `| Promise<void>` reflects reality (every entry pushed below is actually async) rather than
 // being a workaround — runNextShortEpgFetch() calling one is deliberately fire-and-forget, since
@@ -62,6 +80,7 @@ let activeShortEpgFetches = 0
 // next queued fetch itself.
 const shortEpgQueue: Array<() => void | Promise<void>> = []
 const shortEpgInFlight = new Set<number>()
+const shortEpgFailedAt = new Map<number, number>()
 
 function runNextShortEpgFetch(): void {
   if (activeShortEpgFetches >= MAX_CONCURRENT_SHORT_EPG_FETCHES) return
@@ -117,9 +136,21 @@ interface AppState {
   // switch can't resolve a typed number against a stale, different provider's lineup.
   numericChannelCatalog: LiveStream[] | null
 
-  epg: EpgData | null
-  epgLoading: boolean
+  // Every parsed full-XMLTV guide available this session, in priority order: the provider's own
+  // xmltv.php guide first (when the provider allows it), then each user-added third-party source
+  // (settings.customEpgUrls) in order. Used to fill gaps the per-channel get_short_epg window
+  // can't — see loadEpgSources/applyEpgPool. Empty when no guide is available or fetchable.
+  epgSources: EpgData[]
+  epgSourcesStatus: 'idle' | 'loading' | 'ready'
   shortEpgByStream: Record<number, ShortEpgProgram[]>
+  // When each stream's shortEpgByStream entry was last refreshed from the provider (not set for
+  // entries prefilled from a guide pool — those want the provider's fresher data as soon as
+  // their row loads). Drives SHORT_EPG_TTL_MS staleness in loadShortEpg.
+  shortEpgFetchedAt: Record<number, number>
+  // The local proxy's base URL, captured at connect() — fetching a user-added third-party EPG
+  // URL needs the proxy's /__fetch/ passthrough (same reason every other cross-origin request
+  // here goes through it), and nothing else exposes it to the store.
+  proxyBase: string | null
 
   nowPlaying: NowPlaying | null
   // Lives in the store (not Player.tsx's own local state) so App.tsx's single centralized
@@ -212,7 +243,17 @@ interface AppState {
   // which has to work regardless of which category is currently being browsed. Returns null if
   // there's no client, or no channel with that number.
   findChannelByNumber: (num: number) => Promise<LiveStream | null>
-  loadEpg: () => Promise<void>
+  // Fetches every full-XMLTV guide available (provider's own + user-added third-party sources),
+  // then prefills the short-EPG cache from them (see applyEpgPool). Best-effort by design: a
+  // provider that blocks xmltv.php, or an unreachable custom URL, degrades to exactly the old
+  // per-channel behavior rather than erroring the app.
+  loadEpgSources: () => Promise<void>
+  // Re-applies the guide pool (epgSources) to every currently-loaded live channel that doesn't
+  // yet have provider-fetched data — runs after a pool loads and after each category's
+  // liveStreams arrive, since matching needs the channel list.
+  applyEpgPool: () => void
+  addCustomEpgUrl: (url: string) => void
+  removeCustomEpgUrl: (url: string) => void
   loadShortEpg: (streamId: number) => Promise<void>
   play: (
     kind: MediaKind,
@@ -318,9 +359,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   searchTerm: '',
   numericChannelCatalog: null,
 
-  epg: null,
-  epgLoading: false,
+  epgSources: [],
+  epgSourcesStatus: 'idle',
   shortEpgByStream: {},
+  shortEpgFetchedAt: {},
+  proxyBase: null,
 
   nowPlaying: null,
   channelBarOpen: false,
@@ -532,10 +575,23 @@ export const useAppStore = create<AppState>((set, get) => ({
         // A new connection means a (possibly different) provider's catalog — last profile's
         // cached numeric lookup would otherwise resolve a typed channel number against the
         // wrong account's lineup.
-        numericChannelCatalog: null
+        numericChannelCatalog: null,
+        // Same wrong-provider story for EPG: stream IDs are only unique within one provider,
+        // so cached listings from the previous profile are not just stale but potentially for a
+        // completely different channel that happens to share the id.
+        shortEpgByStream: {},
+        shortEpgFetchedAt: {},
+        epgSources: [],
+        epgSourcesStatus: 'idle',
+        proxyBase
       })
+      shortEpgFailedAt.clear()
       await saveActiveProfileId(profileId)
       await get().setViewMode('live')
+      // Full-guide sources are strictly an enrichment layered on top of the per-channel short
+      // EPG the grid already uses — load them in the background rather than gating the UI on
+      // what may be a several-MB XMLTV download (or a provider that blocks it outright).
+      void get().loadEpgSources()
       // Deliberately does NOT auto-reconnect the VPN here, even if a profile was left active
       // last session — connecting spawns an OS elevation prompt, and that must only ever happen
       // from an explicit Activate click, never as a side effect of the app simply launching (or
@@ -556,6 +612,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   disconnect: () => {
+    shortEpgFailedAt.clear()
     set({
       client: null,
       activeProfile: null,
@@ -565,7 +622,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       liveStreams: [],
       vodStreams: [],
       series: [],
-      epg: null,
+      // Every piece of EPG state is provider-scoped — see connect()'s own comment about
+      // stream-id collisions across profiles for why these can't survive a disconnect.
+      epgSources: [],
+      epgSourcesStatus: 'idle',
+      shortEpgByStream: {},
+      shortEpgFetchedAt: {},
+      proxyBase: null,
       nowPlaying: null,
       channelBarOpen: false,
       unlockedCategoryIds: [],
@@ -645,6 +708,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (viewMode === 'live' || viewMode === 'multiview') {
         const liveStreams = await client.getLiveStreams(categoryId ?? undefined)
         set({ liveStreams })
+        // Matching a guide pool to channels needs the channel list (see applyEpgPool) — a
+        // newly-loaded category can contain channels the pool has data for that were never
+        // visible when the pool loaded.
+        get().applyEpgPool()
         // The EPG grid is now the primary way to browse live channels (there's no
         // separate clickable list next to it), so seed it with the first channel in
         // the category instead of leaving it blank until something is clicked. Harmless
@@ -663,24 +730,110 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setSearchTerm: (term) => set({ searchTerm: term }),
 
-  loadEpg: async () => {
-    const { client, epg, epgLoading } = get()
-    if (!client || epg || epgLoading) return
-    set({ epgLoading: true })
-    try {
-      const xml = await client.getFullEpgXml()
-      set({ epg: parseXmltv(xml), epgLoading: false })
-    } catch {
-      // Many Xtream resellers restrict or disable xmltv.php entirely (this is only an
-      // enrichment for the inline "now playing" label) — per-channel previews rely on
-      // get_short_epg instead, so a failure here shouldn't surface as a user-facing error.
-      set({ epgLoading: false })
+  loadEpgSources: async () => {
+    const { client, activeProfile, proxyBase, settings } = get()
+    if (!client) return
+    set({ epgSourcesStatus: 'loading' })
+    const sources: EpgData[] = []
+    // 1. The provider's own full guide. M3U profiles skip it: their playlist's guide is already
+    //    what M3uClient.getShortEpg serves per channel, so pooling it again would only duplicate
+    //    data under a second matching pass.
+    if (activeProfile?.kind !== 'm3u') {
+      try {
+        sources.push(parseXmltv(await client.getFullEpgXml()))
+      } catch {
+        // Many Xtream resellers restrict or disable xmltv.php entirely (this app's own test
+        // account 403s on it) — the whole point of the sources below is that this failing no
+        // longer means "today's window is all you get."
+      }
     }
+    // 2. User-added third-party guides (any XMLTV URL), fetched through the same /__fetch/
+    //    passthrough every other cross-origin request uses. Sources load sequentially — a slow
+    //    one shouldn't hold the earlier ones' data hostage.
+    for (const url of settings.customEpgUrls) {
+      try {
+        if (!proxyBase) throw new Error('Proxy base URL not available')
+        const res = await fetch(`${proxyBase}/__fetch/${encodeURIComponent(url)}`)
+        if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`)
+        sources.push(parseXmltv(await res.text()))
+      } catch (err) {
+        console.error(`[epg] failed to load custom EPG source ${url}:`, err)
+      }
+    }
+    set({ epgSources: sources, epgSourcesStatus: 'ready' })
+    get().applyEpgPool()
+  },
+
+  applyEpgPool: () => {
+    const { epgSources, liveStreams, shortEpgByStream, shortEpgFetchedAt } = get()
+    if (epgSources.length === 0 || liveStreams.length === 0) return
+    // First source (in loadEpgSources' priority order) with programmes for a channel wins —
+    // the provider's own guide outranks a third party's, and earlier custom URLs outrank later
+    // ones.
+    const pool = new Map<number, ShortEpgProgram[]>()
+    for (const source of epgSources) {
+      for (const [streamId, channelId] of matchXmltvChannels(liveStreams, source)) {
+        if (pool.has(streamId)) continue
+        const programmes = source.programmesByChannel.get(channelId)
+        if (programmes?.length) pool.set(streamId, xmltvProgrammesToShort(programmes, channelId))
+      }
+    }
+    if (pool.size === 0) return
+    const nextShort = { ...shortEpgByStream }
+    let changed = false
+    for (const [streamId, programmes] of pool) {
+      // Never overwrite provider-fetched data (fetchedAt set) — the pool only PREFILLS: channels
+      // with nothing yet, or channels whose only data so far is an older prefill from this same
+      // pool (fetchedAt unset). loadShortEpg will still fetch the provider's fresher per-channel
+      // data for these when their row loads, then merge over the prefill.
+      if (shortEpgFetchedAt[streamId]) continue
+      if (nextShort[streamId] === programmes) continue
+      nextShort[streamId] = programmes
+      changed = true
+    }
+    if (changed) set({ shortEpgByStream: nextShort })
+  },
+
+  addCustomEpgUrl: (url) => {
+    const trimmed = url.trim()
+    if (!trimmed) return
+    const current = get().settings.customEpgUrls
+    if (current.includes(trimmed)) return
+    get().updateSettings({ customEpgUrls: [...current, trimmed] })
+    // Apply immediately rather than waiting for the next connect — adding a source is an
+    // explicit "make my guide better" action, and the whole fetch is best-effort anyway.
+    if (get().client) void get().loadEpgSources()
+  },
+
+  removeCustomEpgUrl: (url) => {
+    const current = get().settings.customEpgUrls
+    if (!current.includes(url)) return
+    get().updateSettings({ customEpgUrls: current.filter((u) => u !== url) })
+    if (get().client) void get().loadEpgSources()
   },
 
   loadShortEpg: (streamId) => {
-    const { client, shortEpgByStream } = get()
-    if (!client || shortEpgByStream[streamId] || shortEpgInFlight.has(streamId)) return Promise.resolve()
+    const { client, shortEpgByStream, shortEpgFetchedAt } = get()
+    if (!client) return Promise.resolve()
+    if (shortEpgInFlight.has(streamId)) return Promise.resolve()
+    // A cache entry is only a reason NOT to fetch when it's provider-fetched (fetchedAt set),
+    // still fresh within SHORT_EPG_TTL_MS, and either still covers "now" or was an honest
+    // empty answer — an entry whose last programme has already ended (the "rest of today"
+    // window running out, or the app simply staying open past midnight) is refetchable no
+    // matter how recently it was fetched, which is what fixes the old "every channel blank
+    // until restart" behavior. Entries prefilled from a guide pool have no fetchedAt, so they
+    // never suppress the provider fetch.
+    const cached = shortEpgByStream[streamId]
+    const fetchedAt = shortEpgFetchedAt[streamId] ?? 0
+    const spansNow =
+      cached !== undefined && cached.some((p) => Number(p.stop_timestamp) * 1000 > Date.now())
+    if (fetchedAt && Date.now() - fetchedAt < SHORT_EPG_TTL_MS && (spansNow || cached?.length === 0)) {
+      return Promise.resolve()
+    }
+    // Recently failed — wait out the cooldown rather than hammering a channel the provider is
+    // currently failing for, but (unlike before) do come back and retry after it.
+    const failedAt = shortEpgFailedAt.get(streamId) ?? 0
+    if (Date.now() - failedAt < SHORT_EPG_FAILURE_COOLDOWN_MS) return Promise.resolve()
     shortEpgInFlight.add(streamId)
     return new Promise((resolve) => {
       shortEpgQueue.push(async () => {
@@ -691,9 +844,23 @@ export const useAppStore = create<AppState>((set, get) => ({
           // artificial 16-item truncation that was cutting off real, already-available
           // programming well before the provider's own window ran out.
           const listings = await client.getShortEpg(streamId, 48)
-          set({ shortEpgByStream: { ...get().shortEpgByStream, [streamId]: listings } })
+          shortEpgFailedAt.delete(streamId)
+          // Merge with whatever's already cached for this channel — typically a guide-pool
+          // prefill (see applyEpgPool): provider entries win their slots, the pool's later
+          // days/gap-fillers survive around them.
+          const merged = mergeShortEpg(listings, shortEpgByStream[streamId] ?? [])
+          set({
+            shortEpgByStream: { ...get().shortEpgByStream, [streamId]: merged },
+            shortEpgFetchedAt: { ...get().shortEpgFetchedAt, [streamId]: Date.now() }
+          })
         } catch {
-          // EPG is best-effort; a missing short guide shouldn't block playback.
+          shortEpgFailedAt.set(streamId, Date.now())
+          // If nothing has ever loaded for this channel, cache an honest empty rather than
+          // leaving the row's loading shimmer up forever — [] renders as "No programme data"
+          // and stays retryable after the cooldown above.
+          if (get().shortEpgByStream[streamId] === undefined) {
+            set({ shortEpgByStream: { ...get().shortEpgByStream, [streamId]: [] } })
+          }
         } finally {
           shortEpgInFlight.delete(streamId)
           activeShortEpgFetches--

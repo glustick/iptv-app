@@ -1,5 +1,5 @@
 import { parseM3u, type M3uChannel } from './m3u'
-import { parseXmltv, type EpgData } from './epg'
+import { parseXmltv, xmltvProgrammesToShort, type EpgData } from './epg'
 import type { IptvClient } from './iptvClient'
 import type {
   XtreamAuthResponse,
@@ -13,6 +13,10 @@ import type {
 } from './types'
 
 const UNCATEGORIZED = 'Uncategorized'
+// How long a failed EPG-XML download waits before a retry (see ensureEpgData) — long enough not
+// to hammer a genuinely down source on every scrolled-past channel, short enough that a
+// transient failure at open doesn't cost the whole session's guide.
+const EPG_RETRY_MS = 60_000
 
 /**
  * Implements the same IptvClient surface as XtreamClient for providers that only hand out a
@@ -35,6 +39,7 @@ export class M3uClient implements IptvClient {
   private discoveredEpgUrl: string | null = null
   private epgData: EpgData | null = null
   private epgFetch: Promise<EpgData | null> | null = null
+  private epgFetchFailedAt = 0
 
   constructor(proxyBase: string, m3uUrl: string, epgUrl: string | null) {
     this.proxyBase = proxyBase.replace(/\/+$/, '')
@@ -145,18 +150,28 @@ export class M3uClient implements IptvClient {
   // Lazily fetched once per session, not per channel — the only EPG source available here is
   // one full XMLTV document covering every channel, unlike Xtream's genuinely per-channel
   // get_short_epg endpoint. Cached (not refetched on every call) since EpgGrid's rows call this
-  // once per visible channel as they scroll into view.
+  // once per visible channel as they scroll into view. A FAILED download is retried after
+  // EPG_RETRY_MS rather than staying dead for the whole session: the old behavior cached the
+  // failure forever, so one transient network error at open blanked every channel's guide until
+  // the app restarted.
   private async ensureEpgData(): Promise<EpgData | null> {
     const epgUrl = this.explicitEpgUrl || this.discoveredEpgUrl
     if (!epgUrl) return null
     if (this.epgData) return this.epgData
+    if (Date.now() - this.epgFetchFailedAt < EPG_RETRY_MS) return null
     if (!this.epgFetch) {
       this.epgFetch = this.fetchText(epgUrl, 'EPG')
         .then((xml) => {
           this.epgData = parseXmltv(xml)
           return this.epgData
         })
-        .catch(() => null)
+        .catch(() => {
+          this.epgFetchFailedAt = Date.now()
+          // Clear the in-flight promise so the next call (after the cooldown above) actually
+          // retries instead of awaiting this same failed one forever.
+          this.epgFetch = null
+          return null
+        })
     }
     return this.epgFetch
   }
@@ -170,22 +185,9 @@ export class M3uClient implements IptvClient {
     const now = new Date()
     // get_short_epg's own contract is "now plus whatever's next," not the channel's entire
     // guide — mirrored here so EpgGrid's window-based filtering behaves identically regardless
-    // of which client actually supplied the data.
-    return programmes
-      .filter((p) => p.stop >= now)
-      .slice(0, limit)
-      .map((p, index) => ({
-        id: `${streamId}-${index}`,
-        epg_id: channel.tvgId ?? '',
-        title: p.title,
-        lang: '',
-        start: p.start.toISOString(),
-        end: p.stop.toISOString(),
-        description: p.description ?? '',
-        channel_id: channel.tvgId ?? '',
-        start_timestamp: String(Math.floor(p.start.getTime() / 1000)),
-        stop_timestamp: String(Math.floor(p.stop.getTime() / 1000))
-      }))
+    // of which client actually supplied the data. The now-onward filtering itself is the shared
+    // xmltvProgrammesToShort mapping (same one the multi-source guide pool uses).
+    return xmltvProgrammesToShort(programmes, channel.tvgId, now).slice(0, limit)
   }
 
   /**

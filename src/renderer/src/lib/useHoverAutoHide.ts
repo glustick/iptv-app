@@ -199,13 +199,15 @@ export function useHoverAutoHide<T extends HTMLElement>(
 
     function onDocumentMouseOut(e: MouseEvent): void {
       if (e.relatedTarget !== null || !hoveredRef.current) return
-      const currentContainer = containerRef.current
-      if (currentContainer && isInZoneRef.current(e, currentContainer.getBoundingClientRect())) {
-        // Cursor hit the outer boundary of the window while inside the reveal zone (e.g. y <= 0
-        // in fullscreen on Windows, where Chromium emits mouseout with relatedTarget: null).
-        // The cursor has not actually left the reveal zone — ignore this boundary exit.
-        return
-      }
+      // No in-zone guard here, deliberately. 0.7.56 added one against "boundary mouseout while
+      // still inside the zone" (Windows emits mouseout with relatedTarget: null when the cursor
+      // merely touches the window's edge), but it also swallowed every REAL exit through an edge
+      // that lies inside a reveal zone — the left edge for the channel-info panel, the bottom
+      // edge for the seek bar — so on a two-display setup (pointer parked on the other monitor,
+      // app still focused, hence no blur event either) those overlays stayed visible forever,
+      // reported live exactly that way. With 0.7.57's reconcile-on-every-mousemove logic, the
+      // false-positive cost of not guarding is a fade after the normal delay that the next 1px
+      // of cursor movement instantly reverses — strictly the better trade against stuck-visible.
       hoveredRef.current = false
       // The cursor is gone from this window entirely — any explicit click-hide suppression
       // should end with it, since the next interaction is a genuinely fresh one.

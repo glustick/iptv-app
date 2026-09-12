@@ -1774,6 +1774,20 @@ body.resizing-col {
   opacity: 0.5;
 }
 
+/* Honest "we know there's nothing here" for a loaded-but-window-empty channel row — distinct
+   from the shimmer above, which only ever means "not loaded yet". Anchored to the window's
+   start rather than centered on the whole row so it sits inside the visible timeline area. */
+.epg-row-empty {
+  position: absolute;
+  top: 50%;
+  left: 16px;
+  transform: translateY(-50%);
+  font-size: 12px;
+  color: var(--text-dim, #888);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
 /* Compact mode trims the fixed per-row chrome (icon, padding) so a shorter rowHeight (passed
    separately by EpgGridPanel) doesn't just clip the comfortable-size icon/name instead of
    actually showing more channels at once. */
@@ -2052,6 +2066,16 @@ body.resizing-col {
   align-items: center;
   gap: 8px;
   font-size: 13px;
+}
+
+/* EPG-source rows reuse .lock-list but the "label" content is a URL + action, not a checkbox
+   pair — the URL truncates with an ellipsis and the Remove button sits at the row's far end. */
+.epg-source-url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pin-set-row {

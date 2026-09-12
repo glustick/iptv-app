@@ -119,6 +119,13 @@ function EpgRow({
       </div>
       <div className="epg-row-timeline">
         {listings === undefined && <div className="epg-row-loading" />}
+        {listings !== undefined && visible.length === 0 && (
+          // Loaded (or failed after a retry-able attempt — see loadShortEpg's catch) but
+          // nothing covers this window: either the channel genuinely has no guide, or the
+          // available data ends before this part of the timeline. An explicit label beats the
+          // old behavior of an identical-looking blank row in every one of those cases.
+          <span className="epg-row-empty">No programme data</span>
+        )}
         {visible.map((p, i) => {
           const startMs = Number(p.start_timestamp) * 1000
           const stopMs = Number(p.stop_timestamp) * 1000

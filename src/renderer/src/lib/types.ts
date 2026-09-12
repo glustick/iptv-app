@@ -227,6 +227,11 @@ export interface AppSettings {
   // timeshift variants of the same channel) safely fall back to normal detection instead of
   // remuxing the wrong source.
   liveAudioFixes: Record<string, { audioIndex: number; url: string }>
+  // User-added third-party EPG sources (any XMLTV guide URL, e.g. iptv-org country feeds) —
+  // fetched through the local proxy on connect alongside the provider's own xmltv.php guide
+  // (when allowed) and merged into the EPG grid per channel, filling the multi-day gap the
+  // per-channel get_short_epg window can never cover. See useAppStore.loadEpgSources.
+  customEpgUrls: string[]
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -246,7 +251,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   videoScaleMode: 'contain',
   multiViewLayout: 2,
   hiddenLiveStreamIds: [],
-  liveAudioFixes: {}
+  liveAudioFixes: {},
+  customEpgUrls: []
 }
 
 export type VpnStatus = 'disconnected' | 'connecting' | 'connected' | 'error'

@@ -25,6 +25,9 @@ export function SettingsPage(): JSX.Element | null {
   const deactivateVpnProfile = useAppStore((s) => s.deactivateVpnProfile)
   const exportBackup = useAppStore((s) => s.exportBackup)
   const importBackup = useAppStore((s) => s.importBackup)
+  const addCustomEpgUrl = useAppStore((s) => s.addCustomEpgUrl)
+  const removeCustomEpgUrl = useAppStore((s) => s.removeCustomEpgUrl)
+  const epgSourcesStatus = useAppStore((s) => s.epgSourcesStatus)
 
   const [pinDraft, setPinDraft] = useState('')
   // Only set when opening the log fails (no active connection, or the file hasn't been written
@@ -39,6 +42,7 @@ export function SettingsPage(): JSX.Element | null {
   // list of many saved configs doesn't turn into a wall of always-expanded forms.
   const [editingProfileId, setEditingProfileId] = useState<string | null>(null)
   const [backupMessage, setBackupMessage] = useState<string | null>(null)
+  const [epgUrlDraft, setEpgUrlDraft] = useState('')
 
   if (!settingsOpen) return null
 
@@ -222,6 +226,53 @@ export function SettingsPage(): JSX.Element | null {
               </button>
             </div>
           )}
+        </section>
+
+        <section className="settings-section">
+          <h3>EPG sources</h3>
+          <p className="settings-hint">
+            Providers only send listings for roughly the rest of today per channel. Adding a full
+            guide (any XMLTV URL — e.g. one of iptv-org&apos;s country feeds at
+            iptv-org.github.io/epg) fills in later days and channels your provider doesn&apos;t
+            cover. Channels are matched by EPG id first, then by name; your provider&apos;s own
+            listings always win where they exist.
+          </p>
+          {settings.customEpgUrls.length > 0 && (
+            <ul className="lock-list">
+              {settings.customEpgUrls.map((url) => (
+                <li key={url}>
+                  <label>
+                    <span className="epg-source-url">{url}</span>
+                    <button
+                      className="secondary-button"
+                      onClick={() => removeCustomEpgUrl(url)}
+                      title="Remove this EPG source"
+                    >
+                      Remove
+                    </button>
+                  </label>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="pin-set-row">
+            <input
+              type="url"
+              placeholder="https://example.com/epg.xml"
+              value={epgUrlDraft}
+              onChange={(e) => setEpgUrlDraft(e.target.value)}
+            />
+            <button
+              disabled={!epgUrlDraft.trim()}
+              onClick={() => {
+                addCustomEpgUrl(epgUrlDraft)
+                setEpgUrlDraft('')
+              }}
+            >
+              Add source
+            </button>
+          </div>
+          {epgSourcesStatus === 'loading' && <p className="settings-hint">Loading guide sources…</p>}
         </section>
 
         <section className="settings-section">
