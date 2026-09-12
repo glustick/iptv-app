@@ -129,7 +129,9 @@ Recommended enhancements for future development, roughly ordered by priority wit
 
 - **0.7.61** made 0.7.59's EPG source loading accept gzipped guides (`.xml.gz`), reported live as soon as a real source was added — many guide providers (and most M3U playlists' `x-tvg-url` values) serve the compressed form, and the plain `res.text()` read was handing the parser raw gzip bytes. A shared `decodeMaybeGzipBytes` sniffs the gzip magic bytes (`1f 8b`) and decompresses via `DecompressionStream` when present, passing anything else through untouched — deliberately not keying off URL extension or content-type, since providers label these inconsistently and there's no double-decompression risk either (a transfer-level `Content-Encoding: gzip` has already been decoded by fetch before the bytes arrive). Applied to both fetch paths: custom EPG sources in `loadEpgSources`, and M3uClient's EPG/playlist fetch (harmless for the playlist itself; plain text never starts with the magic bytes). Covered by round-trip unit tests using real zlib-compressed XML, and the Settings hint now says plain-or-.xml.gz.
 
-What's below is a fresh list, reflecting where things stand after 0.7.61.
+- **0.7.62** closed the one EPG fetch path 0.7.61 missed: the Xtream provider's own `xmltv.php` guide still read `res.text()`, so a panel serving it as a gzip file body handed the parser raw bytes and silently contributed nothing to the guide pool. `getFullEpgXml` now runs the same `decodeMaybeGzipBytes` sniffing as the custom-source and M3U paths, making plain-XML vs gzip a non-issue on every one of the three fetch paths. Covered by gzip and plain-XML round-trip tests on the client itself.
+
+What's below is a fresh list, reflecting where things stand after 0.7.62.
 
 ## Player controls
 

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
+import { gzipSync } from 'node:zlib'
 import { XtreamClient } from './xtream'
 
 function mockFetchJson(body: unknown, status = 200): void {
@@ -31,6 +32,32 @@ describe('XtreamClient', () => {
     const start = new Date(2026, 0, 5, 9, 5) // Jan 5 2026, 09:05 local
     const url = client.getTimeshiftUrl(101, start, 90.4)
     expect(url).toBe('http://127.0.0.1:9999/timeshift/user/pass/90/2026-01-05:09-05/101.m3u8')
+  })
+
+  it('decompresses a gzip-bodied xmltv.php guide, not just plain XML', async () => {
+    const guide = '<?xml version="1.0"?><tv></tv>'
+    const gzipped = gzipSync(Buffer.from(guide, 'utf8'))
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      arrayBuffer: async () =>
+        gzipped.buffer.slice(gzipped.byteOffset, gzipped.byteOffset + gzipped.byteLength)
+    }) as unknown as typeof fetch
+
+    await expect(client.getFullEpgXml()).resolves.toBe(guide)
+  })
+
+  it('returns a plain-XML xmltv.php guide unchanged', async () => {
+    const guide = '<?xml version="1.0"?><tv><channel id="c"><display-name>C</display-name></channel></tv>'
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      arrayBuffer: async () => new TextEncoder().encode(guide).buffer
+    }) as unknown as typeof fetch
+
+    await expect(client.getFullEpgXml()).resolves.toBe(guide)
   })
 
   it('rejects authentication when the server reports auth: 0', async () => {

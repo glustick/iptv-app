@@ -8,6 +8,7 @@ import type {
   ShortEpgProgram,
   MediaKind
 } from './types'
+import { decodeMaybeGzipBytes } from './epg'
 import type { IptvClient } from './iptvClient'
 
 function decodeBase64Maybe(value: string | undefined | null): string {
@@ -114,7 +115,10 @@ export class XtreamClient implements IptvClient {
     if (!res.ok) {
       throw new Error(`EPG request failed: ${res.status} ${res.statusText}`)
     }
-    return res.text()
+    // Same gzip sniffing as every other EPG fetch path (see decodeMaybeGzipBytes) — some
+    // panels serve xmltv.php as a gzip file body rather than a transfer encoding, which fetch
+    // would not decompress on its own.
+    return decodeMaybeGzipBytes(await res.arrayBuffer())
   }
 
   getStreamUrl(kind: MediaKind, streamId: number, extension: string): string {
