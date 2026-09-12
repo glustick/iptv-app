@@ -59,7 +59,15 @@ export function useTranscodeFallback(): {
   transcoding: boolean
   getSourceUrl: (originalUrl: string) => string
   tryFallback: (data: ErrorData, originalUrl: string, onReload: () => void, onError?: (message: string) => void) => boolean
-  tryFallbackForSilentAudio: (originalUrl: string, onReload: () => void, onError?: (message: string) => void) => boolean
+  tryFallbackForSilentAudio: (
+    originalUrl: string,
+    onReload: () => void,
+    onError?: (message: string) => void,
+    // Live TV's own silent-audio detection (see Player.tsx's hls branch) passes false so the
+    // fallback gets Live's short-segment-window HLS output rather than VOD's event playlist —
+    // defaults to true since the original, VOD-only caller never says otherwise.
+    isVod?: boolean
+  ) => boolean
   reset: () => void
   beginRun: () => void
   // True once any fallback session — the automatic codec fix above, or a user-chosen
@@ -217,9 +225,9 @@ export function useTranscodeFallback(): {
   )
 
   const tryFallbackForSilentAudio = useCallback(
-    (originalUrl: string, onReload: () => void, onError?: (message: string) => void): boolean => {
+    (originalUrl: string, onReload: () => void, onError?: (message: string) => void, isVod = true): boolean => {
       if (awaitingTranscodeRef.current || triedTranscodeRef.current) return false
-      startFallback(originalUrl, true, 0, onReload, onError)
+      startFallback(originalUrl, isVod, 0, onReload, onError)
       return true
     },
     [startFallback]

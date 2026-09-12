@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import Hls from 'hls.js'
 import { useAppStore } from '../store/useAppStore'
 import { PlayerChannelBar } from './PlayerChannelBar'
@@ -157,6 +157,16 @@ export function Player(): JSX.Element | null {
   // something to build on.) playerRef itself stays a plain ref — every other existing use of
   // `playerRef.current` throughout this file is unaffected.
   const [playerMounted, setPlayerMounted] = useState(false)
+  // A stable callback ref, deliberately — an inline arrow here changes identity on every render,
+  // and React answers that by calling the old ref with null and the new one with the node on
+  // every single commit. That null-then-node dance transiently queues playerMounted
+  // false→true, flipping every useHoverAutoHide call site's `enabled` and needlessly detaching
+  // and re-attaching all their window listeners render after render. With one stable identity,
+  // this callback genuinely runs only on real mount/unmount of .player-overlay.
+  const attachPlayerRef = useCallback((node: HTMLDivElement | null) => {
+    playerRef.current = node
+    setPlayerMounted(node !== null)
+  }, [])
   // Detects actual overflow on the controls row itself (scrollWidth > clientWidth), not a fixed
   // window/header width — .player-header spans the full player edge-to-edge regardless of how
   // little room is actually left for buttons once a (possibly long) title takes its share, so a
@@ -545,6 +555,66 @@ export function Player(): JSX.Element | null {
         }
       })
       video.play().catch(() => {})
+
+      // Live TV's own version of the silent-audio poll below (the VOD/series `else` branch).
+      // The hls ERROR handler above catches unsupported audio when hls.js or Chromium's
+      // SourceBuffer *reports* it (fragParsingError, bufferAddCodecError, ...) — but some
+      // channels' audio fails without any error event at all: the video track decodes and plays
+      // fine while the audio track silently produces nothing, leaving no signal on video.error,
+      // in the console, or in any hls.js event. Confirmed shape from the VOD side of the same
+      // failure (webkitAudioDecodedByteCount stays pinned at 0); the only reliable detector is
+      // polling those decode counters, so run the exact same 2-consecutive-tick check here for
+      // live channels and hand it to the same ffmpeg AAC remux. Deliberately does NOT also run
+      // the "never decoded anything at all" timeout branch — a live channel that never decodes
+      // video is a network/playlist problem the fatal error paths above already own, and this
+      // poll shouldn't second-guess them on the way past.
+      let liveSilentAudioTicks = 0
+      let liveSilentAudioCheckAttempts = 0
+      silentAudioCheckTimer = setInterval(() => {
+        liveSilentAudioCheckAttempts += 1
+        const chromiumVideo = video as ChromiumVideoElement
+        const videoBytes = chromiumVideo.webkitVideoDecodedByteCount ?? 0
+        const audioBytes = chromiumVideo.webkitAudioDecodedByteCount ?? 0
+        liveSilentAudioTicks = videoBytes > 0 && audioBytes === 0 ? liveSilentAudioTicks + 1 : 0
+        if (liveSilentAudioTicks < 2) {
+          // Give up quietly once the check budget is spent without ever confirming the symptom
+          // (channel is fine, or its failure was already handled by the error paths above).
+          if (liveSilentAudioCheckAttempts >= SILENT_AUDIO_MAX_CHECK_ATTEMPTS && silentAudioCheckTimer) {
+            clearInterval(silentAudioCheckTimer)
+            silentAudioCheckTimer = null
+          }
+          return
+        }
+        if (silentAudioCheckTimer) clearInterval(silentAudioCheckTimer)
+        silentAudioCheckTimer = null
+        // Same single-connection contention story as the VOD path below: stop the current
+        // stream from pulling any more of the original URL before ffmpeg opens its own
+        // connection to it (see CONNECTION_RELEASE_DELAY_MS) — hls.stopLoad() halts segment
+        // fetching without tearing the instance down (the reload after the fallback resolves
+        // rebuilds everything anyway).
+        video.pause()
+        hls.stopLoad()
+        silentAudioCheckTimer = setTimeout(() => {
+          silentAudioCheckTimer = null
+          const started = tryFallbackForSilentAudio(
+            nowPlaying.url,
+            () => setReloadTick((t) => t + 1),
+            (message) =>
+              setPlaybackError(`Audio codec not supported by this player, and automatic transcoding failed: ${message}`),
+            // Live TV: isVod false, so the fallback remux uses Live's short-segment-window HLS
+            // output (see startTranscode) rather than VOD's event playlist.
+            false
+          )
+          // Declined means a fallback for this channel already ran (e.g. the ERROR handler
+          // above kicked one off, or this IS the transcoded output still coming out silent) —
+          // nothing new will replace the stream we just paused and detached from, so resume it
+          // rather than leaving a frozen frame with no explanation.
+          if (!started) {
+            video.play().catch(() => {})
+            hls.startLoad()
+          }
+        }, CONNECTION_RELEASE_DELAY_MS)
+      }, SILENT_AUDIO_CHECK_INTERVAL_MS)
     } else {
       video.src = nowPlaying.url
       video.play().catch(() => {})
@@ -1086,11 +1156,7 @@ export function Player(): JSX.Element | null {
   return (
     <div
       className="player-overlay"
-      ref={(node) => {
-        playerRef.current = node
-        const isAttached = node !== null
-        if (playerMounted !== isAttached) setPlayerMounted(isAttached)
-      }}
+      ref={attachPlayerRef}
     >
       <div className={`player-header player-header--overlay${!headerVisible ? ' player-header--hidden' : ''}`}>
         <span className="player-title">

@@ -41,8 +41,8 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
  * transition) rather than just trusting `hoveredRef`'s stale value — confirmed live as a real,
  * reported bug without this: `hoveredRef` starts (and, after any earlier real hover, can settle
  * back to) `false`, so if the cursor's first `mousemove` after an external show already reads as
- * "outside the zone," it matches `hoveredRef`'s existing value and the mousemove handler's own
- * transition-only check (`if (inZone === hoveredRef.current) return`) treats that as "nothing
+ * "outside the zone," it matches `hoveredRef`'s existing value and the mousemove handler treats
+ * that as "nothing
  * changed" rather than a leave — the exact case when the cursor simply never moves again after a
  * title loads (or is already resting elsewhere, e.g. wherever the user clicked to start playback,
  * when it loads). Using the last known mousemove event to decide up front — rather than
@@ -62,6 +62,31 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
  * Player.tsx does this with a small `playerMounted` state set from a callback ref, ANDed into
  * every call site's own `enabled` value.
  */
+/**
+ * The pure decision core of useHoverAutoHide's mousemove handling, extracted so its exact
+ * invariants can be unit-tested without a DOM or React renderer (this repo's vitest runs in a
+ * bare node environment). Three rules:
+ *   1. In the zone and hidden (and not explicitly suppressed — see below) ⇒ reveal. This is the
+ *      rule that makes "stuck hidden forever" impossible: visibility is derived from where the
+ *      cursor actually is on every event, not from whether some shadow boolean happens to
+ *      already match.
+ *   2. Out of the zone ⇒ suppression clears (an explicit hide only outlasts a cursor that
+ *      never leaves the zone). Hiding itself is NOT decided here — the caller arms its own
+ *      delay timer, so the overlay fades out rather than vanishing mid-frame.
+ *   3. In the zone and already visible ⇒ no change (the caller owns cancelling/arming timers).
+ */
+export function reconcileHoverVisibility(
+  inZone: boolean,
+  visible: boolean,
+  suppressed: boolean
+): { visible: boolean; suppressed: boolean } {
+  if (inZone) {
+    if (!visible && !suppressed) return { visible: true, suppressed: false }
+    return { visible, suppressed }
+  }
+  return { visible, suppressed: false }
+}
+
 export function useHoverAutoHide<T extends HTMLElement>(
   containerRef: RefObject<T | null>,
   isInZone: (e: MouseEvent, rect: DOMRect) => boolean,
@@ -69,6 +94,15 @@ export function useHoverAutoHide<T extends HTMLElement>(
   enabled: boolean
 ): [boolean, (visible: boolean) => void] {
   const [visible, setVisible] = useState(false)
+  // Mirrors `visible` outside React state so the mousemove handler below can act on real
+  // visibility on every event, not just on hoveredRef transitions — see onMouseMove.
+  const visibleRef = useRef(false)
+  // Set by an explicit external hide (show(false) — e.g. the header's click-to-toggle), which
+  // means "keep it hidden even though the cursor is still inside the zone." Without this, the
+  // reconcile-on-every-mousemove logic below would instantly re-reveal on the very next twitch
+  // of a cursor that's still sitting in the zone it just clicked. Cleared as soon as the cursor
+  // genuinely leaves the zone (or by show(true)), so the very next re-entry reveals again.
+  const suppressedRef = useRef(false)
   const hoveredRef = useRef(false)
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isInZoneRef = useRef(isInZone)
@@ -88,13 +122,22 @@ export function useHoverAutoHide<T extends HTMLElement>(
         clearTimeout(hideTimerRef.current)
         hideTimerRef.current = null
       }
+      visibleRef.current = value
+      suppressedRef.current = !value
       setVisible(value)
       if (!value) return
       const container = containerRef.current
       const lastEvent = lastMouseEventRef.current
       const stillInZone = container && lastEvent ? isInZoneRef.current(lastEvent, container.getBoundingClientRect()) : false
       hoveredRef.current = stillInZone
-      if (!stillInZone) hideTimerRef.current = setTimeout(() => setVisible(false), autoHideMs)
+      // Must keep visibleRef in lockstep with the state it hides (see armHideTimer) — a timer
+      // that cleared only React state would leave visibleRef claiming "still visible," and the
+      // reconcile-on-every-mousemove logic above would then skip the reveal an in-zone cursor
+      // is asking for.
+      if (!stillInZone) hideTimerRef.current = setTimeout(() => {
+        visibleRef.current = false
+        setVisible(false)
+      }, autoHideMs)
     },
     [autoHideMs, containerRef]
   )
@@ -102,10 +145,18 @@ export function useHoverAutoHide<T extends HTMLElement>(
   useEffect(() => {
     const container = containerRef.current
     if (!container || !enabled) return
+    // Fresh listeners ⇒ fresh hover state. hoveredRef can survive a disable/enable cycle of
+    // this effect (cleanup removes listeners but doesn't reset the ref), and a stale true here
+    // used to be exactly what wedged old transition-only logic; keeping it false on attach
+    // means the first real mousemove after re-enabling is always evaluated cleanly.
+    hoveredRef.current = false
 
     function armHideTimer(): void {
       if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
-      hideTimerRef.current = setTimeout(() => setVisible(false), autoHideMs)
+      hideTimerRef.current = setTimeout(() => {
+        visibleRef.current = false
+        setVisible(false)
+      }, autoHideMs)
     }
 
     function onMouseMove(e: MouseEvent): void {
@@ -114,15 +165,34 @@ export function useHoverAutoHide<T extends HTMLElement>(
       if (!currentContainer) return
       const rect = currentContainer.getBoundingClientRect()
       const inZone = isInZoneRef.current(e, rect)
-      if (inZone === hoveredRef.current) return
       hoveredRef.current = inZone
+      // Reconcile real visibility on EVERY mousemove rather than only on hoveredRef transitions.
+      // The old transition-only check (`if (inZone === hoveredRef.current) return`) had a
+      // confirmed-live failure shape: any path that produced "hidden but hoveredRef still true"
+      // (an external hide via show(false), or a disable/enable cycle of this effect, whose
+      // cleanup never resets the refs) made every subsequent in-zone mousemove read as "nothing
+      // changed" — so the overlay never reappeared no matter where the user moved, until the
+      // app was restarted. Deriving the decision from visibility itself instead of a shadow
+      // boolean (see reconcileHoverVisibility) makes that entire class of stuck states
+      // impossible: in the zone and hidden ⇒ reveal, out of the zone and visible ⇒ hide.
+      const next = reconcileHoverVisibility(inZone, visibleRef.current, suppressedRef.current)
+      suppressedRef.current = next.suppressed
+      if (next.visible !== visibleRef.current) {
+        visibleRef.current = next.visible
+        setVisible(next.visible)
+      }
       if (inZone) {
-        if (hideTimerRef.current) {
+        // Covers re-entry while still visible with a pending hide timer (left the zone, came
+        // back before the delay elapsed) just as much as a fresh reveal — either way, the
+        // cursor is in the zone and the overlay is showing, so nothing should be counting
+        // down to hide it.
+        if (visibleRef.current && hideTimerRef.current) {
           clearTimeout(hideTimerRef.current)
           hideTimerRef.current = null
         }
-        setVisible(true)
-      } else {
+      } else if (visibleRef.current && !hideTimerRef.current) {
+        // Only arms when no timer is already pending, so continuous movement outside the zone
+        // keeps the original leave-zone deadline instead of pushing it out forever.
         armHideTimer()
       }
     }
@@ -137,12 +207,16 @@ export function useHoverAutoHide<T extends HTMLElement>(
         return
       }
       hoveredRef.current = false
+      // The cursor is gone from this window entirely — any explicit click-hide suppression
+      // should end with it, since the next interaction is a genuinely fresh one.
+      suppressedRef.current = false
       armHideTimer()
     }
 
     function onWindowBlur(): void {
       if (!hoveredRef.current) return
       hoveredRef.current = false
+      suppressedRef.current = false
       armHideTimer()
     }
 
