@@ -218,6 +218,15 @@ export interface AppSettings {
   videoScaleMode: VideoScaleMode
   multiViewLayout: MultiViewLayout
   hiddenLiveStreamIds: number[]
+  // Live channels that needed the ffmpeg AAC-remux fallback (an unsupported audio codec, or a
+  // user-picked raw audio track), keyed by live streamId — remembering per channel means the
+  // next open skips the silent-audio detection wait entirely and goes straight to the remux.
+  // audioIndex is the raw MPEG-TS audio stream the remux maps (0 = first/default, matching the
+  // automatic fallback; higher = a track picked via "Check Audio Tracks"); url is the exact
+  // stream URL the fix was confirmed against, so provider-side URL changes (token rotation,
+  // timeshift variants of the same channel) safely fall back to normal detection instead of
+  // remuxing the wrong source.
+  liveAudioFixes: Record<string, { audioIndex: number; url: string }>
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -236,7 +245,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   lastVpnProfileId: null,
   videoScaleMode: 'contain',
   multiViewLayout: 2,
-  hiddenLiveStreamIds: []
+  hiddenLiveStreamIds: [],
+  liveAudioFixes: {}
 }
 
 export type VpnStatus = 'disconnected' | 'connecting' | 'connected' | 'error'

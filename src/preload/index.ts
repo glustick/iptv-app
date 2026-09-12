@@ -56,6 +56,11 @@ const api = {
         subtitleTracks: { index: number; language: string | null; supported: boolean }[]
       }>
   },
+  keepAwake: {
+    // Idempotent — the renderer sends its current "is something actually playing" state, not
+    // toggle commands, so duplicates or lost messages can't stack or orphan a blocker.
+    setEnabled: (enabled: boolean) => ipcRenderer.invoke('keepAwake:setEnabled', enabled) as Promise<boolean>
+  },
   safeStorage: {
     isAvailable: () => ipcRenderer.invoke('safeStorage:isAvailable') as Promise<boolean>,
     encrypt: (plainText: string) => ipcRenderer.invoke('safeStorage:encrypt', plainText) as Promise<string>,

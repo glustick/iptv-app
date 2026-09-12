@@ -245,6 +245,12 @@ interface AppState {
   clearMultiViewSlot: (slotIndex: number) => void
   toggleHiddenLiveChannel: (streamId: number) => void
   setShowHiddenLiveChannels: (show: boolean) => void
+  // Records (or, via forgetLiveAudioFix, clears) that a live channel needs the ffmpeg AAC-remux
+  // audio fallback, so the next open skips detection and engages the remux immediately — see
+  // the liveAudioFixes field's own comment in lib/types.ts for the shape and why the URL is
+  // stored alongside the track index.
+  rememberLiveAudioFix: (streamId: number, audioIndex: number, url: string) => void
+  forgetLiveAudioFix: (streamId: number) => void
 
   toggleFavorite: (entry: FavoriteEntry) => void
   isFavorited: (kind: MediaKind, id: number) => boolean
@@ -794,6 +800,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setShowHiddenLiveChannels: (show) => set({ showHiddenLiveChannels: show }),
+
+  rememberLiveAudioFix: (streamId, audioIndex, url) => {
+    const liveAudioFixes = { ...get().settings.liveAudioFixes, [String(streamId)]: { audioIndex, url } }
+    get().updateSettings({ liveAudioFixes })
+  },
+
+  forgetLiveAudioFix: (streamId) => {
+    const current = get().settings.liveAudioFixes
+    if (!(String(streamId) in current)) return
+    const liveAudioFixes = { ...current }
+    delete liveAudioFixes[String(streamId)]
+    get().updateSettings({ liveAudioFixes })
+  },
 
   toggleFavorite: (entry) => {
     const key = favoriteKey(entry)

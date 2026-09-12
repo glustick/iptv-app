@@ -56,6 +56,39 @@ describe('hidden Live TV channels', () => {
   })
 })
 
+describe('remembered live audio fixes', () => {
+  it('records a fix keyed by streamId with its track index and confirmed URL', () => {
+    useAppStore.getState().rememberLiveAudioFix(42, 0, 'http://example.com/live/42.m3u8')
+    expect(useAppStore.getState().settings.liveAudioFixes).toEqual({
+      '42': { audioIndex: 0, url: 'http://example.com/live/42.m3u8' }
+    })
+  })
+
+  it('overwrites a channel’s earlier fix when a new one is confirmed', () => {
+    useAppStore.getState().rememberLiveAudioFix(42, 0, 'http://example.com/live/42.m3u8')
+    useAppStore.getState().rememberLiveAudioFix(42, 2, 'http://example.com/live/42.m3u8')
+    expect(useAppStore.getState().settings.liveAudioFixes).toEqual({
+      '42': { audioIndex: 2, url: 'http://example.com/live/42.m3u8' }
+    })
+  })
+
+  it('keeps other channels’ fixes when one is forgotten', () => {
+    useAppStore.getState().rememberLiveAudioFix(42, 0, 'http://example.com/live/42.m3u8')
+    useAppStore.getState().rememberLiveAudioFix(7, 1, 'http://example.com/live/7.m3u8')
+
+    useAppStore.getState().forgetLiveAudioFix(42)
+
+    expect(useAppStore.getState().settings.liveAudioFixes).toEqual({
+      '7': { audioIndex: 1, url: 'http://example.com/live/7.m3u8' }
+    })
+  })
+
+  it('forgetting a channel with no recorded fix changes nothing', () => {
+    useAppStore.getState().forgetLiveAudioFix(99)
+    expect(useAppStore.getState().settings.liveAudioFixes).toEqual({})
+  })
+})
+
 describe('locked-category namespacing (requestCategory / setCategoryLocked)', () => {
   it('prompts for a PIN when the current view mode\'s namespaced key is locked', () => {
     useAppStore.setState({ settings: { ...DEFAULT_SETTINGS, parentalPin: '1234' }, viewMode: 'live' })

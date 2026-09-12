@@ -50,6 +50,10 @@ interface TranscodeAPI {
   probeTracks: (sourceUrl: string) => Promise<{ audioTracks: AudioTrackInfo[]; subtitleTracks: SubtitleTrackInfo[] }>
 }
 
+interface KeepAwakeAPI {
+  setEnabled: (enabled: boolean) => Promise<boolean>
+}
+
 interface SafeStorageAPI {
   isAvailable: () => Promise<boolean>
   encrypt: (plainText: string) => Promise<string>
@@ -92,6 +96,7 @@ declare global {
       backup: BackupAPI
       proxy: ProxyAPI
       transcode: TranscodeAPI
+      keepAwake: KeepAwakeAPI
       safeStorage: SafeStorageAPI
       vpn: VpnAPI
       updater: UpdaterAPI

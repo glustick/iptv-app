@@ -140,6 +140,9 @@ export function Player(): JSX.Element | null {
   const singleConnectionAccount = useAppStore((s) => s.singleConnectionAccount)
   const shortEpgByStream = useAppStore((s) => s.shortEpgByStream)
   const loadShortEpg = useAppStore((s) => s.loadShortEpg)
+  const liveAudioFixes = useAppStore((s) => s.settings.liveAudioFixes)
+  const rememberLiveAudioFix = useAppStore((s) => s.rememberLiveAudioFix)
+  const forgetLiveAudioFix = useAppStore((s) => s.forgetLiveAudioFix)
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const hlsRef = useRef<Hls | null>(null)
@@ -486,8 +489,19 @@ export function Player(): JSX.Element | null {
           tryFallback(
             data,
             nowPlaying.url,
-            () => setReloadTick((t) => t + 1),
-            (message) => setPlaybackError(`Audio codec not supported by this player, and automatic transcoding failed: ${message}`)
+            () => {
+              // Remux confirmed working — remember it for this live channel so the next open
+              // skips detection entirely (see the apply-remembered-audio-fix effect below).
+              // audioIndex 0 = the remux's default first audio track.
+              if (nowPlaying.kind === 'live') rememberLiveAudioFix(nowPlaying.streamId, 0, nowPlaying.url)
+              setReloadTick((t) => t + 1)
+            },
+            (message) => {
+              // A failed remux invalidates whatever was remembered (self-healing: the next
+              // open re-detects, and re-records only on success).
+              if (nowPlaying.kind === 'live') forgetLiveAudioFix(nowPlaying.streamId)
+              setPlaybackError(`Audio codec not supported by this player, and automatic transcoding failed: ${message}`)
+            }
           )
         ) {
           setPlaybackError(null)
@@ -598,9 +612,16 @@ export function Player(): JSX.Element | null {
           silentAudioCheckTimer = null
           const started = tryFallbackForSilentAudio(
             nowPlaying.url,
-            () => setReloadTick((t) => t + 1),
-            (message) =>
-              setPlaybackError(`Audio codec not supported by this player, and automatic transcoding failed: ${message}`),
+            () => {
+              // Remux confirmed working — remember it so this channel never pays the
+              // detect-wait again (see the apply-remembered-audio-fix effect below).
+              rememberLiveAudioFix(nowPlaying.streamId, 0, nowPlaying.url)
+              setReloadTick((t) => t + 1)
+            },
+            (message) => {
+              forgetLiveAudioFix(nowPlaying.streamId)
+              setPlaybackError(`Audio codec not supported by this player, and automatic transcoding failed: ${message}`)
+            },
             // Live TV: isVod false, so the fallback remux uses Live's short-segment-window HLS
             // output (see startTranscode) rather than VOD's event playlist.
             false
@@ -717,6 +738,55 @@ export function Player(): JSX.Element | null {
       }
     }
   }, [nowPlaying, bufferProfile, reloadTick])
+
+  // A live channel with a remembered audio fix (settings.liveAudioFixes) opens straight into
+  // the ffmpeg remux instead of re-running detection: without this, every visit to a channel
+  // whose audio needs the fallback paid the full discovery cost again — up to ~10s of
+  // silent-audio polling or waiting for an hls error, plus the 8s connection-release delay,
+  // plus ffmpeg startup — every single time, despite the app having already learned exactly
+  // what that channel needs. The original stream keeps playing in the meantime (its video is
+  // fine; only the audio is broken) and swaps to the remux the moment it's ready — the exact
+  // flow the automatic detection paths already use, minus the wait to detect. Deliberately
+  // declared after the main playback effect above so beginTranscodeRun() has already reset the
+  // in-flight flag this turn. The remembered fix records the exact URL it was confirmed
+  // against; a mismatch (token rotation, a timeshift variant of the same channel) safely
+  // skips this and falls back to normal detection rather than remuxing the wrong source.
+  useEffect(() => {
+    if (!nowPlaying || nowPlaying.kind !== 'live') return
+    if (hasFallbackActive || transcoding) return
+    const fix = liveAudioFixes[String(nowPlaying.streamId)]
+    if (!fix || fix.url !== nowPlaying.url) return
+    switchLiveAudioTrack(
+      nowPlaying.url,
+      fix.audioIndex,
+      () => {
+        rememberLiveAudioFix(nowPlaying.streamId, fix.audioIndex, fix.url)
+        setReloadTick((t) => t + 1)
+      },
+      (message) => {
+        // The remembered remux no longer works for this channel (provider-side change, most
+        // likely) — forget it so the next open re-detects from scratch instead of retrying a
+        // fix that just failed.
+        forgetLiveAudioFix(nowPlaying.streamId)
+        setPlaybackError(`Audio codec not supported by this player, and automatic transcoding failed: ${message}`)
+      }
+    )
+  }, [nowPlaying, liveAudioFixes, hasFallbackActive, transcoding, switchLiveAudioTrack, rememberLiveAudioFix, forgetLiveAudioFix])
+
+  // Keep the display from sleeping while something is genuinely being watched — an IPTV app
+  // that lets the OS blank the screen mid-match is missing something every hardware set-top
+  // box just does. `paused` is synced from the video element itself (see syncPlayState in the
+  // playback effect), so the programmatic pause during an audio-fix transcode would otherwise
+  // release the blocker right in the middle of a wait the user is actively staring at — hence
+  // the transcoding exemption. A playback error or closing the player releases it; Multi-View
+  // tiles deliberately don't engage it (a muted browse grid isn't "watching"). The main
+  // process also force-stops the blocker on quit, in case the renderer dies mid-playback.
+  useEffect(() => {
+    const watching = Boolean(nowPlaying) && !playbackError && (!paused || transcoding)
+    // The resolved value (the main process's post-call isActive echo) is deliberately unused —
+    // this is fire-and-forget state sync, idempotent on both ends.
+    void window.api.keepAwake.setEnabled(watching)
+  }, [nowPlaying, paused, playbackError, transcoding])
 
   // The channel bar auto-hides after a few seconds of inactivity, like a real set-top box's
   // channel banner — but is genuinely paused, not just re-armed, while the cursor is over it
@@ -1305,8 +1375,16 @@ export function Player(): JSX.Element | null {
                       switchLiveAudioTrack(
                         nowPlaying.url,
                         index,
-                        () => setReloadTick((t) => t + 1),
-                        (message) => setPlaybackError(`Failed to switch audio track: ${message}`)
+                        () => {
+                          // A hand-picked track is remembered exactly like the automatic
+                          // fallback's default one, so reopening the channel restores it.
+                          rememberLiveAudioFix(nowPlaying.streamId, index, nowPlaying.url)
+                          setReloadTick((t) => t + 1)
+                        },
+                        (message) => {
+                          forgetLiveAudioFix(nowPlaying.streamId)
+                          setPlaybackError(`Failed to switch audio track: ${message}`)
+                        }
                       )
                     }}
                   >

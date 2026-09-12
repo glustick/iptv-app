@@ -10,6 +10,7 @@ import {
   Notification,
   Menu,
   safeStorage,
+  powerSaveBlocker,
   type MenuItemConstructorOptions
 } from 'electron'
 import { join, extname, dirname, basename, isAbsolute, sep } from 'path'
@@ -33,6 +34,7 @@ import { createProxyServer, type UpstreamClientRequest } from './proxyServer'
 import { createFfmpegResolver } from './ffmpegResolver'
 import { createTranscodeService } from './transcodeService'
 import { createVpnRecoveryService } from './vpnRecoveryService'
+import { createKeepAwakeService } from './keepAwakeService'
 
 const execFileAsync = promisify(execFile)
 
@@ -147,6 +149,15 @@ const resolveFfmpegPath = createFfmpegResolver(bundledFfmpegPath ?? null, {
 // spawn/poll/cleanup logic lives in transcodeService.ts, decoupled from Electron entirely so it
 // can be tested directly — see transcodeService.test.ts.
 const transcodeService = createTranscodeService({ resolveFfmpegPath })
+
+// Holds off display sleep while the renderer reports actual playback (see the keepAwake:setEnabled
+// handler + Player.tsx's effect) — the app-level wrapper around powerSaveBlocker, injected here
+// with the real Electron API the same way the services above take theirs.
+const keepAwakeService = createKeepAwakeService({
+  startBlocker: (type) => powerSaveBlocker.start(type),
+  stopBlocker: (id) => powerSaveBlocker.stop(id),
+  isBlockerStarted: (id) => powerSaveBlocker.isStarted(id)
+})
 
 // ---------------------------------------------------------------------------
 // OpenVPN (optional, off by default): tunnels only this app's own traffic to
@@ -973,6 +984,13 @@ app.whenReady().then(async () => {
   )
   ipcMain.handle('transcode:stop', (_event, sessionId: string) => transcodeService.stopTranscode(sessionId))
   ipcMain.handle('transcode:probeTracks', (_event, sourceUrl: string) => transcodeService.probeTracks(sourceUrl))
+  // The renderer re-sends its current watching state whenever playback starts, pauses, errors,
+  // or stops (Player.tsx's keep-awake effect) — idempotent on both ends, so a lost or duplicate
+  // message can never stack blockers or leave one dangling.
+  ipcMain.handle('keepAwake:setEnabled', (_event, enabled: boolean) => {
+    keepAwakeService.setEnabled(enabled)
+    return keepAwakeService.isActive()
+  })
 
   ipcMain.handle('vpn:selectConfigFile', async () => {
     if (!mainWindowRef) return null
@@ -1106,6 +1124,11 @@ app.on('window-all-closed', () => {
 let quittingAfterVpnStop = false
 app.on('before-quit', (event) => {
   transcodeService.stopAll()
+  // Belt-and-braces: the renderer's keep-awake effect releases the blocker itself when
+  // playback stops, but if the app quits mid-playback the renderer may never get that chance —
+  // powerSaveBlocker would otherwise keep asserting display-sleep until process exit anyway,
+  // and being explicit costs nothing.
+  keepAwakeService.setEnabled(false)
   if (vpnRuntime.status !== 'disconnected' && !quittingAfterVpnStop) {
     event.preventDefault()
     quittingAfterVpnStop = true
