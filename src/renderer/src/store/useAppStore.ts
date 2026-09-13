@@ -81,6 +81,11 @@ let activeShortEpgFetches = 0
 // each entry's own try/finally (see loadShortEpg) already handles its completion and chains the
 // next queued fetch itself.
 const shortEpgQueue: Array<() => void | Promise<void>> = []
+// Monotonic token for loadEpgSources runs: adding/removing a source while a several-MB guide
+// download is still in flight starts a newer run, and only the newest run may commit its
+// results — letting a stale run finish would RESURRECT sources the user just removed (they'd
+// stay active in the guide and match report while unlisted and undeletable in Settings).
+let epgSourcesLoadSeq = 0
 const shortEpgInFlight = new Set<number>()
 const shortEpgFailedAt = new Map<number, number>()
 
@@ -91,6 +96,11 @@ function runNextShortEpgFetch(): void {
   activeShortEpgFetches++
   void next()
 }
+
+/** Settings display label for the provider's own xmltv.php guide. Also how that guide's pool
+ * entry is told apart from user-added URL sources — a custom source's label IS its URL, which
+ * can't collide with this literal in any realistic setup. */
+export const PROVIDER_GUIDE_LABEL = 'Provider guide (xmltv.php)'
 
 /** One row of the per-source EPG match report shown in Settings — see applyEpgPool. */
 export interface EpgSourceMatchStats {
@@ -780,6 +790,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   loadEpgSources: async () => {
     const { client, activeProfile, proxyBase, settings } = get()
     if (!client) return
+    const seq = ++epgSourcesLoadSeq
     set({ epgSourcesStatus: 'loading' })
     const sources: EpgData[] = []
     // Aligned index-for-index with `sources` — applyEpgPool's match report needs to know which
@@ -797,7 +808,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (activeProfile?.kind !== 'm3u') {
       try {
         sources.push(parseXmltv(await client.getFullEpgXml()))
-        labels.push('Provider guide (xmltv.php)')
+        labels.push(PROVIDER_GUIDE_LABEL)
         providerGuideAvailable = true
       } catch {
         providerGuideAvailable = false
@@ -831,6 +842,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         console.error(`[epg] failed to load custom EPG source ${url}:`, err)
       }
     }
+    // A newer run superseded this one (a source was added/removed mid-download) — its own
+    // completion commits the fresher state; committing here would re-add removed sources.
+    if (seq !== epgSourcesLoadSeq) return
     set({ epgSources: sources, epgSourceLabels: labels, providerGuideAvailable, epgSourcesStatus: 'ready', epgSourceIssues: issues })
     get().applyEpgPool()
   },
@@ -846,7 +860,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     // name join and which channel names found no counterpart at all.
     const stats: EpgSourceMatchStats[] = []
     if (providerGuideAvailable === false) {
-      stats.push({ source: 'Provider guide (xmltv.php)', available: false, loadedChannels: liveStreams.length, matched: 0, byId: 0, byName: 0, byManual: 0, unmatchedNames: [] })
+      stats.push({ source: PROVIDER_GUIDE_LABEL, available: false, loadedChannels: liveStreams.length, matched: 0, byId: 0, byName: 0, byManual: 0, unmatchedNames: [] })
     }
     epgSources.forEach((source, index) => {
       // Manual mappings are keyed to the custom source's own URL (the provider guide is not
@@ -872,7 +886,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           if (unmatchedNames.length < 30) unmatchedNames.push(stream.name)
         }
       }
-      const label = index === 0 && providerGuideAvailable === true ? 'Provider guide (xmltv.php)' : epgSourceLabels[index] ?? `Source ${index + 1}`
+      const label = index === 0 && providerGuideAvailable === true ? PROVIDER_GUIDE_LABEL : epgSourceLabels[index] ?? `Source ${index + 1}`
       stats.push({
         source: label,
         available: true,
@@ -920,8 +934,28 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   removeCustomEpgUrl: (url) => {
     const current = get().settings.customEpgUrls
-    if (!current.includes(url)) return
-    get().updateSettings({ customEpgUrls: current.filter((u) => u !== url) })
+    if (current.includes(url)) {
+      get().updateSettings({ customEpgUrls: current.filter((u) => u !== url) })
+    }
+    // Prune the source out of the in-memory pool immediately, even when it wasn't in settings
+    // anymore — the Settings list renders the union of persisted and live sources (see
+    // unionEpgSourceUrls), so leaving it in the pool would keep it visible-but-undeletable.
+    // Custom sources are labeled by their URL, so this lookup is exact.
+    const idx = get().epgSourceLabels.indexOf(url)
+    if (idx >= 0) {
+      set({
+        epgSources: get().epgSources.filter((_, i) => i !== idx),
+        epgSourceLabels: get().epgSourceLabels.filter((_, i) => i !== idx)
+      })
+    }
+    const issues = { ...get().epgSourceIssues }
+    if (url in issues) {
+      delete issues[url]
+      set({ epgSourceIssues: issues })
+    }
+    get().applyEpgPool()
+    // Reload the remaining sources so pool state matches settings exactly; the run-token guard
+    // makes any in-flight older load (started before this removal) harmless.
     if (get().client) void get().loadEpgSources()
   },
 

@@ -137,7 +137,39 @@ export async function loadSettings(): Promise<AppSettings> {
   // so a bare ID could lock the wrong section's category. IDs are now namespaced as
   // "section:id"; drop any legacy bare ones rather than guessing which section they meant —
   // applying a lock to the wrong section would be worse than a one-time reset.
-  const result = { ...merged, lockedCategoryIds: merged.lockedCategoryIds.filter((id) => id.includes(':')) }
+  const result = { ...merged }
+  // Shape-harden the fields that render as lists/objects all over the app — a partially-written
+  // or externally-corrupted settings file (disk-full mid-write, endpoint-security rollback,
+  // hand-editing) used to surface as silently broken UI: a non-array customEpgUrls, for one,
+  // made the EPG sources list vanish while in-memory pool state kept those sources alive and
+  // unremovable. Resetting the one bad field to its default loses that list but keeps the app
+  // working and logs exactly what happened — strictly better than the silent misbehavior.
+  if (!Array.isArray(result.lockedCategoryIds)) {
+    console.warn('[settings] lockedCategoryIds was not an array on disk — resetting it')
+    result.lockedCategoryIds = []
+  }
+  if (!Array.isArray(result.customEpgUrls)) {
+    console.warn('[settings] customEpgUrls was not an array on disk — resetting it')
+    result.customEpgUrls = []
+  }
+  if (!Array.isArray(result.epgChannelMappings)) {
+    console.warn('[settings] epgChannelMappings was not an array on disk — resetting it')
+    result.epgChannelMappings = []
+  }
+  if (!Array.isArray(result.vpnProfiles)) {
+    console.warn('[settings] vpnProfiles was not an array on disk — resetting it')
+    result.vpnProfiles = []
+  }
+  if (!Array.isArray(result.hiddenLiveStreamIds)) {
+    console.warn('[settings] hiddenLiveStreamIds was not an array on disk — resetting it')
+    result.hiddenLiveStreamIds = []
+  }
+  if (typeof result.liveAudioFixes !== 'object' || result.liveAudioFixes === null || Array.isArray(result.liveAudioFixes)) {
+    console.warn('[settings] liveAudioFixes was not an object on disk — resetting it')
+    result.liveAudioFixes = {}
+  }
+  // Namespaced lock IDs — drop legacy bare ones rather than guessing which section they meant.
+  result.lockedCategoryIds = result.lockedCategoryIds.filter((id) => id.includes(':'))
   let needsMigration = false
   if (result.parentalPin) {
     const wasLegacyPlaintext = !result.parentalPin.startsWith(ENCRYPTED_PREFIX)

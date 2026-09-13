@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { useAppStore } from '../store/useAppStore'
+import { useAppStore, PROVIDER_GUIDE_LABEL } from '../store/useAppStore'
+import { unionEpgSourceUrls } from '../lib/epg'
 import type { BufferProfile, ClockFormat, VpnProfile } from '../lib/types'
 
 interface VpnDraft {
@@ -67,6 +68,11 @@ export function SettingsPage(): JSX.Element | null {
   const [selectedStreamId, setSelectedStreamId] = useState<number | null>(null)
 
   if (!settingsOpen) return null
+
+  // The EPG sources list is the UNION of persisted and currently-live sources (see
+  // unionEpgSourceUrls) — anything the app is still fetching stays listed and removable even
+  // if a state round-trip bug ever leaves it out of settings.
+  const listedSources = unionEpgSourceUrls(settings.customEpgUrls, epgSourceLabels, PROVIDER_GUIDE_LABEL)
 
   function toggleMappingEditor(url: string): void {
     if (mappingOpenFor === url) {
@@ -424,9 +430,9 @@ export function SettingsPage(): JSX.Element | null {
             you map manually overrides both when the automatic joins get one wrong or miss it.
             Your provider&apos;s own listings always win where they exist.
           </p>
-          {settings.customEpgUrls.length > 0 && (
+          {listedSources.length > 0 && (
             <ul className="lock-list">
-              {settings.customEpgUrls.map((url) => {
+              {listedSources.map((url) => {
                 const mappings = settings.epgChannelMappings.filter((m) => m.sourceUrl === url)
                 return (
                   <li key={url}>

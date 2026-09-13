@@ -7,7 +7,8 @@ import {
   xmltvProgrammesToShort,
   mergeShortEpg,
   matchXmltvChannels,
-  decodeMaybeGzipBytes
+  decodeMaybeGzipBytes,
+  unionEpgSourceUrls
 } from './epg'
 import type { LiveStream, ShortEpgProgram } from './types'
 
@@ -220,6 +221,24 @@ describe('decodeMaybeGzipBytes', () => {
   it('handles degenerate short bodies without throwing', async () => {
     expect(await decodeMaybeGzipBytes(new ArrayBuffer(0))).toBe('')
     expect(await decodeMaybeGzipBytes(new Uint8Array([0x3c]).buffer)).toBe('<')
+  })
+})
+
+describe('unionEpgSourceUrls', () => {
+  const provider = 'Provider guide (xmltv.php)'
+
+  it('lists persisted urls in saved order, then any live-but-unpersisted source, excluding the provider guide', () => {
+    expect(
+      unionEpgSourceUrls(['http://b.xml', 'http://a.xml'], [provider, 'http://a.xml', 'http://stale.xml'], provider)
+    ).toEqual(['http://b.xml', 'http://a.xml', 'http://stale.xml'])
+  })
+
+  it('returns just the persisted list when live labels match it exactly', () => {
+    expect(unionEpgSourceUrls(['http://a.xml'], ['http://a.xml'], provider)).toEqual(['http://a.xml'])
+  })
+
+  it('returns nothing for a fresh setup with no sources at all', () => {
+    expect(unionEpgSourceUrls([], [], provider)).toEqual([])
   })
 })
 

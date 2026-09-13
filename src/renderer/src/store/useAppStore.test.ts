@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { useAppStore } from './useAppStore'
 import { XtreamClient } from '../lib/xtream'
 import { DEFAULT_SETTINGS } from '../lib/types'
+import { saveSettings, saveProfiles, saveActiveProfileId } from '../lib/storage'
 import type { LiveStream, VodStream, FavoriteEntry, RecentlyWatchedEntry, VpnProfile, XtreamProfile, ShortEpgProgram } from '../lib/types'
 
 // Same rationale as storage.test.ts: the vitest environment is plain Node (see
@@ -20,6 +21,10 @@ class MemoryStorage {
 
 beforeEach(() => {
   ;(globalThis as unknown as { localStorage: MemoryStorage }).localStorage = new MemoryStorage()
+  // Some tests below stub globalThis.window to stand in for Electron's preload bridge; without
+  // this, that stub would leak into every later test and make storage.ts's hasElectronApi()
+  // claim a main process exists when it doesn't.
+  delete (globalThis as { window?: unknown }).window
   // Reset just the plain-data fields between tests — the store is a single module-level
   // singleton (create() bundles state and actions into one object), so a full replace would
   // wipe out the action functions too; a partial update merges instead.
@@ -1129,5 +1134,284 @@ describe('findChannelByNumber', () => {
     useAppStore.setState({ client })
 
     expect(await useAppStore.getState().findChannelByNumber(999)).toBeNull()
+  })
+})
+
+describe('EPG source list integrity (stale loads and removals)', () => {
+  function makeGuideClient(): XtreamClient {
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    // Provider guide blocked, like most resellers — custom sources are the only pool entries.
+    vi.spyOn(client, 'getFullEpgXml').mockRejectedValue(new Error('403 Forbidden'))
+    return client
+  }
+
+  const XML_A = `<?xml version="1.0"?>
+<tv>
+  <channel id="a1"><display-name>Alpha One</display-name></channel>
+  <programme start="20300101120000 +0000" stop="20300101130000 +0000" channel="a1"><title>Alpha Show</title></programme>
+</tv>`
+  const XML_B = `<?xml version="1.0"?>
+<tv>
+  <channel id="b1"><display-name>Beta One</display-name></channel>
+  <programme start="20300101120000 +0000" stop="20300101130000 +0000" channel="b1"><title>Beta Show</title></programme>
+</tv>`
+
+  function respond(body: string): Promise<Response> {
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      arrayBuffer: async () => new TextEncoder().encode(body).buffer
+    } as unknown as Response)
+  }
+
+  it('a stale in-flight load cannot resurrect a source removed while it was running', async () => {
+    let resolveA!: (value: Response) => void
+    global.fetch = vi.fn((url: string) => {
+      if (String(url).includes('source-a')) {
+        return new Promise<Response>((resolve) => {
+          resolveA = resolve
+        })
+      }
+      return respond(XML_B)
+    }) as unknown as typeof fetch
+
+    useAppStore.setState({
+      client: makeGuideClient(),
+      proxyBase: 'http://proxy',
+      settings: {
+        ...DEFAULT_SETTINGS,
+        customEpgUrls: ['http://guides.example.com/source-a.xml', 'http://guides.example.com/source-b.xml']
+      }
+    })
+
+    // Run 1 captures [A, B] and then hangs inside A's fetch.
+    const run1 = useAppStore.getState().loadEpgSources()
+    await vi.waitFor(() => expect(typeof resolveA).toBe('function'))
+
+    // Removing A starts run 2 over [B] only, which completes first.
+    useAppStore.getState().removeCustomEpgUrl('http://guides.example.com/source-a.xml')
+    await vi.waitFor(() => expect(useAppStore.getState().epgSourcesStatus).toBe('ready'))
+    expect(useAppStore.getState().epgSourceLabels).toEqual(['http://guides.example.com/source-b.xml'])
+
+    // Now let the stale run finish — it must NOT commit (that would resurrect A everywhere).
+    resolveA(await respond(XML_A))
+    await run1
+    expect(useAppStore.getState().epgSourceLabels).toEqual(['http://guides.example.com/source-b.xml'])
+    expect(useAppStore.getState().epgSources).toHaveLength(1)
+    expect(useAppStore.getState().epgSourceIssues['http://guides.example.com/source-a.xml']).toBeUndefined()
+  })
+
+  it('removeCustomEpgUrl prunes an already-loaded source immediately and clears it from settings', async () => {
+    global.fetch = vi.fn(() => respond(XML_A)) as unknown as typeof fetch
+    useAppStore.setState({
+      client: makeGuideClient(),
+      proxyBase: 'http://proxy',
+      settings: { ...DEFAULT_SETTINGS, customEpgUrls: ['http://guides.example.com/source-a.xml'] }
+    })
+
+    await useAppStore.getState().loadEpgSources()
+    expect(useAppStore.getState().epgSourceLabels).toEqual(['http://guides.example.com/source-a.xml'])
+    expect(useAppStore.getState().epgSources).toHaveLength(1)
+
+    useAppStore.getState().removeCustomEpgUrl('http://guides.example.com/source-a.xml')
+
+    // Synchronously gone from every surface, not just marked for the next reload.
+    expect(useAppStore.getState().settings.customEpgUrls).toEqual([])
+    expect(useAppStore.getState().epgSourceLabels).toEqual([])
+    expect(useAppStore.getState().epgSources).toHaveLength(0)
+  })
+})
+
+describe('connect() and init() control flow', () => {
+  function stubElectronApi(backing: Record<string, unknown> = {}): Record<string, unknown> {
+    ;(globalThis as unknown as { window: unknown }).window = {
+      api: {
+        store: {
+          get: async (key: string) => backing[key],
+          set: async (key: string, value: unknown) => {
+            backing[key] = value
+          }
+        },
+        proxy: { getBaseUrl: async () => 'http://proxy', setTarget: async () => {} },
+        vpn: {
+          disconnect: async () => {},
+          onStatusChange: () => () => {},
+          onStreamRouteWarning: () => () => {}
+        },
+        updater: {
+          check: async () => {},
+          onAvailable: () => () => {},
+          onProgress: () => () => {},
+          onDownloaded: () => () => {},
+          onError: () => () => {}
+        }
+      },
+      addEventListener: () => {},
+      removeEventListener: () => {}
+    }
+    return backing
+  }
+
+  // connect() constructs its own XtreamClient internally, so instance spies don't apply —
+  // prototype spies do, for every instance created during the test.
+  function stubXtreamClient(maxConnections = '2'): void {
+    vi.spyOn(XtreamClient.prototype, 'authenticate').mockResolvedValue({
+      user_info: {
+        username: 'user',
+        password: 'pass',
+        status: 'Active',
+        exp_date: null,
+        is_trial: '0',
+        active_cons: '1',
+        created_at: '0',
+        max_connections: maxConnections
+      },
+      server_info: {
+        url: 'http://example.com',
+        port: '80',
+        https_port: '443',
+        server_protocol: 'http',
+        timezone: 'UTC'
+      }
+    })
+    vi.spyOn(XtreamClient.prototype, 'getLiveCategories').mockResolvedValue([
+      { category_id: '1', category_name: 'News', parent_id: 0 }
+    ])
+    vi.spyOn(XtreamClient.prototype, 'getLiveStreams').mockResolvedValue([])
+    vi.spyOn(XtreamClient.prototype, 'getFullEpgXml').mockRejectedValue(new Error('403 Forbidden'))
+  }
+
+  it('connect() routes through the proxy, resets per-provider EPG state, and flags a single-connection account', async () => {
+    stubElectronApi()
+    stubXtreamClient('1')
+    const profile: XtreamProfile = {
+      id: 'p1',
+      name: 'Test',
+      server: 'http://example.com',
+      username: 'user',
+      password: 'pass'
+    }
+    useAppStore.setState({
+      profiles: [profile],
+      client: null,
+      status: 'idle',
+      shortEpgByStream: { 999: [] },
+      shortEpgFetchedAt: { 999: 1 },
+      epgSources: [],
+      epgSourceLabels: [],
+      epgSourceMatchStats: []
+    })
+
+    await useAppStore.getState().connect('p1')
+
+    const state = useAppStore.getState()
+    expect(state.status).toBe('ready')
+    expect(state.singleConnectionAccount).toBe(true)
+    expect(state.activeProfile?.id).toBe('p1')
+    expect(state.proxyBase).toBe('http://proxy')
+    // The previous provider's per-provider caches are cleared, not carried over.
+    expect(state.shortEpgByStream).toEqual({})
+    expect(state.shortEpgFetchedAt).toEqual({})
+    // The guide-source load is fire-and-forget; it still settles to ready with no sources.
+    await vi.waitFor(() => expect(useAppStore.getState().epgSourcesStatus).toBe('ready'))
+    expect(useAppStore.getState().epgSources).toEqual([])
+  })
+
+  it('init() loads persisted state and auto-connects the saved profile', async () => {
+    const backing = stubElectronApi()
+    stubXtreamClient('2')
+    global.fetch = vi.fn(() => Promise.reject(new Error('no network in tests'))) as unknown as typeof fetch
+    const profile: XtreamProfile = {
+      id: 'p1',
+      name: 'Saved',
+      server: 'http://example.com',
+      username: 'user',
+      password: 'pass'
+    }
+    // Seed through the real storage layer, so this exercises exactly the keys init() reads.
+    await saveSettings({ ...DEFAULT_SETTINGS, customEpgUrls: ['http://guides.example.com/g.xml'], bufferProfile: 'lowLatency' })
+    await saveProfiles([profile])
+    await saveActiveProfileId('p1')
+    expect(Object.keys(backing).length).toBeGreaterThan(0)
+
+    useAppStore.setState({ profiles: [], client: null, status: 'idle', settings: DEFAULT_SETTINGS })
+
+    await useAppStore.getState().init()
+
+    const state = useAppStore.getState()
+    expect(state.status).toBe('ready')
+    expect(state.activeProfile?.id).toBe('p1')
+    expect(state.settings.bufferProfile).toBe('lowLatency')
+    expect(state.settings.customEpgUrls).toEqual(['http://guides.example.com/g.xml'])
+    expect(state.profiles).toHaveLength(1)
+    expect(state.multiViewSlots).toHaveLength(state.settings.multiViewLayout)
+  })
+
+  it('removeProfile() disconnects when the removed profile is the active one', async () => {
+    const profile: XtreamProfile = { id: 'p1', name: 'A', server: 'http://example.com', username: 'u', password: 'p' }
+    const other: XtreamProfile = { id: 'p2', name: 'B', server: 'http://example.org', username: 'u', password: 'p' }
+    useAppStore.setState({
+      profiles: [profile, other],
+      activeProfile: profile,
+      client: new XtreamClient('http://example.com', 'u', 'p'),
+      status: 'ready'
+    })
+
+    await useAppStore.getState().removeProfile('p1')
+
+    const state = useAppStore.getState()
+    expect(state.profiles.map((p) => p.id)).toEqual(['p2'])
+    expect(state.status).toBe('idle')
+    expect(state.client).toBeNull()
+    expect(state.activeProfile).toBeNull()
+  })
+})
+
+describe('VPN profile CRUD', () => {
+  const profileA: VpnProfile = { id: 'a', name: 'A', configPath: '/a.ovpn', configName: 'a.ovpn', username: null, password: null }
+  const profileB: VpnProfile = { id: 'b', name: 'B', configPath: '/b.ovpn', configName: 'b.ovpn', username: null, password: null }
+
+  it('addVpnProfile() appends a profile with a generated id', async () => {
+    await useAppStore.getState().addVpnProfile({ name: 'Work', configPath: '/w.ovpn', configName: 'w.ovpn', username: null, password: null })
+
+    const profiles = useAppStore.getState().settings.vpnProfiles
+    expect(profiles).toHaveLength(1)
+    expect(profiles[0].name).toBe('Work')
+    expect(profiles[0].id).toBeTruthy()
+  })
+
+  it('updateVpnProfile() patches only the matching profile', async () => {
+    useAppStore.setState({ settings: { ...DEFAULT_SETTINGS, vpnProfiles: [profileA, profileB] } })
+
+    await useAppStore.getState().updateVpnProfile('a', { name: 'Renamed', username: 'u' })
+
+    const profiles = useAppStore.getState().settings.vpnProfiles
+    expect(profiles[0]).toMatchObject({ id: 'a', name: 'Renamed', username: 'u' })
+    expect(profiles[1]).toEqual(profileB)
+  })
+
+  it('removeVpnProfile() deactivates the tunnel first when removing the active profile', async () => {
+    const api = {
+      vpn: { disconnect: vi.fn(async () => {}), removeImportedConfig: vi.fn(async () => {}) }
+    }
+    ;(globalThis as unknown as { window: unknown }).window = { api }
+    useAppStore.setState({
+      vpnStatus: 'connected',
+      settings: {
+        ...DEFAULT_SETTINGS,
+        vpnProfiles: [profileA, profileB],
+        activeVpnProfileId: 'a',
+        lastVpnProfileId: 'a'
+      }
+    })
+
+    await useAppStore.getState().removeVpnProfile('a')
+
+    const state = useAppStore.getState()
+    expect(state.settings.vpnProfiles).toEqual([profileB])
+    expect(state.settings.activeVpnProfileId).toBeNull()
+    expect(state.settings.lastVpnProfileId).toBeNull()
+    expect(api.vpn.disconnect).toHaveBeenCalled()
   })
 })

@@ -40,6 +40,35 @@ describe('loadSettings', () => {
     expect(loaded.lockedCategoryIds).toEqual(['live:12', 'movies:7'])
   })
 
+  it('resets list/object fields persisted with a wrong shape instead of crashing or hiding UI', async () => {
+    // Seeded raw (bypassing saveSettings, which would itself trip over the bad vpnProfiles
+    // shape) — this simulates a partially-written or externally-corrupted settings file.
+    localStorage.setItem(
+      'settings',
+      JSON.stringify({
+        ...DEFAULT_SETTINGS,
+        customEpgUrls: 'http://x.xml',
+        epgChannelMappings: null,
+        vpnProfiles: {},
+        hiddenLiveStreamIds: '42',
+        liveAudioFixes: []
+      })
+    )
+    const loaded = await loadSettings()
+    expect(loaded.customEpgUrls).toEqual([])
+    expect(loaded.epgChannelMappings).toEqual([])
+    expect(loaded.vpnProfiles).toEqual([])
+    expect(loaded.hiddenLiveStreamIds).toEqual([])
+    expect(loaded.liveAudioFixes).toEqual({})
+  })
+
+  it('keeps well-shaped values untouched by the hardening pass', async () => {
+    await saveSettings({ ...DEFAULT_SETTINGS, customEpgUrls: ['http://a.xml'], hiddenLiveStreamIds: [7] })
+    const loaded = await loadSettings()
+    expect(loaded.customEpgUrls).toEqual(['http://a.xml'])
+    expect(loaded.hiddenLiveStreamIds).toEqual([7])
+  })
+
   it('merges a partial stored settings object over the current defaults', async () => {
     localStorage.setItem('settings', JSON.stringify({ clockFormat: '24h' }))
     const loaded = await loadSettings()

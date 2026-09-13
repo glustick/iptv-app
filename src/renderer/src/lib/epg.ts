@@ -184,6 +184,23 @@ export async function decodeMaybeGzipBytes(buffer: ArrayBuffer): Promise<string>
   return new TextDecoder().decode(buffer)
 }
 
+/**
+ * The Settings ▸ EPG sources list is the UNION of what's persisted and what's actually live in
+ * the store's guide pool — those two can only disagree through a state round-trip bug, and the
+ * failure mode when they do is exactly "a source the app is still fetching is invisible (and
+ * undeletable) in Settings". Persisted URLs come first in their saved order; any live label
+ * that isn't persisted is appended so it stays visible and removable. The provider's own guide
+ * is never listed — it isn't user-added, and can't be removed.
+ */
+export function unionEpgSourceUrls(customUrls: string[], liveLabels: string[], providerLabel: string): string[] {
+  const result = [...customUrls]
+  for (const label of liveLabels) {
+    if (label === providerLabel) continue
+    if (!result.includes(label)) result.push(label)
+  }
+  return result
+}
+
 function normalizeName(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, '')
 }
