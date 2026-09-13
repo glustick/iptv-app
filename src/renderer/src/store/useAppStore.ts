@@ -105,7 +105,12 @@ export const PROVIDER_GUIDE_LABEL = 'Provider guide (xmltv.php)'
 /** One row of the per-source EPG match report shown in Settings — see applyEpgPool. */
 export interface EpgSourceMatchStats {
   source: string
+  // false = this source contributed nothing this session — reason says exactly why (failed
+  // download, wrong format, provider blocks its own guide). The report references EVERY
+  // configured source: loaded ones get match counts, failed ones get their reason — a source
+  // absent from the report entirely would read as "not configured" to the user.
   available: boolean
+  reason: string | null
   loadedChannels: number
   matched: number
   byId: number
@@ -850,7 +855,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   applyEpgPool: () => {
-    const { epgSources, epgSourceLabels, providerGuideAvailable, liveStreams, shortEpgByStream, shortEpgFetchedAt, settings } = get()
+    const { epgSources, epgSourceLabels, providerGuideAvailable, epgSourceIssues, liveStreams, shortEpgByStream, shortEpgFetchedAt, settings } = get()
     // First source (in loadEpgSources' priority order) with programmes for a channel wins —
     // the provider's own guide outranks a third party's, and earlier custom URLs outrank later
     // ones.
@@ -860,7 +865,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     // name join and which channel names found no counterpart at all.
     const stats: EpgSourceMatchStats[] = []
     if (providerGuideAvailable === false) {
-      stats.push({ source: PROVIDER_GUIDE_LABEL, available: false, loadedChannels: liveStreams.length, matched: 0, byId: 0, byName: 0, byManual: 0, unmatchedNames: [] })
+      stats.push({ source: PROVIDER_GUIDE_LABEL, available: false, reason: 'blocked or disabled by this provider', loadedChannels: liveStreams.length, matched: 0, byId: 0, byName: 0, byManual: 0, unmatchedNames: [] })
     }
     epgSources.forEach((source, index) => {
       // Manual mappings are keyed to the custom source's own URL (the provider guide is not
@@ -890,6 +895,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       stats.push({
         source: label,
         available: true,
+        reason: null,
         loadedChannels: liveStreams.length,
         matched: byId + byName + byManual,
         byId,
@@ -903,6 +909,22 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (programmes?.length) pool.set(streamId, xmltvProgrammesToShort(programmes, match.channelId))
       }
     })
+    // Sources that failed to load never enter epgSources, so the loop above never sees them —
+    // give each one its own row carrying the exact load diagnostic, so the report accounts for
+    // every configured source instead of letting a failure look like the source doesn't exist.
+    for (const [url, reason] of Object.entries(epgSourceIssues)) {
+      stats.push({
+        source: url,
+        available: false,
+        reason,
+        loadedChannels: liveStreams.length,
+        matched: 0,
+        byId: 0,
+        byName: 0,
+        byManual: 0,
+        unmatchedNames: []
+      })
+    }
     set({ epgSourceMatchStats: stats })
     if (epgSources.length === 0 || liveStreams.length === 0) return
     if (pool.size === 0) return

@@ -474,6 +474,29 @@ describe('EPG source loading (loadEpgSources)', () => {
     expect(useAppStore.getState().epgSources).toHaveLength(1)
   })
 
+  it('reports a failed source in the match report with its exact load reason', async () => {
+    mockFetchBody((url) => (url.includes('bad') ? { ok: false, status: 503, body: '' } : { ok: true, body: GOOD_XML }))
+    useAppStore.setState({
+      client: makeClient(),
+      proxyBase: 'http://proxy',
+      settings: {
+        ...DEFAULT_SETTINGS,
+        customEpgUrls: ['http://guides.example.com/bad.xml', 'http://guides.example.com/good.xml']
+      }
+    })
+
+    await useAppStore.getState().loadEpgSources()
+
+    const stats = useAppStore.getState().epgSourceMatchStats
+    // The failed source gets its own report row carrying the load diagnostic — a failure must
+    // never look like the source doesn't exist.
+    const badRow = stats.find((s) => s.source === 'http://guides.example.com/bad.xml')
+    expect(badRow).toMatchObject({ available: false, reason: expect.stringContaining('HTTP 503') })
+    // The loaded source keeps its stats row, and the provider guide is accounted for too.
+    expect(stats.find((s) => s.source === 'http://guides.example.com/good.xml')).toMatchObject({ available: true })
+    expect(stats[0]).toMatchObject({ source: 'Provider guide (xmltv.php)', available: false })
+  })
+
   it('clears a prior issue once the same source loads as a real guide', async () => {
     let body = 'not a guide'
     mockFetchBody(() => ({ ok: true, body }))

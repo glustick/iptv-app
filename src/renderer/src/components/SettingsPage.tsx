@@ -498,7 +498,7 @@ export function SettingsPage(): JSX.Element | null {
                       )
                     ) : (
                       <span>
-                        <strong>{stat.source}</strong> — unavailable (blocked or disabled by this provider)
+                        <strong>{stat.source}</strong> — {stat.reason ?? 'unavailable'}
                       </span>
                     )}
                   </p>
