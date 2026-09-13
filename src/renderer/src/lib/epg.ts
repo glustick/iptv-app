@@ -226,10 +226,41 @@ function normalizeName(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
+// Tokens that carry no identity — quality/format tags, connection metadata, and channel-list
+// position noise that Xtream providers prepend/append to names ("101 BBC One HD", "UK: Sky
+// Sports FHD (VIP)", "HBO US"). Only ever used by the RELAXED fuzzy tier (never the exact
+// name join), and only after both sides went through the exact normalizer first, so a token
+// like "4music" (where 4 is inside the word) is untouched — standalone digits alone drop.
+const FUZZY_NOISE_TOKENS = new Set([
+  'hd', 'fhd', 'uhd', 'sd', '4k', '8k', 'hevc', 'h265', 'h264', 'av1', 'hdr', 'hlg',
+  'vip', 'backup', 'feed', 'raw', 'uk', 'us', 'and'
+])
+
+/**
+ * Relaxed channel-name normalization for the fuzzy join tier: diacritic-folded (café → cafe),
+ * "&"/"and" unified, tokenized, then noise tokens (FUZZY_NOISE_TOKENS above) and standalone
+ * numbers (channel-list positions: "101 BBC One" → "bbc one") dropped, and the remaining
+ * tokens sorted so token ORDER can't block a match ("Sky Sports Main Event" vs "Main Event
+ * Sky Sports"). Both sides of the join go through the exact same pipeline, so equality here
+ * means "same channel modulo presentation noise", not "similar-looking".
+ */
+function normalizeNameLoose(value: string): string {
+  const folded = value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/&/g, ' and ')
+  const tokens = folded
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length > 0)
+    .filter((t) => !FUZZY_NOISE_TOKENS.has(t) && !/^\d+$/.test(t))
+  return tokens.sort().join(' ')
+}
+
 /** One matched channel: which guide channel it resolved to, and by which join method. */
 export interface XmltvChannelMatch {
   channelId: string
-  method: 'id' | 'name' | 'manual'
+  method: 'id' | 'name' | 'manual' | 'fuzzy'
 }
 
 /**
@@ -247,6 +278,11 @@ export interface XmltvChannelMatch {
  *      M3uClient already stores in epg_channel_id)
  *   2. the guide channel's display-name normalized-equals the stream's name (the practical
  *      cross-provider join: most guides label channels the way users see them)
+ *   3. RELAXED: normalized-loose equality — diacritic-folded, "&"≡"and", noise tokens
+ *      (HD/FHD/4K/HEVC/VIP/backup/UK:/US…, standalone numbers) dropped, remaining tokens
+ *      sorted — so "101 BBC One HD" joins "BBC One" and "Sky Sports FHD (UK)" joins "Sky
+ *      Sports". Built for 24k-30k channel catalogs where most names carry presentation
+ *      noise; reported as its own method so the match report shows how much rests on it.
  * Only the first guide channel matching a given stream wins, so a guide with both "BBC One"
  * and "BBC One HD" resolves deterministically rather than double-booking one stream. The
  * method is reported alongside each match so callers can surface how much of a source's
@@ -261,9 +297,14 @@ export function matchXmltvChannels(
 ): Map<number, XmltvChannelMatch> {
   const matches = new Map<number, XmltvChannelMatch>()
   const byNormName = new Map<string, string>()
+  const byLooseName = new Map<string, string>()
   for (const [id, channel] of epg.channels) {
     const normalized = normalizeName(channel.displayName)
     if (normalized && !byNormName.has(normalized)) byNormName.set(normalized, id)
+    // Same first-wins rule as the exact map, so a guide carrying both "BBC One" and a
+    // noisy variant resolves deterministically.
+    const loose = normalizeNameLoose(channel.displayName)
+    if (loose && !byLooseName.has(loose)) byLooseName.set(loose, id)
   }
   for (const stream of liveStreams) {
     if (matches.has(stream.stream_id)) continue
@@ -278,7 +319,18 @@ export function matchXmltvChannels(
     }
     const normalized = normalizeName(stream.name)
     const byName = normalized ? byNormName.get(normalized) : undefined
-    if (byName) matches.set(stream.stream_id, { channelId: byName, method: 'name' })
+    if (byName) {
+      matches.set(stream.stream_id, { channelId: byName, method: 'name' })
+      continue
+    }
+    // Relaxed tier — the one that actually moves the needle on 24k-30k channel catalogs,
+    // where provider names are littered with quality tags, leading positions, and country
+    // prefixes the guides never carry. Strictly weaker than the exact joins (a distinct
+    // channel that only differs in noise tokens could over-match), which is exactly why
+    // it reports as its own method — the match report shows how much rests on it.
+    const loose = normalizeNameLoose(stream.name)
+    const byFuzzy = loose ? byLooseName.get(loose) : undefined
+    if (byFuzzy) matches.set(stream.stream_id, { channelId: byFuzzy, method: 'fuzzy' })
   }
   return matches
 }

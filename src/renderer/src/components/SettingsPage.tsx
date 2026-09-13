@@ -426,9 +426,11 @@ export function SettingsPage(): JSX.Element | null {
             guide (any XMLTV URL, plain or .xml.gz — e.g. one of iptv-org&apos;s country feeds at
             iptv-org.github.io/epg) fills in later days and channels your provider doesn&apos;t
             cover. Plain-text or PDF schedules can&apos;t be parsed — only the XMLTV form, however
-            the file is named. Channels are matched by EPG id first, then by name — and a channel
-            you map manually overrides both when the automatic joins get one wrong or miss it.
-            Your provider&apos;s own listings always win where they exist.
+            the file is named. Channels are matched by EPG id first, then by name, then by a
+            relaxed match that ignores HD/SD tags, leading channel numbers, country prefixes
+            and accents — and a channel you map manually overrides all of those when the
+            automatic joins still get one wrong or miss it. Your provider&apos;s own listings
+            always win where they exist.
           </p>
           {listedSources.length > 0 && (
             <ul className="lock-list">
@@ -493,6 +495,7 @@ export function SettingsPage(): JSX.Element | null {
                         <span>
                           <strong>{stat.source}</strong> — matched {stat.matched} of {stat.loadedChannels} loaded
                           channels ({stat.byId} by EPG id, {stat.byName} by name
+                          {stat.byFuzzy > 0 ? `, ${stat.byFuzzy} by relaxed match` : ''}
                           {stat.byManual > 0 ? `, ${stat.byManual} by manual mapping` : ''})
                         </span>
                       )

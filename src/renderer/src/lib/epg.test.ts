@@ -294,6 +294,64 @@ describe('matchXmltvChannels', () => {
     expect(matches.get(8)).toEqual({ channelId: 'NameMatch.uk', method: 'name' })
   })
 
+  it('joins through the relaxed tier when presentation noise differs, reporting the method', () => {
+    const guide2 = parseXmltv(`<tv>
+      <channel id="bbcone.uk"><display-name>BBC One</display-name></channel>
+      <channel id="cafe.fr"><display-name>Café</display-name></channel>
+      <channel id="crimeinv.us"><display-name>Crime + Investigation</display-name></channel>
+      <channel id="skysports.uk"><display-name>Sky Sports</display-name></channel>
+    </tv>`)
+    // Quality tag + leading channel-list position ("101 BBC One HD")
+    expect(matchXmltvChannels([makeStream({ stream_id: 20, name: '101 BBC One HD' })], guide2).get(20)).toEqual({
+      channelId: 'bbcone.uk',
+      method: 'fuzzy'
+    })
+    // Diacritics fold
+    expect(matchXmltvChannels([makeStream({ stream_id: 21, name: 'CAFE' })], guide2).get(21)).toEqual({
+      channelId: 'cafe.fr',
+      method: 'fuzzy'
+    })
+    // "&" vs "+": both vanish in the exact normalizer, so this is already an exact name join
+    expect(matchXmltvChannels([makeStream({ stream_id: 22, name: 'Crime & Investigation' })], guide2).get(22)).toEqual({
+      channelId: 'crimeinv.us',
+      method: 'name'
+    })
+    // "and" spelled out only joins via the relaxed tier (the exact normalizer keeps it)
+    expect(matchXmltvChannels([makeStream({ stream_id: 23, name: 'Crime and Investigation' })], guide2).get(23)).toEqual({
+      channelId: 'crimeinv.us',
+      method: 'fuzzy'
+    })
+    // Country prefix + quality tag + parenthetical noise ("UK: Sky Sports FHD (VIP)")
+    expect(matchXmltvChannels([makeStream({ stream_id: 24, name: 'UK: Sky Sports FHD (VIP)' })], guide2).get(24)).toEqual({
+      channelId: 'skysports.uk',
+      method: 'fuzzy'
+    })
+  })
+
+  it('relaxed matching does not over-reach across genuinely different channels', () => {
+    const guide2 = parseXmltv(`<tv>
+      <channel id="one"><display-name>BBC One</display-name></channel>
+      <channel id="two"><display-name>BBC Two</display-name></channel>
+    </tv>`)
+    expect(matchXmltvChannels([makeStream({ stream_id: 30, name: 'BBC Two HD' })], guide2).get(30)).toEqual({
+      channelId: 'two',
+      method: 'fuzzy'
+    })
+    // A channel the guide has no counterpart for stays unmatched — fuzzy is not "close enough".
+    expect(matchXmltvChannels([makeStream({ stream_id: 31, name: 'BBC Three' })], guide2).has(31)).toBe(false)
+  })
+
+  it('exact joins still win over the relaxed tier', () => {
+    const guide2 = parseXmltv(`<tv>
+      <channel id="one"><display-name>BBC One</display-name></channel>
+      <channel id="onehd"><display-name>BBC One HD</display-name></channel>
+    </tv>`)
+    expect(matchXmltvChannels([makeStream({ stream_id: 40, name: 'BBC One HD' })], guide2).get(40)).toEqual({
+      channelId: 'onehd',
+      method: 'name'
+    })
+  })
+
   it('lets several streams share one manually-mapped guide channel (HD/SD twins off one feed)', () => {
     const manual = new Map([
       [10, 'NameMatch.uk'],

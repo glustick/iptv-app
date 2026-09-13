@@ -115,6 +115,7 @@ export interface EpgSourceMatchStats {
   matched: number
   byId: number
   byName: number
+  byFuzzy: number
   byManual: number
   unmatchedNames: string[]
 }
@@ -865,7 +866,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     // name join and which channel names found no counterpart at all.
     const stats: EpgSourceMatchStats[] = []
     if (providerGuideAvailable === false) {
-      stats.push({ source: PROVIDER_GUIDE_LABEL, available: false, reason: 'blocked or disabled by this provider', loadedChannels: liveStreams.length, matched: 0, byId: 0, byName: 0, byManual: 0, unmatchedNames: [] })
+      stats.push({ source: PROVIDER_GUIDE_LABEL, available: false, reason: 'blocked or disabled by this provider', loadedChannels: liveStreams.length, matched: 0, byId: 0, byName: 0, byFuzzy: 0, byManual: 0, unmatchedNames: [] })
     }
     epgSources.forEach((source, index) => {
       // Manual mappings are keyed to the custom source's own URL (the provider guide is not
@@ -877,6 +878,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const matches = matchXmltvChannels(liveStreams, source, manual)
       let byId = 0
       let byName = 0
+      let byFuzzy = 0
       let byManual = 0
       const unmatchedNames: string[] = []
       for (const stream of liveStreams) {
@@ -885,6 +887,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (match && programmes?.length) {
           if (match.method === 'id') byId += 1
           else if (match.method === 'manual') byManual += 1
+          else if (match.method === 'fuzzy') byFuzzy += 1
           else byName += 1
         } else {
           // Cap the list — against a large category this is diagnostic material, not a roster.
@@ -897,9 +900,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         available: true,
         reason: null,
         loadedChannels: liveStreams.length,
-        matched: byId + byName + byManual,
+        matched: byId + byName + byFuzzy + byManual,
         byId,
         byName,
+        byFuzzy,
         byManual,
         unmatchedNames
       })
@@ -921,6 +925,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         matched: 0,
         byId: 0,
         byName: 0,
+        byFuzzy: 0,
         byManual: 0,
         unmatchedNames: []
       })
