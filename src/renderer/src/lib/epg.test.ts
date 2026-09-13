@@ -224,6 +224,25 @@ describe('decodeMaybeGzipBytes', () => {
   })
 })
 
+describe('parseXmltv entity-expansion guard', () => {
+  it('parses a guide with more than 1000 entity references (real-world XMLTV guides are entity-dense)', () => {
+    // 1500 &amp; references in one display-name alone — the stock fast-xml-parser cap of
+    // 1000 total expansions rejects this exact document ("Entity expansion limit exceeded:
+    // 1001 > 1000"), which is what made healthy guides load as "Couldn't load" in Settings.
+    const xml = `<?xml version="1.0"?>
+<tv>
+  <channel id="c1"><display-name>X${'&amp;'.repeat(1500)}</display-name></channel>
+  <programme start="20300101120000 +0000" stop="20300101130000 +0000" channel="c1">
+    <title>Show &quot;round the Clock &amp; More</title>
+  </programme>
+</tv>`
+    const parsed = parseXmltv(xml)
+    expect(parsed.channels.get('c1')?.displayName).toBe('X' + '&'.repeat(1500))
+    // Named entities still decode correctly — the cap was raised, not entity processing disabled.
+    expect(parsed.programmesByChannel.get('c1')?.[0]?.title).toBe('Show "round the Clock & More')
+  })
+})
+
 describe('unionEpgSourceUrls', () => {
   const provider = 'Provider guide (xmltv.php)'
 

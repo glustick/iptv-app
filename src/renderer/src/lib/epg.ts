@@ -44,7 +44,28 @@ function parseXmltvDate(value: string): Date {
 }
 
 export function parseXmltv(xml: string): EpgData {
-  const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' })
+  // fast-xml-parser caps total entity expansions (every &amp;/&quot;/&#8217; in tag values
+  // counts) at 1000 by default — a billion-laughs DoS guard that real XMLTV guides trip
+  // within their first few dozen channels: a large country guide carries thousands of entity
+  // references across titles/descriptions, and hitting the cap aborts the whole parse
+  // ("Entity expansion limit exceeded: 1001 > 1000"), making a perfectly healthy source look
+  // unavailable. Scale the cap by input size instead: an entity reference is at least 4
+  // characters (`&lt;`), so xml.length / 4 is the mathematical maximum any well-formed
+  // document can expand — legitimate guides can never be rejected — while small-input
+  // amplification stays capped (a 1KB billion-laughs-style file gets a ~251-expansion
+  // ceiling, preserving the protection the default existed for). The separate maxEntityCount
+  // DOCTYPE-definition cap (default 1000) is untouched and still bounds recursive entities.
+  const parser = new XMLParser({
+    ignoreAttributes: false,
+    attributeNamePrefix: '@_',
+    processEntities: {
+      maxTotalExpansions: Math.floor(xml.length / 4) + 1,
+      // Total expanded-entity characters: real guides' expansions never exceed their own
+      // source text (named entities shrink), so 2x input plus fixed headroom can't reject a
+      // legitimate guide while still bounding adversarial amplification.
+      maxExpandedLength: xml.length * 2 + 100000
+    }
+  })
   // Lenient to preamble: a leading BOM or stray text before the XML root (e.g. a ".txt" file
   // that is really XMLTV with junk on top, which providers do hand out) shouldn't kill the
   // whole guide — everything before the first <?xml/<tv tag is skipped. No XML tag found at
