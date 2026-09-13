@@ -750,7 +750,22 @@ function startLocalProxy(): Promise<number> {
 // Packaged builds get their icon baked in by electron-builder (from build/icon.png) at the OS
 // level — an .icns/.ico embedded in the app bundle/exe — so this path only needs to resolve
 // for the unpackaged dev app, which otherwise falls back to Electron's own default icon.
+// Linux is the one platform where a runtime icon still matters packaged: many X11/Wayland
+// window managers source the taskbar/alt-tab icon from the window itself rather than the
+// AppImage's desktop entry (especially without desktop integration), so the same icon also
+// ships as an extraResource (see build.linux in package.json) and is set on every window.
 const devIconPath = join(__dirname, '../../build/icon.png')
+
+function resolveWindowIconPath(): string | undefined {
+  if (process.platform === 'linux') {
+    const packagedPath = app.isPackaged ? join(process.resourcesPath, 'icon.png') : devIconPath
+    return existsSync(packagedPath) ? packagedPath : undefined
+  }
+  // macOS/Windows: the bundle/exe icon covers the packaged case; only dev needs the explicit
+  // path (verified behavior behind 0.4.3's original fix, which this generalizes for Linux).
+  return is.dev && existsSync(devIconPath) ? devIconPath : undefined
+}
+const windowIconPath = resolveWindowIconPath()
 
 // The About menu item needs to reach the renderer via IPC, but Menu.buildFromTemplate's click
 // handler has no direct reference to whichever BrowserWindow is currently focused — captured
@@ -767,7 +782,7 @@ function createWindow(): void {
     show: false,
     autoHideMenuBar: true,
     backgroundColor: '#0b0d12',
-    ...(is.dev ? { icon: devIconPath } : {}),
+    ...(windowIconPath ? { icon: windowIconPath } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
