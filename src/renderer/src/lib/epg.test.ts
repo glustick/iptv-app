@@ -243,4 +243,30 @@ describe('matchXmltvChannels', () => {
     const matches = matchXmltvChannels([makeStream({ stream_id: 9, name: 'Nothing Like This' })], guide)
     expect(matches.has(9)).toBe(false)
   })
+
+  it('prefers a manual mapping over both automatic joins, reporting the method', () => {
+    const manual = new Map([[7, 'NameMatch.uk']])
+    const matches = matchXmltvChannels([makeStream({ stream_id: 7, name: 'Whatever', epg_channel_id: 'provider.1' })], guide, manual)
+    expect(matches.get(7)).toEqual({ channelId: 'NameMatch.uk', method: 'manual' })
+  })
+
+  it('falls back to automatic matching when a manual mapping points at a channel the guide no longer has', () => {
+    const manual = new Map([[8, 'renumbered.away']])
+    const matches = matchXmltvChannels([makeStream({ stream_id: 8, name: 'BBC  One!' })], guide, manual)
+    expect(matches.get(8)).toEqual({ channelId: 'NameMatch.uk', method: 'name' })
+  })
+
+  it('lets several streams share one manually-mapped guide channel (HD/SD twins off one feed)', () => {
+    const manual = new Map([
+      [10, 'NameMatch.uk'],
+      [11, 'NameMatch.uk']
+    ])
+    const matches = matchXmltvChannels(
+      [makeStream({ stream_id: 10, name: 'BBC One HD' }), makeStream({ stream_id: 11, name: 'BBC One SD' })],
+      guide,
+      manual
+    )
+    expect(matches.get(10)).toEqual({ channelId: 'NameMatch.uk', method: 'manual' })
+    expect(matches.get(11)).toEqual({ channelId: 'NameMatch.uk', method: 'manual' })
+  })
 })

@@ -2122,6 +2122,141 @@ body.resizing-col {
   overflow-wrap: anywhere;
 }
 
+/* Manual channel-mapping editor (Settings ▸ EPG sources ▸ Map channels): existing
+   guide→channel links on top, then a two-pane searchable picker for new ones. Panels follow
+   the VPN profile editor's expand-in-place pattern — one source's editor open at a time. */
+.epg-mapping-editor {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.epg-mapping-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.epg-mapping-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.epg-mapping-pair {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.epg-mapping-arrow {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.epg-mapping-picker {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.epg-mapping-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.epg-mapping-pane label {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.epg-mapping-pane input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.epg-mapping-options {
+  max-height: 170px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
+
+.epg-mapping-option {
+  background: none;
+  border: none;
+  border-left: 2px solid transparent;
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text);
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.epg-mapping-option:hover {
+  background: var(--bg-hover);
+}
+
+.epg-mapping-option.selected {
+  border-left-color: var(--accent);
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+
+.epg-mapping-option small {
+  color: var(--text-dim);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.epg-mapping-empty {
+  margin: 0;
+  padding: 4px 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.epg-mapping-add-row {
+  margin-top: 2px;
+}
+
+.epg-mapping-add-row button {
+  background: var(--accent);
+  border: none;
+  border-radius: 8px;
+  color: white;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.epg-mapping-add-row button:disabled {
+  opacity: 0.5;
+}
+
 .pin-set-row {
   display: flex;
   gap: 8px;

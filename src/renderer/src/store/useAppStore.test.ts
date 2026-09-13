@@ -517,6 +517,102 @@ describe('EPG source loading (loadEpgSources)', () => {
     // And the matched channel actually got prefilled into the grid's cache.
     expect(useAppStore.getState().shortEpgByStream[31]?.[0]?.title).toBe('Show')
   })
+
+  it('applies manual channel mappings over automatic matching and reports them', async () => {
+    mockFetchBody(() => ({ ok: true, body: GOOD_XML }))
+    useAppStore.setState({
+      client: makeClient(),
+      proxyBase: 'http://proxy',
+      settings: {
+        ...DEFAULT_SETTINGS,
+        customEpgUrls: ['http://guides.example.com/g.xml'],
+        epgChannelMappings: [
+          {
+            sourceUrl: 'http://guides.example.com/g.xml',
+            guideChannelId: 'c1',
+            streamId: 99,
+            guideChannelName: 'Channel One',
+            streamName: 'My Sports HD'
+          }
+        ]
+      },
+      // Name deliberately matches nothing in the guide — only the manual mapping can join it.
+      liveStreams: [{ ...makeLiveStream(99, 'My Sports HD'), epg_channel_id: null }]
+    })
+
+    await useAppStore.getState().loadEpgSources()
+
+    expect(useAppStore.getState().epgSourceMatchStats[1]).toMatchObject({
+      source: 'http://guides.example.com/g.xml',
+      available: true,
+      matched: 1,
+      byId: 0,
+      byName: 0,
+      byManual: 1
+    })
+    // The mapped stream got the guide channel's programmes prefilled.
+    expect(useAppStore.getState().shortEpgByStream[99]?.[0]?.title).toBe('Show')
+  })
+
+  it('replaces a stream’s previous mapping on re-add and removes it cleanly, reapplying the pool each time', async () => {
+    mockFetchBody(() => ({ ok: true, body: GOOD_XML }))
+    useAppStore.setState({
+      client: makeClient(),
+      proxyBase: 'http://proxy',
+      settings: { ...DEFAULT_SETTINGS, customEpgUrls: ['http://guides.example.com/g.xml'] },
+      liveStreams: [{ ...makeLiveStream(77, 'Unmatched Channel'), epg_channel_id: null }]
+    })
+    await useAppStore.getState().loadEpgSources()
+    expect(useAppStore.getState().shortEpgByStream[77]).toBeUndefined()
+
+    useAppStore
+      .getState()
+      .addEpgChannelMapping({ sourceUrl: 'http://guides.example.com/g.xml', guideChannelId: 'c1', streamId: 77 })
+    expect(useAppStore.getState().settings.epgChannelMappings).toHaveLength(1)
+    expect(useAppStore.getState().shortEpgByStream[77]?.[0]?.title).toBe('Show')
+    expect(useAppStore.getState().epgSourceMatchStats[1]).toMatchObject({ byManual: 1 })
+
+    // Re-adding for the same stream replaces the mapping rather than stacking a duplicate.
+    useAppStore
+      .getState()
+      .addEpgChannelMapping({ sourceUrl: 'http://guides.example.com/g.xml', guideChannelId: 'c1', streamId: 77 })
+    expect(useAppStore.getState().settings.epgChannelMappings).toHaveLength(1)
+
+    useAppStore.getState().removeEpgChannelMapping('http://guides.example.com/g.xml', 77)
+    expect(useAppStore.getState().settings.epgChannelMappings).toHaveLength(0)
+  })
+
+  it('keeps mappings scoped to their own source', async () => {
+    mockFetchBody(() => ({ ok: true, body: GOOD_XML }))
+    useAppStore.setState({
+      client: makeClient(),
+      proxyBase: 'http://proxy',
+      settings: {
+        ...DEFAULT_SETTINGS,
+        customEpgUrls: ['http://guides.example.com/g.xml'],
+        // A mapping written against a DIFFERENT source must not leak into this source's matching.
+        epgChannelMappings: [{ sourceUrl: 'http://other.example.com/guide.xml', guideChannelId: 'c1', streamId: 55 }]
+      },
+      liveStreams: [{ ...makeLiveStream(55, 'Nothing Like Channel One'), epg_channel_id: null }]
+    })
+
+    await useAppStore.getState().loadEpgSources()
+
+    expect(useAppStore.getState().epgSourceMatchStats[1]).toMatchObject({ matched: 0, byManual: 0 })
+    expect(useAppStore.getState().shortEpgByStream[55]).toBeUndefined()
+  })
+
+  it('loads the full channel catalog on demand and caches it', async () => {
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    const getLiveStreams = vi.spyOn(client, 'getLiveStreams').mockResolvedValue([makeLiveStream(1, 'Only Channel')])
+    useAppStore.setState({ client, numericChannelCatalog: null })
+
+    await useAppStore.getState().ensureChannelCatalog()
+    expect(useAppStore.getState().numericChannelCatalog).toHaveLength(1)
+
+    await useAppStore.getState().ensureChannelCatalog()
+    expect(getLiveStreams).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('tvArchive threading through play()', () => {

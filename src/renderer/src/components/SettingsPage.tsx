@@ -8,6 +8,11 @@ interface VpnDraft {
   password: string
 }
 
+// The mapping editor's search lists render at most this many rows — a full provider catalog
+// (or a country-wide iptv-org guide) is thousands of entries, and an unbounded listbox is
+// unusable DOM. The hint below each list says when the search needs narrowing.
+const MAPPING_LIST_CAP = 60
+
 export function SettingsPage(): JSX.Element | null {
   const settingsOpen = useAppStore((s) => s.settingsOpen)
   const closeSettings = useAppStore((s) => s.closeSettings)
@@ -30,6 +35,13 @@ export function SettingsPage(): JSX.Element | null {
   const epgSourcesStatus = useAppStore((s) => s.epgSourcesStatus)
   const epgSourceIssues = useAppStore((s) => s.epgSourceIssues)
   const epgSourceMatchStats = useAppStore((s) => s.epgSourceMatchStats)
+  const epgSources = useAppStore((s) => s.epgSources)
+  const epgSourceLabels = useAppStore((s) => s.epgSourceLabels)
+  const numericChannelCatalog = useAppStore((s) => s.numericChannelCatalog)
+  const connectionStatus = useAppStore((s) => s.status)
+  const addEpgChannelMapping = useAppStore((s) => s.addEpgChannelMapping)
+  const removeEpgChannelMapping = useAppStore((s) => s.removeEpgChannelMapping)
+  const ensureChannelCatalog = useAppStore((s) => s.ensureChannelCatalog)
 
   const [pinDraft, setPinDraft] = useState('')
   // Only set when opening the log fails (no active connection, or the file hasn't been written
@@ -45,8 +57,179 @@ export function SettingsPage(): JSX.Element | null {
   const [editingProfileId, setEditingProfileId] = useState<string | null>(null)
   const [backupMessage, setBackupMessage] = useState<string | null>(null)
   const [epgUrlDraft, setEpgUrlDraft] = useState('')
+  // Manual channel-mapping editor state — one source's editor open at a time (keyed by the
+  // source's URL); searches and picks reset whenever a different editor opens so stale
+  // selections from source A can't be submitted into source B.
+  const [mappingOpenFor, setMappingOpenFor] = useState<string | null>(null)
+  const [guideSearch, setGuideSearch] = useState('')
+  const [streamSearch, setStreamSearch] = useState('')
+  const [selectedGuideChannelId, setSelectedGuideChannelId] = useState<string | null>(null)
+  const [selectedStreamId, setSelectedStreamId] = useState<number | null>(null)
 
   if (!settingsOpen) return null
+
+  function toggleMappingEditor(url: string): void {
+    if (mappingOpenFor === url) {
+      setMappingOpenFor(null)
+      return
+    }
+    setMappingOpenFor(url)
+    setGuideSearch('')
+    setStreamSearch('')
+    setSelectedGuideChannelId(null)
+    setSelectedStreamId(null)
+    // The app-channel pane lists every channel the provider has, not just the currently-browsed
+    // category — pull the full catalog on first open (cached in the store afterwards).
+    void ensureChannelCatalog()
+  }
+
+  // The per-source mapping panel: existing guide→channel links, plus a two-pane searchable
+  // picker for new ones. Guide channels come from the already-parsed guide (epgSources), so an
+  // editor for a source that failed to load shows guidance instead of an empty picker.
+  function renderMappingEditor(url: string): JSX.Element {
+    const sourceIndex = epgSourceLabels.indexOf(url)
+    const guide = sourceIndex >= 0 ? epgSources[sourceIndex] : null
+    const guideChannels = guide ? Array.from(guide.channels.values()) : []
+    const catalog = numericChannelCatalog ?? []
+    const mappings = settings.epgChannelMappings.filter((m) => m.sourceUrl === url)
+
+    const guideQuery = guideSearch.trim().toLowerCase()
+    const matchingGuideChannels = guideQuery
+      ? guideChannels.filter((c) => c.displayName.toLowerCase().includes(guideQuery) || c.id.toLowerCase().includes(guideQuery))
+      : guideChannels
+    const shownGuideChannels = matchingGuideChannels.slice(0, MAPPING_LIST_CAP)
+
+    const streamQuery = streamSearch.trim().toLowerCase()
+    const matchingStreams = streamQuery
+      ? catalog.filter((c) => c.name.toLowerCase().includes(streamQuery) || String(c.stream_id).includes(streamQuery))
+      : catalog
+    const shownStreams = matchingStreams.slice(0, MAPPING_LIST_CAP)
+
+    function addMapping(): void {
+      if (!selectedGuideChannelId || selectedStreamId === null) return
+      // Display names are snapshots for the settings list only — matching itself is by ids.
+      addEpgChannelMapping({
+        sourceUrl: url,
+        guideChannelId: selectedGuideChannelId,
+        streamId: selectedStreamId,
+        guideChannelName: guideChannels.find((c) => c.id === selectedGuideChannelId)?.displayName,
+        streamName: catalog.find((c) => c.stream_id === selectedStreamId)?.name
+      })
+      setSelectedGuideChannelId(null)
+      setSelectedStreamId(null)
+      setGuideSearch('')
+      setStreamSearch('')
+    }
+
+    return (
+      <div className="epg-mapping-editor">
+        {mappings.length > 0 ? (
+          <ul className="epg-mapping-list">
+            {mappings.map((m) => (
+              <li key={m.streamId} className="epg-mapping-row">
+                <span className="epg-mapping-pair">
+                  {m.guideChannelName ?? m.guideChannelId} <span className="epg-mapping-arrow">→</span>{' '}
+                  {m.streamName ?? `#${m.streamId}`}
+                </span>
+                <button className="danger-link" onClick={() => removeEpgChannelMapping(m.sourceUrl, m.streamId)}>
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="epg-mapping-empty">
+            No manual mappings yet — this source&apos;s channels are matched by EPG id or name
+            automatically. Map one below when that gets a channel wrong or misses it entirely.
+          </p>
+        )}
+        {!guide ? (
+          <p className="epg-mapping-empty">
+            This source hasn&apos;t loaded a guide yet, so there&apos;s nothing to map — check its status above.
+          </p>
+        ) : (
+          <>
+            <div className="epg-mapping-picker">
+              <div className="epg-mapping-pane">
+                <label>Guide channel (this source)</label>
+                <input
+                  type="text"
+                  placeholder={`Search ${guideChannels.length} guide channels…`}
+                  value={guideSearch}
+                  onChange={(e) => setGuideSearch(e.target.value)}
+                />
+                <div className="epg-mapping-options">
+                  {shownGuideChannels.map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      aria-pressed={selectedGuideChannelId === c.id}
+                      className={selectedGuideChannelId === c.id ? 'epg-mapping-option selected' : 'epg-mapping-option'}
+                      onClick={() => setSelectedGuideChannelId(selectedGuideChannelId === c.id ? null : c.id)}
+                    >
+                      {c.displayName} <small>{c.id}</small>
+                    </button>
+                  ))}
+                  {matchingGuideChannels.length === 0 && <p className="epg-mapping-empty">No guide channels match.</p>}
+                  {matchingGuideChannels.length > MAPPING_LIST_CAP && (
+                    <p className="epg-mapping-empty">
+                      Showing the first {MAPPING_LIST_CAP} of {matchingGuideChannels.length} — refine the search to narrow it down.
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div className="epg-mapping-pane">
+                <label>App channel (your provider)</label>
+                {connectionStatus !== 'ready' ? (
+                  <p className="epg-mapping-empty">Connect to a provider to pick channels.</p>
+                ) : numericChannelCatalog === null ? (
+                  <p className="epg-mapping-empty">Loading your channel list…</p>
+                ) : (
+                  <>
+                    <input
+                      type="text"
+                      placeholder={`Search ${catalog.length} channels…`}
+                      value={streamSearch}
+                      onChange={(e) => setStreamSearch(e.target.value)}
+                    />
+                    <div className="epg-mapping-options">
+                      {shownStreams.map((c) => (
+                        <button
+                          key={c.stream_id}
+                          type="button"
+                          aria-pressed={selectedStreamId === c.stream_id}
+                          className={selectedStreamId === c.stream_id ? 'epg-mapping-option selected' : 'epg-mapping-option'}
+                          onClick={() => setSelectedStreamId(selectedStreamId === c.stream_id ? null : c.stream_id)}
+                        >
+                          {c.name} <small>#{c.stream_id}</small>
+                        </button>
+                      ))}
+                      {matchingStreams.length === 0 && <p className="epg-mapping-empty">No channels match.</p>}
+                      {matchingStreams.length > MAPPING_LIST_CAP && (
+                        <p className="epg-mapping-empty">
+                          Showing the first {MAPPING_LIST_CAP} of {matchingStreams.length} — refine the search to narrow it down.
+                        </p>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+            <div className="pin-set-row epg-mapping-add-row">
+              <button disabled={!selectedGuideChannelId || selectedStreamId === null} onClick={addMapping}>
+                Add mapping
+              </button>
+            </div>
+            <p className="settings-hint">
+              Manual mappings override the automatic EPG-id and name matching for this source.
+              Your provider&apos;s own per-channel listings still win wherever the provider sends
+              them — a mapping fills in the later days and channels the provider doesn&apos;t cover.
+            </p>
+          </>
+        )}
+      </div>
+    )
+  }
 
   async function handleExportBackup(): Promise<void> {
     const result = await exportBackup()
@@ -237,26 +420,39 @@ export function SettingsPage(): JSX.Element | null {
             guide (any XMLTV URL, plain or .xml.gz — e.g. one of iptv-org&apos;s country feeds at
             iptv-org.github.io/epg) fills in later days and channels your provider doesn&apos;t
             cover. Plain-text or PDF schedules can&apos;t be parsed — only the XMLTV form, however
-            the file is named. Channels are matched by EPG id first, then by name; your
-            provider&apos;s own listings always win where they exist.
+            the file is named. Channels are matched by EPG id first, then by name — and a channel
+            you map manually overrides both when the automatic joins get one wrong or miss it.
+            Your provider&apos;s own listings always win where they exist.
           </p>
           {settings.customEpgUrls.length > 0 && (
             <ul className="lock-list">
-              {settings.customEpgUrls.map((url) => (
-                <li key={url}>
-                  <label>
-                    <span className="epg-source-url">{url}</span>
-                    <button
-                      className="secondary-button"
-                      onClick={() => removeCustomEpgUrl(url)}
-                      title="Remove this EPG source"
-                    >
-                      Remove
-                    </button>
-                  </label>
-                  {epgSourceIssues[url] && <p className="epg-source-issue">⚠ {epgSourceIssues[url]}</p>}
-                </li>
-              ))}
+              {settings.customEpgUrls.map((url) => {
+                const mappings = settings.epgChannelMappings.filter((m) => m.sourceUrl === url)
+                return (
+                  <li key={url}>
+                    <label>
+                      <span className="epg-source-url">{url}</span>
+                      <button
+                        className="secondary-button"
+                        onClick={() => toggleMappingEditor(url)}
+                        title="Manually map this source's guide channels to your provider's channels"
+                      >
+                        {mappingOpenFor === url ? 'Close mapping' : 'Map channels'}
+                        {mappings.length > 0 ? ` (${mappings.length})` : ''}
+                      </button>
+                      <button
+                        className="secondary-button"
+                        onClick={() => removeCustomEpgUrl(url)}
+                        title="Remove this EPG source"
+                      >
+                        Remove
+                      </button>
+                    </label>
+                    {epgSourceIssues[url] && <p className="epg-source-issue">⚠ {epgSourceIssues[url]}</p>}
+                    {mappingOpenFor === url && renderMappingEditor(url)}
+                  </li>
+                )
+              })}
             </ul>
           )}
           <div className="pin-set-row">
@@ -290,7 +486,8 @@ export function SettingsPage(): JSX.Element | null {
                       ) : (
                         <span>
                           <strong>{stat.source}</strong> — matched {stat.matched} of {stat.loadedChannels} loaded
-                          channels ({stat.byId} by EPG id, {stat.byName} by name)
+                          channels ({stat.byId} by EPG id, {stat.byName} by name
+                          {stat.byManual > 0 ? `, ${stat.byManual} by manual mapping` : ''})
                         </span>
                       )
                     ) : (
@@ -314,7 +511,7 @@ export function SettingsPage(): JSX.Element | null {
           {epgSourcesStatus === 'loading' && <p className="settings-hint">Loading guide sources…</p>}
         </section>
 
-        <section className="settings-section">
+<section className="settings-section">
           <h3>VPN</h3>
           <p className="settings-hint">
             Requires OpenVPN installed on this machine — this app doesn't bundle it. Only this app's own

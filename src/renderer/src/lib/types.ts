@@ -193,6 +193,21 @@ export interface VpnProfile {
   password: string | null
 }
 
+// One manual "this guide channel feeds this app channel" link, created in Settings ▸ EPG
+// sources ▸ Map channels. sourceUrl keys the mapping to one user-added XMLTV source (the
+// provider's own guide is deliberately not mappable — its channel ids are what epg_channel_id
+// already refers to, so the automatic join covers it); guideChannelId is that guide's own
+// <channel id>; streamId is the app channel the guide's programmes should fill. The two name
+// fields are display snapshots only — matching is by ids, so a later channel rename on either
+// side keeps working while the UI still shows what was originally picked.
+export interface EpgChannelMapping {
+  sourceUrl: string
+  guideChannelId: string
+  streamId: number
+  guideChannelName?: string
+  streamName?: string
+}
+
 export interface AppSettings {
   bufferProfile: BufferProfile
   clockFormat: ClockFormat
@@ -232,6 +247,10 @@ export interface AppSettings {
   // (when allowed) and merged into the EPG grid per channel, filling the multi-day gap the
   // per-channel get_short_epg window can never cover. See useAppStore.loadEpgSources.
   customEpgUrls: string[]
+  // Manual guide-channel → app-channel links per user-added source, overriding the automatic
+  // EPG-id/name matching wherever auto-matching gets a channel wrong or misses it entirely.
+  // Applied in applyEpgPool alongside the automatic joins; see EpgChannelMapping above.
+  epgChannelMappings: EpgChannelMapping[]
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -252,7 +271,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   multiViewLayout: 2,
   hiddenLiveStreamIds: [],
   liveAudioFixes: {},
-  customEpgUrls: []
+  customEpgUrls: [],
+  epgChannelMappings: []
 }
 
 export type VpnStatus = 'disconnected' | 'connecting' | 'connected' | 'error'

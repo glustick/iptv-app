@@ -191,13 +191,19 @@ function normalizeName(value: string): string {
 /** One matched channel: which guide channel it resolved to, and by which join method. */
 export interface XmltvChannelMatch {
   channelId: string
-  method: 'id' | 'name'
+  method: 'id' | 'name' | 'manual'
 }
 
 /**
  * Indexes this app's live channels against one XMLTV guide's own channel list — the join that
  * makes third-party guides usable at all, since their channel ids follow their own convention
  * (e.g. iptv-org's "BBCOne.uk"), not the provider's. Matching, first match wins:
+ *   0. a manual mapping for this stream (Settings ▸ EPG sources ▸ Map channels) whose guide
+ *      channel id actually exists in this guide — the user's explicit "this guide channel is
+ *      this channel" always outranks any automatic guess. A mapping pointing at a channel the
+ *      guide no longer contains (the source renumbered its ids) falls through to the automatic
+ *      joins rather than silently dropping the channel, and gets re-fixed next time the user
+ *      opens the mapping editor.
  *   1. epg_channel_id exactly equals the guide's channel id (Xtream providers that publish the
  *      same id in both get_live_streams and their xmltv.php; M3U playlists' tvg-id, which
  *      M3uClient already stores in epg_channel_id)
@@ -206,9 +212,15 @@ export interface XmltvChannelMatch {
  * Only the first guide channel matching a given stream wins, so a guide with both "BBC One"
  * and "BBC One HD" resolves deterministically rather than double-booking one stream. The
  * method is reported alongside each match so callers can surface how much of a source's
- * matching rests on the weaker name join.
+ * matching rests on the weaker name join (or on manual fixes). manualMappings is keyed by
+ * streamId → guide channel id; several streams may share one guide channel (HD/SD twins off
+ * the same feed), but each stream resolves to at most one guide channel here.
  */
-export function matchXmltvChannels(liveStreams: LiveStream[], epg: EpgData): Map<number, XmltvChannelMatch> {
+export function matchXmltvChannels(
+  liveStreams: LiveStream[],
+  epg: EpgData,
+  manualMappings?: Map<number, string>
+): Map<number, XmltvChannelMatch> {
   const matches = new Map<number, XmltvChannelMatch>()
   const byNormName = new Map<string, string>()
   for (const [id, channel] of epg.channels) {
@@ -217,6 +229,11 @@ export function matchXmltvChannels(liveStreams: LiveStream[], epg: EpgData): Map
   }
   for (const stream of liveStreams) {
     if (matches.has(stream.stream_id)) continue
+    const manualChannelId = manualMappings?.get(stream.stream_id)
+    if (manualChannelId && epg.channels.has(manualChannelId)) {
+      matches.set(stream.stream_id, { channelId: manualChannelId, method: 'manual' })
+      continue
+    }
     if (stream.epg_channel_id && epg.channels.has(stream.epg_channel_id)) {
       matches.set(stream.stream_id, { channelId: stream.epg_channel_id, method: 'id' })
       continue

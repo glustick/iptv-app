@@ -42,6 +42,7 @@ import type {
   RecentlyWatchedEntry,
   EpisodeProgress,
   AppSettings,
+  EpgChannelMapping,
   VpnStatus,
   VpnProfile,
   MultiViewLayout
@@ -99,6 +100,7 @@ export interface EpgSourceMatchStats {
   matched: number
   byId: number
   byName: number
+  byManual: number
   unmatchedNames: string[]
 }
 
@@ -279,6 +281,14 @@ interface AppState {
   applyEpgPool: () => void
   addCustomEpgUrl: (url: string) => void
   removeCustomEpgUrl: (url: string) => void
+  // Manual guide-channel → app-channel links (Settings ▸ EPG sources ▸ Map channels) —
+  // persisted in settings.epgChannelMappings and applied on the next applyEpgPool.
+  addEpgChannelMapping: (mapping: EpgChannelMapping) => void
+  removeEpgChannelMapping: (sourceUrl: string, streamId: number) => void
+  // Loads the full live catalog into numericChannelCatalog when it isn't cached yet — the
+  // mapping picker searches every channel the provider has, not just the currently-browsed
+  // category's liveStreams.
+  ensureChannelCatalog: () => Promise<void>
   loadShortEpg: (streamId: number) => Promise<void>
   play: (
     kind: MediaKind,
@@ -826,7 +836,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   applyEpgPool: () => {
-    const { epgSources, epgSourceLabels, providerGuideAvailable, liveStreams, shortEpgByStream, shortEpgFetchedAt } = get()
+    const { epgSources, epgSourceLabels, providerGuideAvailable, liveStreams, shortEpgByStream, shortEpgFetchedAt, settings } = get()
     // First source (in loadEpgSources' priority order) with programmes for a channel wins —
     // the provider's own guide outranks a third party's, and earlier custom URLs outrank later
     // ones.
@@ -836,18 +846,26 @@ export const useAppStore = create<AppState>((set, get) => ({
     // name join and which channel names found no counterpart at all.
     const stats: EpgSourceMatchStats[] = []
     if (providerGuideAvailable === false) {
-      stats.push({ source: 'Provider guide (xmltv.php)', available: false, loadedChannels: liveStreams.length, matched: 0, byId: 0, byName: 0, unmatchedNames: [] })
+      stats.push({ source: 'Provider guide (xmltv.php)', available: false, loadedChannels: liveStreams.length, matched: 0, byId: 0, byName: 0, byManual: 0, unmatchedNames: [] })
     }
     epgSources.forEach((source, index) => {
-      const matches = matchXmltvChannels(liveStreams, source)
+      // Manual mappings are keyed to the custom source's own URL (the provider guide is not
+      // manually mappable — see EpgChannelMapping), so look them up by this entry's label.
+      const sourceUrl = epgSourceLabels[index]
+      const manual = new Map(
+        settings.epgChannelMappings.filter((m) => m.sourceUrl === sourceUrl).map((m) => [m.streamId, m.guideChannelId])
+      )
+      const matches = matchXmltvChannels(liveStreams, source, manual)
       let byId = 0
       let byName = 0
+      let byManual = 0
       const unmatchedNames: string[] = []
       for (const stream of liveStreams) {
         const match = matches.get(stream.stream_id)
         const programmes = match ? source.programmesByChannel.get(match.channelId) : undefined
         if (match && programmes?.length) {
           if (match.method === 'id') byId += 1
+          else if (match.method === 'manual') byManual += 1
           else byName += 1
         } else {
           // Cap the list — against a large category this is diagnostic material, not a roster.
@@ -859,9 +877,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         source: label,
         available: true,
         loadedChannels: liveStreams.length,
-        matched: byId + byName,
+        matched: byId + byName + byManual,
         byId,
         byName,
+        byManual,
         unmatchedNames
       })
       for (const [streamId, match] of matches) {
@@ -904,6 +923,43 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!current.includes(url)) return
     get().updateSettings({ customEpgUrls: current.filter((u) => u !== url) })
     if (get().client) void get().loadEpgSources()
+  },
+
+  // One stream maps to one guide channel per source — re-adding replaces that stream's
+  // previous mapping rather than stacking a duplicate. Removing a source (removeCustomEpgUrl)
+  // leaves its mappings in settings harmlessly: they only ever join against a guide parsed
+  // from that URL, so an orphaned mapping can't mis-fire — but pruning it here would need a
+  // second updateSettings round-trip mid-edit for no user-visible gain.
+  addEpgChannelMapping: (mapping) => {
+    if (!mapping.sourceUrl.trim() || !mapping.guideChannelId) return
+    const rest = get().settings.epgChannelMappings.filter(
+      (m) => !(m.sourceUrl === mapping.sourceUrl && m.streamId === mapping.streamId)
+    )
+    get().updateSettings({ epgChannelMappings: [...rest, mapping] })
+    // The guides themselves are already loaded — reapplying the pool is enough for the grid
+    // and the match report to reflect the new mapping immediately.
+    get().applyEpgPool()
+  },
+
+  removeEpgChannelMapping: (sourceUrl, streamId) => {
+    const current = get().settings.epgChannelMappings
+    if (!current.some((m) => m.sourceUrl === sourceUrl && m.streamId === streamId)) return
+    get().updateSettings({ epgChannelMappings: current.filter((m) => !(m.sourceUrl === sourceUrl && m.streamId === streamId)) })
+    get().applyEpgPool()
+  },
+
+  ensureChannelCatalog: async () => {
+    const { client } = get()
+    if (!client || get().numericChannelCatalog) return
+    try {
+      const catalog = await client.getLiveStreams()
+      set({ numericChannelCatalog: catalog })
+    } catch (err) {
+      // The mapping picker degrades to the currently-browsed category when the full catalog
+      // can't load (offline blip, provider hiccup) — mapping is a convenience layer, not
+      // worth an error surface of its own.
+      console.error('[store] failed to load the full channel catalog for EPG mapping:', err)
+    }
   },
 
   loadShortEpg: (streamId) => {
