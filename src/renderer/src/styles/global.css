@@ -2239,6 +2239,60 @@ body.resizing-col {
   color: var(--text-dim);
 }
 
+/* "Only unmatched" filter + ranked suggestion chips (Settings ▸ EPG sources ▸ Map channels) —
+   the tools for working through the residue of a 24k-30k channel catalog by hand. */
+.epg-mapping-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+
+.epg-mapping-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.epg-mapping-suggestions-label {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.epg-mapping-suggestion {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--text);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.epg-mapping-suggestion:hover {
+  background: var(--bg-hover);
+}
+
+.epg-mapping-suggestion.selected {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.epg-mapping-suggestion small {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
 .epg-mapping-add-row {
   margin-top: 2px;
 }

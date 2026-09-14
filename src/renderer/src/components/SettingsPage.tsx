@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useAppStore, PROVIDER_GUIDE_LABEL } from '../store/useAppStore'
-import { unionEpgSourceUrls } from '../lib/epg'
+import { buildGuideIndex, suggestGuideChannels, resolveStreamToGuide, unionEpgSourceUrls, type GuideIndex } from '../lib/epg'
 import type { BufferProfile, ClockFormat, VpnProfile } from '../lib/types'
 
 interface VpnDraft {
@@ -66,6 +66,12 @@ export function SettingsPage(): JSX.Element | null {
   const [streamSearch, setStreamSearch] = useState('')
   const [selectedGuideChannelId, setSelectedGuideChannelId] = useState<string | null>(null)
   const [selectedStreamId, setSelectedStreamId] = useState<number | null>(null)
+  // Prebuilt lookup tables for the open editor's guide, and the "no listings from this source"
+  // filter's result set. Both are computed from event handlers (never during render) because
+  // they walk the entire 24k-30k channel catalog once.
+  const [guideIndex, setGuideIndex] = useState<GuideIndex | null>(null)
+  const [onlyUnmatched, setOnlyUnmatched] = useState(false)
+  const [unmatchedIds, setUnmatchedIds] = useState<Set<number> | null>(null)
 
   if (!settingsOpen) return null
 
@@ -84,9 +90,41 @@ export function SettingsPage(): JSX.Element | null {
     setStreamSearch('')
     setSelectedGuideChannelId(null)
     setSelectedStreamId(null)
+    setOnlyUnmatched(false)
+    setUnmatchedIds(null)
+    // Index this source's guide once (see GuideIndex) — the suggestion ranking and the
+    // unmatched-filter both read from it, and rebuilding per stream/keystroke would pay the
+    // Unicode-normalization cost thousands of times.
+    const sourceIndex = epgSourceLabels.indexOf(url)
+    const guide = sourceIndex >= 0 ? epgSources[sourceIndex] : null
+    setGuideIndex(guide ? buildGuideIndex(guide) : null)
     // The app-channel pane lists every channel the provider has, not just the currently-browsed
     // category — pull the full catalog on first open (cached in the store afterwards).
     void ensureChannelCatalog()
+  }
+
+  // Resolves the WHOLE catalog against the open source's guide to find channels that still have
+  // no listings from it — the residue left after the automatic tiers and manual mappings (a
+  // match with zero programmes counts as unresolved, same rule as the store's match report).
+  // Runs from the checkbox handler, once per toggle, not per render.
+  function applyUnmatchedFilter(enabled: boolean, sourceUrl: string): void {
+    setOnlyUnmatched(enabled)
+    if (!enabled) {
+      setUnmatchedIds(null)
+      return
+    }
+    const catalog = numericChannelCatalog ?? []
+    const manual = new Map(
+      settings.epgChannelMappings.filter((m) => m.sourceUrl === sourceUrl).map((m) => [m.streamId, m.guideChannelId])
+    )
+    const ids = new Set<number>()
+    if (guideIndex) {
+      for (const stream of catalog) {
+        const resolved = resolveStreamToGuide(stream, guideIndex, manual.get(stream.stream_id))
+        if (!resolved || resolved.programmeCount === 0) ids.add(stream.stream_id)
+      }
+    }
+    setUnmatchedIds(ids)
   }
 
   // The per-source mapping panel: existing guide→channel links, plus a two-pane searchable
@@ -105,11 +143,20 @@ export function SettingsPage(): JSX.Element | null {
       : guideChannels
     const shownGuideChannels = matchingGuideChannels.slice(0, MAPPING_LIST_CAP)
 
+    // The unmatched filter narrows the catalog BEFORE the search box applies, so typing inside
+    // the filtered view searches only the channels that still need mapping.
+    const baseStreams = onlyUnmatched && unmatchedIds ? catalog.filter((c) => unmatchedIds.has(c.stream_id)) : catalog
     const streamQuery = streamSearch.trim().toLowerCase()
     const matchingStreams = streamQuery
-      ? catalog.filter((c) => c.name.toLowerCase().includes(streamQuery) || String(c.stream_id).includes(streamQuery))
-      : catalog
+      ? baseStreams.filter((c) => c.name.toLowerCase().includes(streamQuery) || String(c.stream_id).includes(streamQuery))
+      : baseStreams
     const shownStreams = matchingStreams.slice(0, MAPPING_LIST_CAP)
+
+    // Ranked candidates for whichever app channel is currently selected — turns the residual
+    // unmatched channels into one-click fixes instead of manual searching.
+    const selectedStreamName = catalog.find((c) => c.stream_id === selectedStreamId)?.name ?? ''
+    const suggestions =
+      selectedStreamId !== null && guideIndex ? suggestGuideChannels(selectedStreamName, guideIndex, 3) : []
 
     function addMapping(): void {
       if (!selectedGuideChannelId || selectedStreamId === null) return
@@ -121,6 +168,13 @@ export function SettingsPage(): JSX.Element | null {
         guideChannelName: guideChannels.find((c) => c.id === selectedGuideChannelId)?.displayName,
         streamName: catalog.find((c) => c.stream_id === selectedStreamId)?.name
       })
+      // Mapping this channel resolves it — drop it from the filtered view so the user sees
+      // their progress shrink instead of re-mapping something already done.
+      if (unmatchedIds) {
+        const next = new Set(unmatchedIds)
+        next.delete(selectedStreamId)
+        setUnmatchedIds(next)
+      }
       setSelectedGuideChannelId(null)
       setSelectedStreamId(null)
       setGuideSearch('')
@@ -192,9 +246,18 @@ export function SettingsPage(): JSX.Element | null {
                   <p className="epg-mapping-empty">Loading your channel list…</p>
                 ) : (
                   <>
+                    <label className="epg-mapping-filter">
+                      <input
+                        type="checkbox"
+                        checked={onlyUnmatched}
+                        onChange={(e) => applyUnmatchedFilter(e.target.checked, url)}
+                      />
+                      Only channels with no listings from this source
+                      {onlyUnmatched && unmatchedIds ? ` (${unmatchedIds.size})` : ''}
+                    </label>
                     <input
                       type="text"
-                      placeholder={`Search ${catalog.length} channels…`}
+                      placeholder={`Search ${baseStreams.length} channels…`}
                       value={streamSearch}
                       onChange={(e) => setStreamSearch(e.target.value)}
                     />
@@ -210,7 +273,13 @@ export function SettingsPage(): JSX.Element | null {
                           {c.name} <small>#{c.stream_id}</small>
                         </button>
                       ))}
-                      {matchingStreams.length === 0 && <p className="epg-mapping-empty">No channels match.</p>}
+                      {matchingStreams.length === 0 && (
+                        <p className="epg-mapping-empty">
+                          {onlyUnmatched
+                            ? 'No channels match — every channel in this filter already has listings from this source.'
+                            : 'No channels match.'}
+                        </p>
+                      )}
                       {matchingStreams.length > MAPPING_LIST_CAP && (
                         <p className="epg-mapping-empty">
                           Showing the first {MAPPING_LIST_CAP} of {matchingStreams.length} — refine the search to narrow it down.
@@ -221,15 +290,43 @@ export function SettingsPage(): JSX.Element | null {
                 )}
               </div>
             </div>
+            {selectedStreamId !== null && (
+              <div className="epg-mapping-suggestions">
+                <span className="epg-mapping-suggestions-label">
+                  Suggested guide channels for “{selectedStreamName}”:
+                </span>
+                {suggestions.map((candidate) => (
+                  <button
+                    key={candidate.channelId}
+                    type="button"
+                    className={
+                      selectedGuideChannelId === candidate.channelId
+                        ? 'epg-mapping-suggestion selected'
+                        : 'epg-mapping-suggestion'
+                    }
+                    onClick={() => setSelectedGuideChannelId(candidate.channelId)}
+                    title={`Guide channel id: ${candidate.channelId}`}
+                  >
+                    {candidate.displayName} <small>{Math.round(candidate.score * 100)}%</small>
+                  </button>
+                ))}
+                {suggestions.length === 0 && (
+                  <span className="epg-mapping-empty">No close match — search the guide list on the left.</span>
+                )}
+              </div>
+            )}
             <div className="pin-set-row epg-mapping-add-row">
               <button disabled={!selectedGuideChannelId || selectedStreamId === null} onClick={addMapping}>
                 Add mapping
               </button>
             </div>
             <p className="settings-hint">
-              Manual mappings override the automatic EPG-id and name matching for this source.
-              Your provider&apos;s own per-channel listings still win wherever the provider sends
-              them — a mapping fills in the later days and channels the provider doesn&apos;t cover.
+              Manual mappings override the automatic EPG-id, name, and relaxed matching for this
+              source — tick &quot;only channels with no listings&quot; to work through whatever the
+              automatic joins didn&apos;t resolve, and pick a suggestion to fill the guide side in
+              one click. Your provider&apos;s own per-channel listings still win wherever the
+              provider sends them — a mapping fills in the later days and the channels the
+              provider doesn&apos;t cover.
             </p>
           </>
         )}

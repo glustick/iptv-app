@@ -8,7 +8,10 @@ import {
   mergeShortEpg,
   matchXmltvChannels,
   decodeMaybeGzipBytes,
-  unionEpgSourceUrls
+  unionEpgSourceUrls,
+  buildGuideIndex,
+  resolveStreamToGuide,
+  suggestGuideChannels
 } from './epg'
 import type { LiveStream, ShortEpgProgram } from './types'
 
@@ -240,6 +243,61 @@ describe('parseXmltv entity-expansion guard', () => {
     expect(parsed.channels.get('c1')?.displayName).toBe('X' + '&'.repeat(1500))
     // Named entities still decode correctly — the cap was raised, not entity processing disabled.
     expect(parsed.programmesByChannel.get('c1')?.[0]?.title).toBe('Show "round the Clock & More')
+  })
+})
+
+describe('guide index, stream resolution, and suggestions', () => {
+  const guide = parseXmltv(`<tv>
+    <channel id="bbcone.uk"><display-name>BBC One</display-name></channel>
+    <channel id="bbctwo.uk"><display-name>BBC Two</display-name></channel>
+    <channel id="sky.uk"><display-name>Sky Sports</display-name></channel>
+    <programme start="20300101120000 +0000" stop="20300101130000 +0000" channel="bbcone.uk"><title>One</title></programme>
+    <programme start="20300101120000 +0000" stop="20300101130000 +0000" channel="bbctwo.uk"><title>Two</title></programme>
+    <programme start="20300101120000 +0000" stop="20300101130000 +0000" channel="sky.uk"><title>Three</title></programme>
+  </tv>`)
+
+  it('reports the matched channel, join method, and programme count per stream', () => {
+    const index = buildGuideIndex(guide)
+    expect(resolveStreamToGuide(makeStream({ stream_id: 1, name: '101 BBC One HD' }), index)).toMatchObject({
+      channelId: 'bbcone.uk',
+      method: 'fuzzy',
+      programmeCount: 1
+    })
+    // A matched guide channel with no programmes resolves with programmeCount 0 — a match, but
+    // not usable guide data; this is the rule the "only unmatched" filter and the report share.
+    const emptyGuide = parseXmltv(`<tv><channel id="empty.uk"><display-name>Empty Channel</display-name></channel></tv>`)
+    expect(resolveStreamToGuide(makeStream({ stream_id: 2, name: 'Empty Channel' }), buildGuideIndex(emptyGuide))).toMatchObject({
+      channelId: 'empty.uk',
+      method: 'name',
+      programmeCount: 0
+    })
+    expect(resolveStreamToGuide(makeStream({ stream_id: 3, name: 'Totally Unrelated' }), index)).toBeNull()
+  })
+
+  it('honours a manual mapping for the stream, falling through when it is stale', () => {
+    const index = buildGuideIndex(guide)
+    expect(resolveStreamToGuide(makeStream({ stream_id: 4, name: 'Anything' }), index, 'bbctwo.uk')).toMatchObject({
+      channelId: 'bbctwo.uk',
+      method: 'manual'
+    })
+    expect(resolveStreamToGuide(makeStream({ stream_id: 5, name: 'BBC One' }), index, 'gone.channel')).toMatchObject({
+      channelId: 'bbcone.uk',
+      method: 'name'
+    })
+  })
+
+  it('ranks suggestions by token similarity and refuses coin-flip candidates', () => {
+    const index = buildGuideIndex(guide)
+    const suggestions = suggestGuideChannels('UK: BBC One FHD (VIP)', index)
+    expect(suggestions[0]).toMatchObject({ channelId: 'bbcone.uk', score: 1 })
+    // "BBC Two" shares only the generic "bbc" token (score 0.5) — deliberately not offered.
+    expect(suggestions.map((s) => s.channelId)).toEqual(['bbcone.uk'])
+  })
+
+  it('respects the suggestion limit and returns nothing for an empty name', () => {
+    const index = buildGuideIndex(guide)
+    expect(suggestGuideChannels('Sky Sports', index, 1)).toHaveLength(1)
+    expect(suggestGuideChannels('   ', index)).toEqual([])
   })
 })
 

@@ -244,17 +244,137 @@ const FUZZY_NOISE_TOKENS = new Set([
  * Sky Sports"). Both sides of the join go through the exact same pipeline, so equality here
  * means "same channel modulo presentation noise", not "similar-looking".
  */
-function normalizeNameLoose(value: string): string {
+function looseTokens(value: string): string[] {
   const folded = value
     .toLowerCase()
     .normalize('NFD')
     .replace(/\p{M}/gu, '')
     .replace(/&/g, ' and ')
-  const tokens = folded
+  return folded
     .split(/[^a-z0-9]+/)
     .filter((t) => t.length > 0)
     .filter((t) => !FUZZY_NOISE_TOKENS.has(t) && !/^\d+$/.test(t))
-  return tokens.sort().join(' ')
+}
+
+function normalizeNameLoose(value: string): string {
+  return looseTokens(value).sort().join(' ')
+}
+
+/**
+ * Prebuilt lookup tables for one guide — the shared core of every join tier AND of the mapping
+ * editor's suggestion / "find the unmatched ones" features. Building it walks the guide's
+ * channels once and pays the Unicode-normalization cost for each; callers that resolve many
+ * streams (a 24k-30k catalog) must build it ONCE and reuse it, never per stream — doing the
+ * loose normalization 30,000 times against a channelless guide is exactly the kind of thing
+ * that turns a checkbox into a two-second freeze.
+ */
+export interface GuideIndex {
+  /** guide channel id → channel (id-tier joins and display names) */
+  channels: Map<string, EpgChannel>
+  /** guide channel id → how many programmes it carries (0 = a guide entry with no listings) */
+  programmeCounts: Map<string, number>
+  byExactName: Map<string, string>
+  byLooseName: Map<string, string>
+  /** guide channel id → its loose token set (suggestion scoring) */
+  tokensById: Map<string, Set<string>>
+}
+
+export function buildGuideIndex(epg: EpgData): GuideIndex {
+  const channels = new Map(epg.channels)
+  const programmeCounts = new Map<string, number>()
+  for (const [id, programmes] of epg.programmesByChannel) programmeCounts.set(id, programmes.length)
+  const byExactName = new Map<string, string>()
+  const byLooseName = new Map<string, string>()
+  const tokensById = new Map<string, Set<string>>()
+  for (const [id, channel] of epg.channels) {
+    const exact = normalizeName(channel.displayName)
+    if (exact && !byExactName.has(exact)) byExactName.set(exact, id)
+    const tokens = new Set(looseTokens(channel.displayName))
+    tokensById.set(id, tokens)
+    // Same first-wins rule as the exact map, so a guide carrying both "BBC One" and a noisy
+    // variant resolves deterministically.
+    const loose = [...tokens].sort().join(' ')
+    if (loose && !byLooseName.has(loose)) byLooseName.set(loose, id)
+  }
+  return { channels, programmeCounts, byExactName, byLooseName, tokensById }
+}
+
+/** One stream resolved against one guide — matched channel, join method, and whether that
+ * guide channel actually has programmes (a match with zero programmes is NOT resolved data;
+ * this is the same rule the store's match report uses). null = nothing matched at all. */
+export interface StreamGuideResolution {
+  channelId: string
+  method: XmltvChannelMatch['method']
+  programmeCount: number
+}
+
+/**
+ * The single tier ladder, in one place: manual → EPG id → exact name → relaxed loose match.
+ * A manual mapping pointing at a channel the guide no longer contains falls through to the
+ * automatic tiers rather than dropping the channel. Shared by matchXmltvChannels (the store)
+ * and by Settings' mapping editor (resolving a whole catalog for the "unmatched only" filter),
+ * so both surfaces always agree on what "matched" means.
+ */
+export function resolveStreamToGuide(
+  stream: LiveStream,
+  index: GuideIndex,
+  manualChannelId?: string
+): StreamGuideResolution | null {
+  const resolved = (channelId: string, method: XmltvChannelMatch['method']): StreamGuideResolution => ({
+    channelId,
+    method,
+    programmeCount: index.programmeCounts.get(channelId) ?? 0
+  })
+  if (manualChannelId && index.channels.has(manualChannelId)) return resolved(manualChannelId, 'manual')
+  if (stream.epg_channel_id && index.channels.has(stream.epg_channel_id)) return resolved(stream.epg_channel_id, 'id')
+  const exact = normalizeName(stream.name)
+  const byName = exact ? index.byExactName.get(exact) : undefined
+  if (byName) return resolved(byName, 'name')
+  // Relaxed tier — the one that moves the needle on 24k-30k channel catalogs, where provider
+  // names carry quality tags, leading positions and country prefixes the guides never do.
+  const loose = normalizeNameLoose(stream.name)
+  const byFuzzy = loose ? index.byLooseName.get(loose) : undefined
+  if (byFuzzy) return resolved(byFuzzy, 'fuzzy')
+  return null
+}
+
+/** One ranked suggestion for a stream that has no automatic match. */
+export interface GuideCandidate {
+  channelId: string
+  displayName: string
+  score: number
+}
+
+// Suggestions only offer candidates sharing at least 60% of their combined tokens. Calibrated
+// against the obvious false positive: "BBC One" vs "BBC Two" share exactly one generic token
+// ("bbc") and score 0.5 — offering that as a suggestion is a coin flip, not a suggestion, so
+// the floor sits above it. Genuine near-misses stay well clear ("101 BBC One HD London" vs
+// "BBC One" scores 0.8; a quality-suffix-only difference scores 1.0). The picker's own search
+// covers anything this deliberately refuses.
+const SUGGESTION_MIN_SCORE = 0.6
+
+/**
+ * Ranks a guide's channels against a stream name by Dice similarity over the loose token sets
+ * (2·|shared| / |A|+|B|) — the same normalization the relaxed join uses, so "101 BBC One HD"
+ * scores 1.0 against "BBC One" and 0 against "BBC Two". Best-first, capped at `limit`; ties
+ * break on display name so the order is stable. Used by the mapping editor to turn the
+ * residual unmatched channels into one-click fixes.
+ */
+export function suggestGuideChannels(streamName: string, index: GuideIndex, limit = 3): GuideCandidate[] {
+  const tokens = new Set(looseTokens(streamName))
+  if (tokens.size === 0) return []
+  const scored: GuideCandidate[] = []
+  for (const [id, guideTokens] of index.tokensById) {
+    if (guideTokens.size === 0) continue
+    let shared = 0
+    for (const token of tokens) if (guideTokens.has(token)) shared += 1
+    if (shared === 0) continue
+    const score = (2 * shared) / (tokens.size + guideTokens.size)
+    if (score < SUGGESTION_MIN_SCORE) continue
+    scored.push({ channelId: id, displayName: index.channels.get(id)?.displayName ?? id, score })
+  }
+  scored.sort((a, b) => b.score - a.score || a.displayName.localeCompare(b.displayName))
+  return scored.slice(0, limit)
 }
 
 /** One matched channel: which guide channel it resolved to, and by which join method. */
@@ -295,42 +415,12 @@ export function matchXmltvChannels(
   epg: EpgData,
   manualMappings?: Map<number, string>
 ): Map<number, XmltvChannelMatch> {
+  const index = buildGuideIndex(epg)
   const matches = new Map<number, XmltvChannelMatch>()
-  const byNormName = new Map<string, string>()
-  const byLooseName = new Map<string, string>()
-  for (const [id, channel] of epg.channels) {
-    const normalized = normalizeName(channel.displayName)
-    if (normalized && !byNormName.has(normalized)) byNormName.set(normalized, id)
-    // Same first-wins rule as the exact map, so a guide carrying both "BBC One" and a
-    // noisy variant resolves deterministically.
-    const loose = normalizeNameLoose(channel.displayName)
-    if (loose && !byLooseName.has(loose)) byLooseName.set(loose, id)
-  }
   for (const stream of liveStreams) {
     if (matches.has(stream.stream_id)) continue
-    const manualChannelId = manualMappings?.get(stream.stream_id)
-    if (manualChannelId && epg.channels.has(manualChannelId)) {
-      matches.set(stream.stream_id, { channelId: manualChannelId, method: 'manual' })
-      continue
-    }
-    if (stream.epg_channel_id && epg.channels.has(stream.epg_channel_id)) {
-      matches.set(stream.stream_id, { channelId: stream.epg_channel_id, method: 'id' })
-      continue
-    }
-    const normalized = normalizeName(stream.name)
-    const byName = normalized ? byNormName.get(normalized) : undefined
-    if (byName) {
-      matches.set(stream.stream_id, { channelId: byName, method: 'name' })
-      continue
-    }
-    // Relaxed tier — the one that actually moves the needle on 24k-30k channel catalogs,
-    // where provider names are littered with quality tags, leading positions, and country
-    // prefixes the guides never carry. Strictly weaker than the exact joins (a distinct
-    // channel that only differs in noise tokens could over-match), which is exactly why
-    // it reports as its own method — the match report shows how much rests on it.
-    const loose = normalizeNameLoose(stream.name)
-    const byFuzzy = loose ? byLooseName.get(loose) : undefined
-    if (byFuzzy) matches.set(stream.stream_id, { channelId: byFuzzy, method: 'fuzzy' })
+    const resolved = resolveStreamToGuide(stream, index, manualMappings?.get(stream.stream_id))
+    if (resolved) matches.set(stream.stream_id, { channelId: resolved.channelId, method: resolved.method })
   }
   return matches
 }
