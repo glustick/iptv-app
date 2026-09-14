@@ -40,6 +40,26 @@ npm run build:linux  # package a Linux AppImage
 
 Pushing a `v*` tag (e.g. `git tag v0.1.0 && git push origin v0.1.0`) triggers [`.github/workflows/release.yml`](.github/workflows/release.yml), which builds native installers on Windows/Mac/Linux runners and publishes them to a [GitHub Release](../../releases) automatically.
 
+### Code signing & notarization
+
+Signed builds are fully wired but **activate by themselves only once the repository secrets exist** — with none set, the release pipeline publishes unsigned installers exactly as before, and no workflow edit is needed to switch either way.
+
+Add these under *Settings → Secrets and variables → Actions*:
+
+| Secret | Platform | What it is |
+| --- | --- | --- |
+| `MAC_CSC_LINK` | macOS | Developer ID Application certificate, base64-encoded `.p12` |
+| `MAC_CSC_KEY_PASSWORD` | macOS | Password for that `.p12` |
+| `APPLE_ID` | macOS | Apple ID used for notarization |
+| `APPLE_APP_SPECIFIC_PASSWORD` | macOS | App-specific password for that Apple ID |
+| `APPLE_TEAM_ID` | macOS | Team ID from the developer account |
+| `WIN_CSC_LINK` | Windows | Code-signing certificate, base64-encoded `.pfx` |
+| `WIN_CSC_KEY_PASSWORD` | Windows | Password for that `.pfx` |
+
+To base64 a certificate: `base64 -i cert.p12 | pbcopy` (macOS) or `certutil -encode cert.pfx out.txt` (Windows).
+
+Why it matters: without a signature, macOS Gatekeeper warns or blocks the app on first launch **and `electron-updater` cannot apply updates at all** (macOS refuses to replace an unsigned bundle), while Windows shows SmartScreen warnings. Once the secrets are in place the next tagged release is signed, notarized (see `build/entitlements.mac.plist` for the hardened-runtime entitlements Electron and the bundled ffmpeg need), and updates flow normally.
+
 ## Project structure
 
 ```

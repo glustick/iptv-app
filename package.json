@@ -1,8 +1,8 @@
 {
   "name": "iptv-app",
   "productName": "AllisonIPTV",
-  "version": "0.7.71",
-  "buildNumber": 84,
+  "version": "0.7.72",
+  "buildNumber": 85,
   "description": "Desktop IPTV client for Xtream Codes providers with live TV, VOD, series and EPG guide support",
   "main": "./out/main/index.js",
   "author": "",
@@ -66,7 +66,11 @@
       "releaseType": "release"
     },
     "mac": {
-      "category": "public.app-category.video"
+      "category": "public.app-category.video",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
     },
     "win": {
       "target": "nsis"

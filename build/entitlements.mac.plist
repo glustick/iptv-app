@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <!-- Electron's V8 needs JIT and writable-executable memory; without these the hardened
+         runtime kills the renderer at startup. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <!-- Chromium helper processes and the bundled ffmpeg-static binary are not signed with this
+         app's Developer ID identity, so library validation has to be off or they refuse to load. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <!-- ffmpeg is spawned with a modified environment (PATH/dyld hints on some setups). -->
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+  </dict>
+</plist>

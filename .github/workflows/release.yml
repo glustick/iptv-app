@@ -8,13 +8,23 @@ on:
 permissions:
   contents: write
 
+# One job per platform rather than a matrix, so each can read its OWN certificate secrets —
+# GitHub does not support dynamic secret lookup (secrets[matrix.name]), so the mac and windows
+# jobs cannot share one generic CSC_LINK name if their certificates differ.
+#
+# Signing activates by itself the moment the secrets exist: each job checks the one it needs and
+# takes the signed path when present, the unsigned path when not. No workflow edit required to
+# turn signing on or off, and an unsigned release keeps working exactly as it always has.
 jobs:
-  release:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
+  mac:
+    runs-on: macos-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - uses: actions/checkout@v4
 
@@ -26,6 +36,60 @@ jobs:
 
       - run: npm run build
 
-      - run: npx electron-builder --publish always
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Signed + notarized: needs a Developer ID Application certificate (base64 .p12) and the
+      # Apple ID app-specific password + team id, so Gatekeeper lets users open the app and
+      # electron-updater can actually apply updates on macOS.
+      - name: Package and publish (signed + notarized)
+        if: env.CSC_LINK != ''
+        run: npx electron-builder --publish always
+
+      - name: Package and publish (unsigned)
+        if: env.CSC_LINK == ''
+        run: npx electron-builder --publish always
+
+  windows:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm install
+
+      - run: npm run build
+
+      # Signed: needs a Windows code-signing certificate (base64 .pfx), so SmartScreen stops
+      # warning on first download.
+      - name: Package and publish (signed)
+        if: env.CSC_LINK != ''
+        run: npx electron-builder --publish always
+
+      - name: Package and publish (unsigned)
+        if: env.CSC_LINK == ''
+        run: npx electron-builder --publish always
+
+  linux:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm install
+
+      - run: npm run build
+
+      # Linux packages aren't code-signed in this pipeline — the AppImage carries no signature
+      # authority story the way macOS/Windows do.
+      - name: Package and publish
+        run: npx electron-builder --publish always
