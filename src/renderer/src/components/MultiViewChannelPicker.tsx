@@ -28,6 +28,9 @@ export function MultiViewChannelPicker(): JSX.Element | null {
   const categories = useAppStore((s) => s.categories)
   const selectedCategoryId = useAppStore((s) => s.selectedCategoryId)
   const requestCategory = useAppStore((s) => s.requestCategory)
+  const customCategories = useAppStore((s) => s.settings.customCategories)
+  const selectedCustomCategoryId = useAppStore((s) => s.selectedCustomCategoryId)
+  const requestCustomCategory = useAppStore((s) => s.requestCustomCategory)
   const lockedCategoryIds = useAppStore((s) => s.settings.lockedCategoryIds)
   const parentalPin = useAppStore((s) => s.settings.parentalPin)
   const unlockedCategoryIds = useAppStore((s) => s.unlockedCategoryIds)
@@ -78,8 +81,27 @@ export function MultiViewChannelPicker(): JSX.Element | null {
         <div className="multiview-picker-filters">
           <label className="player-track-select" title="Category">
             <span aria-hidden="true">📂</span>
-            <select value={selectedCategoryId ?? ''} onChange={(e) => requestCategory(e.target.value || null)}>
+            <select
+              value={selectedCustomCategoryId ? `custom:${selectedCustomCategoryId}` : (selectedCategoryId ?? '')}
+              onChange={(e) => {
+                const value = e.target.value
+                // Custom categories are a different selection domain (and a different store
+                // action) — namespaced in the option value so both can live in one select.
+                if (value.startsWith('custom:')) requestCustomCategory(value.slice('custom:'.length))
+                else requestCategory(value || null)
+              }}
+            >
               <option value="">All categories</option>
+              {/* The user's own groupings first, mirroring the sidebar's own ordering. */}
+              {customCategories.length > 0 && (
+                <optgroup label="My Categories">
+                  {customCategories.map((cat) => (
+                    <option key={cat.id} value={`custom:${cat.id}`}>
+                      {cat.name} ({cat.streamIds.length})
+                    </option>
+                  ))}
+                </optgroup>
+              )}
               {categories.map((cat) => (
                 <option key={cat.category_id} value={cat.category_id}>
                   {isLocked(cat.category_id) ? `🔒 ${cat.category_name}` : cat.category_name}

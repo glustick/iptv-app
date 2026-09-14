@@ -1438,3 +1438,132 @@ describe('VPN profile CRUD', () => {
     expect(api.vpn.disconnect).toHaveBeenCalled()
   })
 })
+
+describe('My Categories (custom categories)', () => {
+  function makeStream(streamId: number, name: string): LiveStream {
+    return {
+      num: streamId,
+      name,
+      stream_type: 'live',
+      stream_id: streamId,
+      stream_icon: '',
+      epg_channel_id: null,
+      added: '',
+      category_id: '1',
+      custom_sid: null,
+      tv_archive: 0,
+      direct_source: '',
+      tv_archive_duration: 0
+    }
+  }
+
+  const catalog = [makeStream(1, 'One'), makeStream(2, 'Two'), makeStream(3, 'Three')]
+
+  function stubCatalog(): void {
+    vi.spyOn(XtreamClient.prototype, 'getLiveStreams').mockResolvedValue(catalog)
+    // requestCustomCategory opens a preview, which fires a short-EPG fetch — stubbed so the test
+    // never touches the network.
+    vi.spyOn(XtreamClient.prototype, 'getShortEpg').mockResolvedValue([])
+  }
+
+  it('creates, renames and deletes a category, persisting each change into settings', () => {
+    const id = useAppStore.getState().createCustomCategory('Sports')
+    expect(useAppStore.getState().settings.customCategories).toEqual([{ id, name: 'Sports', streamIds: [] }])
+
+    useAppStore.getState().renameCustomCategory(id, 'Live Sport')
+    expect(useAppStore.getState().settings.customCategories[0].name).toBe('Live Sport')
+
+    // A blank rename is refused rather than blanking the row out.
+    useAppStore.getState().renameCustomCategory(id, '   ')
+    expect(useAppStore.getState().settings.customCategories[0].name).toBe('Live Sport')
+
+    useAppStore.getState().deleteCustomCategory(id)
+    expect(useAppStore.getState().settings.customCategories).toEqual([])
+  })
+
+  it('adds channels without duplicates and removes them, keeping the stored order', () => {
+    const id = useAppStore.getState().createCustomCategory('Mine')
+    useAppStore.getState().addChannelsToCustomCategory(id, [2, 1, 2])
+    expect(useAppStore.getState().settings.customCategories[0].streamIds).toEqual([2, 1])
+
+    useAppStore.getState().addChannelsToCustomCategory(id, [3])
+    expect(useAppStore.getState().settings.customCategories[0].streamIds).toEqual([2, 1, 3])
+
+    useAppStore.getState().removeChannelFromCustomCategory(id, 1)
+    expect(useAppStore.getState().settings.customCategories[0].streamIds).toEqual([2, 3])
+  })
+
+  it('reorders channels — the stored order is the display order', () => {
+    const id = useAppStore.getState().createCustomCategory('Mine')
+    useAppStore.getState().addChannelsToCustomCategory(id, [1, 2, 3])
+
+    useAppStore.getState().reorderCustomCategoryChannels(id, 0, 2)
+    expect(useAppStore.getState().settings.customCategories[0].streamIds).toEqual([2, 3, 1])
+  })
+
+  it('opens a category with its channels in the stored order, skipping ids this provider lacks', async () => {
+    stubCatalog()
+    useAppStore.setState({
+      client: new XtreamClient('http://example.com', 'user', 'pass'),
+      numericChannelCatalog: null,
+      settings: { ...DEFAULT_SETTINGS, customCategories: [{ id: 'c1', name: 'Mine', streamIds: [3, 1, 999] }] }
+    })
+
+    useAppStore.getState().requestCustomCategory('c1')
+
+    await vi.waitFor(() => expect(useAppStore.getState().liveStreams).toHaveLength(2))
+    expect(useAppStore.getState().liveStreams.map((s) => s.stream_id)).toEqual([3, 1])
+    expect(useAppStore.getState().selectedCustomCategoryId).toBe('c1')
+    expect(useAppStore.getState().selectedCategoryId).toBeNull()
+    // The unresolved id is kept in the stored order, not dropped — it comes back if that
+    // provider is connected again.
+    expect(useAppStore.getState().settings.customCategories[0].streamIds).toEqual([3, 1, 999])
+  })
+
+  it('reflects an edit in the grid immediately when the edited category is the one on screen', async () => {
+    stubCatalog()
+    useAppStore.setState({
+      client: new XtreamClient('http://example.com', 'user', 'pass'),
+      numericChannelCatalog: null,
+      settings: { ...DEFAULT_SETTINGS, customCategories: [{ id: 'c1', name: 'Mine', streamIds: [1, 2] }] }
+    })
+    useAppStore.getState().requestCustomCategory('c1')
+    await vi.waitFor(() => expect(useAppStore.getState().liveStreams).toHaveLength(2))
+
+    useAppStore.getState().addChannelsToCustomCategory('c1', [3])
+    expect(useAppStore.getState().liveStreams.map((s) => s.stream_id)).toEqual([1, 2, 3])
+
+    useAppStore.getState().reorderCustomCategoryChannels('c1', 2, 0)
+    expect(useAppStore.getState().liveStreams.map((s) => s.stream_id)).toEqual([3, 1, 2])
+
+    useAppStore.getState().removeChannelFromCustomCategory('c1', 1)
+    expect(useAppStore.getState().liveStreams.map((s) => s.stream_id)).toEqual([3, 2])
+  })
+
+  it('leaves the grid alone when editing a category that is not the selected one', () => {
+    useAppStore.setState({
+      numericChannelCatalog: catalog,
+      selectedCustomCategoryId: 'other',
+      liveStreams: [makeStream(9, 'OnScreen')],
+      settings: { ...DEFAULT_SETTINGS, customCategories: [{ id: 'c1', name: 'Mine', streamIds: [] }] }
+    })
+
+    useAppStore.getState().addChannelsToCustomCategory('c1', [1])
+
+    expect(useAppStore.getState().settings.customCategories[0].streamIds).toEqual([1])
+    expect(useAppStore.getState().liveStreams.map((s) => s.stream_id)).toEqual([9])
+  })
+
+  it('falls back to the provider category list when the selected custom category is deleted', () => {
+    useAppStore.setState({
+      selectedCustomCategoryId: 'c1',
+      numericChannelCatalog: catalog,
+      settings: { ...DEFAULT_SETTINGS, customCategories: [{ id: 'c1', name: 'Mine', streamIds: [1] }] }
+    })
+
+    useAppStore.getState().deleteCustomCategory('c1')
+
+    expect(useAppStore.getState().settings.customCategories).toEqual([])
+    expect(useAppStore.getState().selectedCustomCategoryId).toBeNull()
+  })
+})

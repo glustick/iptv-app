@@ -2297,6 +2297,217 @@ body.resizing-col {
   margin-top: 2px;
 }
 
+/* "My Categories" — the sidebar's own section above the provider's categories, plus the manager
+   modal. Rows reuse the .category button styling, made flex here so the name and its channel
+   count sit at opposite ends. */
+.my-categories {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.my-categories-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 4px 4px;
+}
+
+.my-categories-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.my-categories-manage {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 2px 8px;
+}
+
+.my-categories-manage:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+  border-color: var(--accent);
+}
+
+.my-categories-empty {
+  margin: 0 0 4px;
+  padding: 0 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.my-categories .category,
+.custom-cat-list .category {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.category-count {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.custom-cat-card {
+  max-width: min(920px, 92vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.custom-cat-body {
+  display: grid;
+  grid-template-columns: 250px 1fr;
+  gap: 16px;
+  min-height: 0;
+  flex: 1;
+}
+
+.custom-cat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow-y: auto;
+  padding-right: 12px;
+  border-right: 1px solid var(--border);
+}
+
+.custom-cat-new {
+  margin-top: 8px;
+}
+
+.custom-cat-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.custom-cat-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.custom-cat-actions input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.custom-cat-heading {
+  margin: 6px 0 0;
+  font-size: 13px;
+}
+
+.custom-cat-channels {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.custom-cat-channel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  font-size: 12px;
+  cursor: grab;
+}
+
+.custom-cat-channel:hover {
+  background: var(--bg-hover);
+}
+
+.custom-cat-channel.dragging {
+  opacity: 0.45;
+}
+
+.custom-cat-channel.drop-target {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.custom-cat-handle {
+  color: var(--text-dim);
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.custom-cat-channel-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.custom-cat-missing {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.custom-cat-channel-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.custom-cat-channel-actions .icon-button {
+  padding: 2px 6px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.custom-cat-channel-actions .icon-button:disabled {
+  opacity: 0.3;
+  cursor: default;
+  border-color: var(--border);
+  color: var(--text-dim);
+}
+
+.custom-cat-candidates {
+  max-height: 200px;
+}
+
+.custom-cat-detail > input[type='text'] {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: var(--text);
+  font-size: 13px;
+}
+
 .epg-mapping-add-row button {
   background: var(--accent);
   border: none;

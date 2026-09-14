@@ -208,6 +208,19 @@ export interface EpgChannelMapping {
   streamName?: string
 }
 
+// A user-made channel grouping for Live TV — the sidebar's "My Categories" section above the
+// provider's own categories. streamIds is ORDERED: that order is exactly what the channel grid
+// renders when the category is selected, and drag-and-drop in the manager rewrites it. Ids are
+// provider-scoped (Xtream stream ids are only unique within one provider), so after switching
+// providers the ids that don't resolve are skipped rather than dropped — the category and its
+// order come back intact the next time that provider is connected. Persisted in settings, so it
+// survives app restarts and upgrades and is included in backup export/import.
+export interface CustomCategory {
+  id: string
+  name: string
+  streamIds: number[]
+}
+
 export interface AppSettings {
   bufferProfile: BufferProfile
   clockFormat: ClockFormat
@@ -247,6 +260,9 @@ export interface AppSettings {
   // (when allowed) and merged into the EPG grid per channel, filling the multi-day gap the
   // per-channel get_short_epg window can never cover. See useAppStore.loadEpgSources.
   customEpgUrls: string[]
+  // User-made Live TV categories, shown above the provider's own in the sidebar — see
+  // CustomCategory above for what the order field means and why ids are provider-scoped.
+  customCategories: CustomCategory[]
   // Manual guide-channel → app-channel links per user-added source, overriding the automatic
   // EPG-id/name matching wherever auto-matching gets a channel wrong or misses it entirely.
   // Applied in applyEpgPool alongside the automatic joins; see EpgChannelMapping above.
@@ -272,7 +288,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   hiddenLiveStreamIds: [],
   liveAudioFixes: {},
   customEpgUrls: [],
-  epgChannelMappings: []
+  epgChannelMappings: [],
+  customCategories: []
 }
 
 export type VpnStatus = 'disconnected' | 'connecting' | 'connected' | 'error'

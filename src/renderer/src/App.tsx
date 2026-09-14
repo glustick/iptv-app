@@ -11,6 +11,7 @@ import { EpgGridPanel } from './components/EpgGridPanel'
 import { MultiView } from './components/MultiView'
 import { PinPrompt } from './components/PinPrompt'
 import { SettingsPage } from './components/SettingsPage'
+import { CustomCategoriesModal } from './components/CustomCategoriesModal'
 import { AboutModal } from './components/AboutModal'
 import { VpnWarnings } from './components/VpnWarnings'
 import { UpdatePrompt } from './components/UpdatePrompt'
@@ -142,6 +143,7 @@ function App(): JSX.Element {
       <SeriesModal />
       <PinPrompt />
       <SettingsPage />
+      <CustomCategoriesModal />
       <AboutModal />
       <VpnWarnings />
       <UpdatePrompt />

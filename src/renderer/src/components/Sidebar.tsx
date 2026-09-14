@@ -15,6 +15,11 @@ export function Sidebar(): JSX.Element | null {
   const showHidden = useAppStore((s) => s.showHiddenLiveChannels)
   const setShowHidden = useAppStore((s) => s.setShowHiddenLiveChannels)
 
+  const customCategories = useAppStore((s) => s.settings.customCategories)
+  const selectedCustomCategoryId = useAppStore((s) => s.selectedCustomCategoryId)
+  const requestCustomCategory = useAppStore((s) => s.requestCustomCategory)
+  const openCustomCategories = useAppStore((s) => s.openCustomCategories)
+
   const { width, startDrag } = useResizableWidth(sidebarWidth, 1, {
     min: 160,
     max: 360,
@@ -37,13 +42,47 @@ export function Sidebar(): JSX.Element | null {
     // to scroll (240 categories on a real test account made this very reproducible).
     <div className="sidebar" style={{ width }}>
       <nav className="sidebar-scroll">
+        {/* "My Categories" sits ABOVE everything else — the user's own groupings are the ones
+            they reach for daily, and the provider's hundreds of categories are the fallback.
+            Lives in the same scroll container so a long provider list can't push it out of
+            reach; shown for the live-channel modes (Live TV and Multi-View, which browses the
+            same live channels via this same sidebar). */}
+        {(viewMode === 'live' || viewMode === 'multiview') && (
+          <div className="my-categories">
+            <div className="my-categories-header">
+              <span className="my-categories-title">My Categories</span>
+              <button
+                className="my-categories-manage"
+                onClick={openCustomCategories}
+                title="Create, rename, fill and reorder your own categories"
+              >
+                Manage
+              </button>
+            </div>
+            {customCategories.length === 0 ? (
+              <p className="my-categories-empty">None yet — Manage to create one.</p>
+            ) : (
+              customCategories.map((cat) => (
+                <button
+                  key={cat.id}
+                  className={selectedCustomCategoryId === cat.id ? 'category active' : 'category'}
+                  onClick={() => requestCustomCategory(cat.id)}
+                  title={`${cat.streamIds.length} channel${cat.streamIds.length === 1 ? '' : 's'}`}
+                >
+                  {cat.name}
+                  <span className="category-count">{cat.streamIds.length}</span>
+                </button>
+              ))
+            )}
+          </div>
+        )}
         {viewMode === 'live' && hiddenCount > 0 && (
           <button className={showHidden ? 'category active' : 'category'} onClick={() => setShowHidden(!showHidden)}>
             {showHidden ? 'Hide hidden channels' : `Show hidden channels (${hiddenCount})`}
           </button>
         )}
         <button
-          className={selectedCategoryId === null ? 'category active' : 'category'}
+          className={selectedCategoryId === null && selectedCustomCategoryId === null ? 'category active' : 'category'}
           onClick={() => requestCategory(null)}
         >
           All

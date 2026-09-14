@@ -42,12 +42,14 @@ import type {
   RecentlyWatchedEntry,
   EpisodeProgress,
   AppSettings,
+  CustomCategory,
   EpgChannelMapping,
   VpnStatus,
   VpnProfile,
   MultiViewLayout
 } from '../lib/types'
 import { DEFAULT_SETTINGS, favoriteKey } from '../lib/types'
+import { addStreamIds, moveItem, removeStreamId } from '../lib/customCategories'
 import { shouldWarnOnVpnDisconnect } from '../lib/vpnStatus'
 import { createReminder, reminderId, splitDueReminders, type EpgReminder } from '../lib/reminders'
 
@@ -220,6 +222,12 @@ interface AppState {
   // when the picker isn't open.
   multiViewPickingSlot: number | null
   showHiddenLiveChannels: boolean
+  // Which user-made category the sidebar has selected (see CustomCategory) — null whenever a
+  // provider category (or All) is selected instead. Kept separate from selectedCategoryId
+  // because a custom category has no provider category_id: setting that field to a custom id
+  // would make the sidebar's own highlight logic and the Multi-View picker's select disagree.
+  selectedCustomCategoryId: string | null
+  customCategoriesOpen: boolean
 
   favorites: FavoriteEntry[]
   favoriteGroups: FavoriteGroup[]
@@ -280,6 +288,22 @@ interface AppState {
   setViewMode: (mode: ViewMode) => Promise<void>
   requestCategory: (categoryId: string | null) => void
   selectCategory: (categoryId: string | null) => Promise<void>
+  // "My Categories" (see CustomCategory): user-made Live TV groupings shown above the provider's
+  // own categories. Creating/renaming/removing and adding/reordering channels all persist into
+  // settings.customCategories, and a change to the SELECTED category is reflected in the grid
+  // immediately without a refetch.
+  openCustomCategories: () => void
+  closeCustomCategories: () => void
+  createCustomCategory: (name: string) => string
+  renameCustomCategory: (id: string, name: string) => void
+  deleteCustomCategory: (id: string) => void
+  addChannelsToCustomCategory: (id: string, streamIds: number[]) => void
+  removeChannelFromCustomCategory: (id: string, streamId: number) => void
+  reorderCustomCategoryChannels: (id: string, fromIndex: number, toIndex: number) => void
+  requestCustomCategory: (id: string) => void
+  // Rebuilds liveStreams for a custom category from the cached catalog (no-op unless it's the
+  // one currently selected) — see its implementation for why every edit path calls it.
+  refreshCustomCategoryStreams: (id: string) => void
   setSearchTerm: (term: string) => void
   // Fetches (once) and searches the full live catalog by a channel's provider-assigned `num` —
   // for the numeric channel-entry shortcut (type a number, jump straight to that channel),
@@ -435,6 +459,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   multiViewSlots: Array(DEFAULT_SETTINGS.multiViewLayout).fill(null),
   multiViewPickingSlot: null,
   showHiddenLiveChannels: false,
+  selectedCustomCategoryId: null,
+  customCategoriesOpen: false,
 
   favorites: [],
   favoriteGroups: [],
@@ -695,7 +721,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       nowPlaying: null,
       channelBarOpen: false,
       unlockedCategoryIds: [],
-      numericChannelCatalog: null
+      numericChannelCatalog: null,
+      selectedCustomCategoryId: null
     })
   },
 
@@ -711,6 +738,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       viewMode: mode,
       selectedCategoryId: null,
+      selectedCustomCategoryId: null,
       liveStreams: [],
       vodStreams: [],
       series: [],
@@ -766,7 +794,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectCategory: async (categoryId) => {
     const { client, viewMode } = get()
     if (!client) return
-    set({ selectedCategoryId: categoryId })
+    set({ selectedCategoryId: categoryId, selectedCustomCategoryId: null })
     try {
       if (viewMode === 'live' || viewMode === 'multiview') {
         const liveStreams = await client.getLiveStreams(categoryId ?? undefined)
@@ -1021,6 +1049,101 @@ export const useAppStore = create<AppState>((set, get) => ({
       // worth an error surface of its own.
       console.error('[store] failed to load the full channel catalog for EPG mapping:', err)
     }
+  },
+
+  openCustomCategories: () => set({ customCategoriesOpen: true }),
+  closeCustomCategories: () => set({ customCategoriesOpen: false }),
+
+  createCustomCategory: (name) => {
+    const category: CustomCategory = { id: crypto.randomUUID(), name: name.trim() || 'New category', streamIds: [] }
+    get().updateSettings({ customCategories: [...get().settings.customCategories, category] })
+    return category.id
+  },
+
+  renameCustomCategory: (id, name) => {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    get().updateSettings({
+      customCategories: get().settings.customCategories.map((c) => (c.id === id ? { ...c, name: trimmed } : c))
+    })
+  },
+
+  deleteCustomCategory: (id) => {
+    get().updateSettings({ customCategories: get().settings.customCategories.filter((c) => c.id !== id) })
+    // Deleting the SELECTED category would otherwise leave the grid showing channels sourced from
+    // a category that no longer exists — fall back to All, which is what a user deleting the thing
+    // they're looking at would expect to see next.
+    if (get().selectedCustomCategoryId === id) {
+      set({ selectedCustomCategoryId: null })
+      get().requestCategory(null)
+    }
+  },
+
+  addChannelsToCustomCategory: (id, streamIds) => {
+    get().updateSettings({
+      customCategories: get().settings.customCategories.map((c) =>
+        c.id === id ? { ...c, streamIds: addStreamIds(c.streamIds, streamIds) } : c
+      )
+    })
+    get().refreshCustomCategoryStreams(id)
+  },
+
+  removeChannelFromCustomCategory: (id, streamId) => {
+    get().updateSettings({
+      customCategories: get().settings.customCategories.map((c) =>
+        c.id === id ? { ...c, streamIds: removeStreamId(c.streamIds, streamId) } : c
+      )
+    })
+    get().refreshCustomCategoryStreams(id)
+  },
+
+  reorderCustomCategoryChannels: (id, fromIndex, toIndex) => {
+    get().updateSettings({
+      customCategories: get().settings.customCategories.map((c) =>
+        c.id === id ? { ...c, streamIds: moveItem(c.streamIds, fromIndex, toIndex) } : c
+      )
+    })
+    get().refreshCustomCategoryStreams(id)
+  },
+
+  // Rebuilds liveStreams for a custom category straight from the cached full catalog — used both
+  // by selection and by every edit, so adding/removing/reordering a channel updates the grid
+  // immediately without a provider round-trip. No-ops when the edited category isn't the one on
+  // screen (nothing to update) or when the catalog hasn't been loaded yet (selection loads it).
+  refreshCustomCategoryStreams: (id) => {
+    const { numericChannelCatalog } = get()
+    if (!numericChannelCatalog || get().selectedCustomCategoryId !== id) return
+    const category = get().settings.customCategories.find((c) => c.id === id)
+    if (!category) return
+    const byId = new Map(numericChannelCatalog.map((s) => [s.stream_id, s]))
+    const streams = category.streamIds.map((streamId) => byId.get(streamId)).filter((s): s is LiveStream => !!s)
+    set({ liveStreams: streams })
+    get().applyEpgPool()
+  },
+
+  requestCustomCategory: (id) => {
+    // Custom categories are the user's own groupings — no parental lock applies (the lock exists
+    // to gate provider categories), so this goes straight to loading rather than through
+    // requestCategory's PIN check.
+    set({ selectedCustomCategoryId: id, selectedCategoryId: null, searchTerm: '', previewChannel: null })
+    void (async () => {
+      if (!get().numericChannelCatalog) await get().ensureChannelCatalog()
+      const { numericChannelCatalog } = get()
+      const category = get().settings.customCategories.find((c) => c.id === id)
+      // The user may have switched elsewhere while the catalog was loading — committing now would
+      // overwrite whatever they moved on to.
+      if (!category || get().selectedCustomCategoryId !== id) return
+      if (!numericChannelCatalog) {
+        set({ error: 'Could not load your channel list to open that category' })
+        return
+      }
+      // Ids that don't resolve are skipped, not dropped from the stored order — see CustomCategory.
+      const byId = new Map(numericChannelCatalog.map((s) => [s.stream_id, s]))
+      const streams = category.streamIds.map((streamId) => byId.get(streamId)).filter((s): s is LiveStream => !!s)
+      set({ liveStreams: streams })
+      get().applyEpgPool()
+      if (streams.length > 0) get().openChannelPreview(streams[0])
+    })()
   },
 
   loadShortEpg: (streamId) => {
