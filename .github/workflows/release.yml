@@ -12,19 +12,19 @@ permissions:
 # GitHub does not support dynamic secret lookup (secrets[matrix.name]), so the mac and windows
 # jobs cannot share one generic CSC_LINK name if their certificates differ.
 #
-# Signing activates by itself the moment the secrets exist: each job checks the one it needs and
-# takes the signed path when present, the unsigned path when not. No workflow edit required to
-# turn signing on or off, and an unsigned release keeps working exactly as it always has.
+# Signing activates by itself the moment the secrets exist: each job materializes a presence flag
+# at job level (job-level env CAN read secrets; step `if` cannot), then takes the signed path with
+# its signing env applied ONLY on that step when the flag is true, and the unsigned path otherwise.
+# CSC_LINK must never be defined-but-empty: electron-builder's own getCscLink() deliberately treats
+# an empty CSC_LINK as a provided certificate path ("allow to specify as empty string") and then
+# fails trying to open it — which is what broke the first version of this workflow on macOS and
+# Windows while Linux (which ignores CSC_LINK) passed.
 jobs:
   mac:
     runs-on: macos-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
-      CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      MAC_SIGNING_READY: ${{ secrets.MAC_CSC_LINK != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -40,19 +40,24 @@ jobs:
       # Apple ID app-specific password + team id, so Gatekeeper lets users open the app and
       # electron-updater can actually apply updates on macOS.
       - name: Package and publish (signed + notarized)
-        if: env.CSC_LINK != ''
+        if: env.MAC_SIGNING_READY == 'true'
         run: npx electron-builder --publish always
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: Package and publish (unsigned)
-        if: env.CSC_LINK == ''
+        if: env.MAC_SIGNING_READY != 'true'
         run: npx electron-builder --publish always
 
   windows:
     runs-on: windows-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-      CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+      WIN_SIGNING_READY: ${{ secrets.WIN_CSC_LINK != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -67,11 +72,14 @@ jobs:
       # Signed: needs a Windows code-signing certificate (base64 .pfx), so SmartScreen stops
       # warning on first download.
       - name: Package and publish (signed)
-        if: env.CSC_LINK != ''
+        if: env.WIN_SIGNING_READY == 'true'
         run: npx electron-builder --publish always
+        env:
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
 
       - name: Package and publish (unsigned)
-        if: env.CSC_LINK == ''
+        if: env.WIN_SIGNING_READY != 'true'
         run: npx electron-builder --publish always
 
   linux:
