@@ -13,6 +13,11 @@ A desktop IPTV client (Electron + React) for Xtream Codes providers, with live T
 - Series browsing fetches seasons/episodes via `get_series_info` for playback
 - Built-in player using [hls.js](https://github.com/video-dev/hls.js) for live `.m3u8` streams (with auto-recovery on network/media errors and a generous buffer to smooth out flaky connections), native `<video>` fallback for VOD/series files
 - A local reverse proxy in the Electron main process works around the fact that Xtream panels don't send CORS headers, and uses Electron's own `net` module (not Node's) so it also respects your OS's certificate trust store — important on networks with a TLS-inspecting corporate proxy
+- **EPG from multiple guide sources**: the provider's own `xmltv.php` guide (when it allows one) plus any number of user-added XMLTV URLs (plain or `.xml.gz`), pooled per channel so later days and channels the provider doesn't cover still get listings
+- **Channel matching that works at scale**: guides are joined to channels by EPG id, then exact name, then a relaxed match that ignores quality tags, leading channel numbers, country prefixes and accents ("101 BBC One HD" → "BBC One"). A per-source report shows exactly what matched and how, and any channel can be mapped by hand — individually, or in bulk from ranked suggestions ("apply everything scoring 80% or better")
+- **Guide priority and provenance**: sources are tried in your order of preference (provider guide first, then your sources top-to-bottom), and the channel preview shows which source is supplying that channel's listings
+- **My Categories**: your own groupings for Live TV, Movies and Series, pinned above the provider's categories, filled by search and ordered by drag-and-drop — persisted in your settings, included in backups
+- **Release notes in the update prompt**: each release's notes (generated from `ROADMAP.md` at build time) appear both on the GitHub release page and in the app's own update dialog
 
 ## Requirements
 
@@ -60,6 +65,19 @@ To base64 a certificate: `base64 -i cert.p12 | pbcopy` (macOS) or `certutil -enc
 
 Why it matters: without a signature, macOS Gatekeeper warns or blocks the app on first launch **and `electron-updater` cannot apply updates at all** (macOS refuses to replace an unsigned bundle), while Windows shows SmartScreen warnings. Once the secrets are in place the next tagged release is signed, notarized (see `build/entitlements.mac.plist` for the hardened-runtime entitlements Electron and the bundled ffmpeg need), and updates flow normally.
 
+## Tests
+
+```bash
+npm test          # vitest run
+npm run typecheck # tsc on both the node and web projects
+npm run lint      # eslint (includes a no-floating-promises rule)
+```
+
+The suite is mostly logic-level, with two exceptions worth knowing about:
+
+- **Component-rendering tests** live in `src/renderer/src/components/*.test.tsx` and opt into jsdom per file with a `// @vitest-environment jsdom` docblock. This project's vitest runs on the oxc/rolldown flavour of Vite, so JSX in tests requires `oxc: { jsx: 'automatic' }` in `vitest.config.mts` — without it every component import fails at transform time, and the React-plugin route does not cover it. Keep `jsdom`'s Node engine range compatible with CI's Node 20 (jsdom 30 needs Node ≥22.22; the repo pins jsdom 25 for that reason).
+- **Integration tests** in `src/renderer/src/lib/xtreamIntegration.test.ts` start `testFixtures/mockXtreamServer.ts` — a dependency-free synthetic Xtream provider — and drive the *real* `XtreamClient` and the *real* store against it over a real socket, mocking nothing: auth, catalogues, short EPG, the full XMLTV guide, the custom-source `/__fetch/` path, every channel-matching tier, the match report and the EPG pool prefill. That is the place to verify pipeline behaviour without a live provider.
+
 ## Project structure
 
 ```
@@ -67,9 +85,10 @@ src/
   main/           Electron main process (window creation, credential storage via electron-store, CORS-proxy)
   preload/        contextBridge API exposed to the renderer
   renderer/       React app
-    src/lib/      Xtream Codes API client (xtream.ts), M3U parser/client (m3u.ts, m3uClient.ts), the shared IptvClient interface (iptvClient.ts), and an XMLTV EPG parser (epg.ts)
+    src/lib/      Xtream Codes API client (xtream.ts), M3U parser/client (m3u.ts, m3uClient.ts), the shared IptvClient interface (iptvClient.ts), the XMLTV parser and channel-matching tiers (epg.ts), custom-category helpers (customCategories.ts), the Escape/overlay priority chain (overlays.ts), release-note formatting (releaseNotes.ts)
+    src/lib/testFixtures/  a synthetic Xtream provider (mockXtreamServer.ts) the integration tests drive over a real socket
     src/store/    Zustand store wiring auth, categories, content lists, EPG, and playback
-    src/components/  UI: login, top bar, sidebar, channel/movie/series list, player, channel preview, series modal
+    src/components/  UI: login, top bar, sidebar, channel/movie/series list, player, channel preview, EPG grid and mapping editor, My Categories manager, settings, series modal
 ```
 
 ## How the Xtream integration works
