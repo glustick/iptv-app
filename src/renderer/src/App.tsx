@@ -81,8 +81,16 @@ function App(): JSX.Element {
         return
       }
       const state = useAppStore.getState()
-      if (state.aboutOpen) state.closeAbout()
+      // The update prompt is the outermost overlay (it can even sit over the login screen), so it
+      // answers Escape first. Its own "Later" button is exactly what this does — the prompt is a
+      // question, not a confirmation, and a dismissed one resurfaces on the next check.
+      if (state.updateInfo && !state.updateDismissed) state.dismissUpdatePrompt()
+      else if (state.aboutOpen) state.closeAbout()
       else if (state.settingsOpen) state.closeSettings()
+      // The My Categories manager is a top-level modal like Settings. Without its own branch here
+      // Escape did nothing to it AND fell through to whichever surface was open behind it — so
+      // pressing Escape in the manager closed the channel preview (or stopped playback) instead.
+      else if (state.customCategoriesOpen) state.closeCustomCategories()
       else if (state.pinPromptCategoryId) state.cancelPinPrompt()
       else if (state.openSeries) state.closeSeriesDetail()
       else if (state.channelBarOpen) state.setChannelBarOpen(false)
