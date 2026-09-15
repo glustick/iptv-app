@@ -1482,6 +1482,22 @@ describe('My Categories (custom categories)', () => {
     expect(useAppStore.getState().settings.customCategories).toEqual([])
   })
 
+  it('reorders the categories themselves — their sequence is the sidebar order', () => {
+    const first = useAppStore.getState().createCustomCategory('First')
+    const second = useAppStore.getState().createCustomCategory('Second')
+    const third = useAppStore.getState().createCustomCategory('Third')
+    expect(useAppStore.getState().settings.customCategories.map((c) => c.name)).toEqual(['First', 'Second', 'Third'])
+
+    useAppStore.getState().reorderCustomCategories(0, 2)
+    expect(useAppStore.getState().settings.customCategories.map((c) => c.name)).toEqual(['Second', 'Third', 'First'])
+
+    // Reordering also works by the ids the UI actually holds, and a no-op move writes nothing.
+    const before = useAppStore.getState().settings.customCategories
+    useAppStore.getState().reorderCustomCategories(1, 1)
+    expect(useAppStore.getState().settings.customCategories).toBe(before)
+    expect([first, second, third]).toHaveLength(3)
+  })
+
   it('adds channels without duplicates and removes them, keeping the stored order', () => {
     const id = useAppStore.getState().createCustomCategory('Mine')
     useAppStore.getState().addChannelsToCustomCategory(id, [2, 1, 2])

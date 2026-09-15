@@ -2385,6 +2385,31 @@ body.resizing-col {
   overflow-y: auto;
   padding-right: 12px;
   border-right: 1px solid var(--border);
+  list-style: none;
+  margin: 0;
+}
+
+.custom-cat-list-hint {
+  margin: 0 0 8px;
+}
+
+.custom-cat-name-button {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  text-align: left;
+  color: var(--text);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0;
+}
+
+.custom-cat-name-button.active {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .custom-cat-new {

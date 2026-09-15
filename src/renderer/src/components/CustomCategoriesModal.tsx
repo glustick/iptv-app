@@ -20,6 +20,7 @@ export function CustomCategoriesModal(): JSX.Element | null {
   const addChannelsToCustomCategory = useAppStore((s) => s.addChannelsToCustomCategory)
   const removeChannelFromCustomCategory = useAppStore((s) => s.removeChannelFromCustomCategory)
   const reorderCustomCategoryChannels = useAppStore((s) => s.reorderCustomCategoryChannels)
+  const reorderCustomCategories = useAppStore((s) => s.reorderCustomCategories)
   const ensureChannelCatalog = useAppStore((s) => s.ensureChannelCatalog)
   const requestCustomCategory = useAppStore((s) => s.requestCustomCategory)
 
@@ -31,6 +32,10 @@ export function CustomCategoriesModal(): JSX.Element | null {
   // (which is the stored order — see CustomCategory).
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [overIndex, setOverIndex] = useState<number | null>(null)
+  // Separate drag state for the category list on the left — a drag in one list must never
+  // highlight rows in the other.
+  const [catDragIndex, setCatDragIndex] = useState<number | null>(null)
+  const [catOverIndex, setCatOverIndex] = useState<number | null>(null)
 
   // Default to whatever the sidebar has selected (or the first category) rather than opening on
   // an empty right-hand pane the user has to fill by clicking.
@@ -74,20 +79,74 @@ export function CustomCategoriesModal(): JSX.Element | null {
           </button>
         </div>
 
+        <p className="settings-hint custom-cat-list-hint">
+          Drag the ⠿ handles (or use ⬆⬇) to set the order these categories appear in the sidebar.
+        </p>
         <div className="custom-cat-body">
-          <div className="custom-cat-list">
-            {categories.length === 0 && <p className="settings-hint">No categories yet — create your first one below.</p>}
-            {categories.map((cat) => (
-              <button
+          <ul className="custom-cat-list">
+            {categories.length === 0 && <li className="settings-hint">No categories yet — create your first one below.</li>}
+            {categories.map((cat, index) => (
+              <li
                 key={cat.id}
-                className={active?.id === cat.id ? 'category active' : 'category'}
-                onClick={() => setEditingId(cat.id)}
+                draggable
+                onDragStart={(e) => {
+                  setCatDragIndex(index)
+                  e.dataTransfer.effectAllowed = 'move'
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault()
+                  e.dataTransfer.dropEffect = 'move'
+                  if (catOverIndex !== index) setCatOverIndex(index)
+                }}
+                onDragEnd={() => {
+                  setCatDragIndex(null)
+                  setCatOverIndex(null)
+                }}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  if (catDragIndex !== null) reorderCustomCategories(catDragIndex, index)
+                  setCatDragIndex(null)
+                  setCatOverIndex(null)
+                }}
+                className={
+                  'custom-cat-channel' +
+                  (catDragIndex === index ? ' dragging' : '') +
+                  (catOverIndex === index && catDragIndex !== index ? ' drop-target' : '')
+                }
               >
-                {cat.name}
+                <span className="custom-cat-handle" title="Drag to reorder" aria-hidden="true">
+                  ⠿
+                </span>
+                <button
+                  className={active?.id === cat.id ? 'custom-cat-name-button active' : 'custom-cat-name-button'}
+                  onClick={() => setEditingId(cat.id)}
+                >
+                  {cat.name}
+                </button>
                 <span className="category-count">{cat.streamIds.length}</span>
-              </button>
+                <span className="custom-cat-channel-actions">
+                  <button
+                    className="icon-button"
+                    disabled={index === 0}
+                    onClick={() => reorderCustomCategories(index, index - 1)}
+                    aria-label={`Move ${cat.name} up`}
+                    title="Move up"
+                  >
+                    ⬆
+                  </button>
+                  <button
+                    className="icon-button"
+                    disabled={index === categories.length - 1}
+                    onClick={() => reorderCustomCategories(index, index + 1)}
+                    aria-label={`Move ${cat.name} down`}
+                    title="Move down"
+                  >
+                    ⬇
+                  </button>
+                </span>
+              </li>
             ))}
-            <div className="pin-set-row custom-cat-new">
+            <li className="pin-set-row custom-cat-new">
               <input
                 type="text"
                 placeholder="New category name"
@@ -103,8 +162,8 @@ export function CustomCategoriesModal(): JSX.Element | null {
               >
                 Create
               </button>
-            </div>
-          </div>
+            </li>
+          </ul>
 
           <div className="custom-cat-detail">
             {!active ? (

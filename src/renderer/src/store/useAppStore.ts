@@ -302,6 +302,8 @@ interface AppState {
   addChannelsToCustomCategory: (id: string, streamIds: number[]) => void
   removeChannelFromCustomCategory: (id: string, streamId: number) => void
   reorderCustomCategoryChannels: (id: string, fromIndex: number, toIndex: number) => void
+  // Reorders the categories themselves — their sequence in settings IS their order in the sidebar.
+  reorderCustomCategories: (fromIndex: number, toIndex: number) => void
   requestCustomCategory: (id: string) => void
   // Rebuilds liveStreams for a custom category from the cached catalog (no-op unless it's the
   // one currently selected) — see its implementation for why every edit path calls it.
@@ -1137,6 +1139,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       )
     })
     get().refreshCustomCategoryStreams(id)
+  },
+
+  reorderCustomCategories: (fromIndex, toIndex) => {
+    const current = get().settings.customCategories
+    const next = moveItem(current, fromIndex, toIndex)
+    // moveItem returns the same array for a no-op drag (dropped where it started) — skip the
+    // settings write (and its disk save) in that case.
+    if (next === current) return
+    get().updateSettings({ customCategories: next })
   },
 
   reorderCustomCategoryChannels: (id, fromIndex, toIndex) => {
