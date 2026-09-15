@@ -1,4 +1,6 @@
 import { useAppStore } from '../store/useAppStore'
+import { kindOf } from '../lib/customCategories'
+import type { CustomCategoryKind } from '../lib/types'
 import { useResizableWidth } from '../lib/useResizableWidth'
 
 export function Sidebar(): JSX.Element | null {
@@ -26,6 +28,12 @@ export function Sidebar(): JSX.Element | null {
     onCommit: (w) => updateSettings({ sidebarWidth: w })
   })
 
+  // "My Categories" are per-kind: the Live TV sections list live-channel groupings, the Movies
+  // tab lists movie ones, Series lists series ones — one section, filtered to whichever catalog
+  // this tab actually browses.
+  const categoryKind: CustomCategoryKind = viewMode === 'movies' ? 'movie' : viewMode === 'series' ? 'series' : 'live'
+  const myCategories = customCategories.filter((cat) => kindOf(cat) === categoryKind)
+
   if (viewMode === 'favorites' || viewMode === 'history') return null
 
   // Namespaced by section since Xtream doesn't guarantee category_id uniqueness across
@@ -45,9 +53,9 @@ export function Sidebar(): JSX.Element | null {
         {/* "My Categories" sits ABOVE everything else — the user's own groupings are the ones
             they reach for daily, and the provider's hundreds of categories are the fallback.
             Lives in the same scroll container so a long provider list can't push it out of
-            reach; shown for the live-channel modes (Live TV and Multi-View, which browses the
-            same live channels via this same sidebar). */}
-        {(viewMode === 'live' || viewMode === 'multiview') && (
+            reach. Present on every tab that has a catalog to group (Live TV, Multi-View, Movies,
+            Series), filtered to that tab's kind. */}
+        {(
           <div className="my-categories">
             <div className="my-categories-header">
               <span className="my-categories-title">My Categories</span>
@@ -59,10 +67,10 @@ export function Sidebar(): JSX.Element | null {
                 Manage
               </button>
             </div>
-            {customCategories.length === 0 ? (
+            {myCategories.length === 0 ? (
               <p className="my-categories-empty">None yet — Manage to create one.</p>
             ) : (
-              customCategories.map((cat) => (
+              myCategories.map((cat) => (
                 <button
                   key={cat.id}
                   className={selectedCustomCategoryId === cat.id ? 'category active' : 'category'}

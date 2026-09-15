@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { addStreamIds, moveItem, removeStreamId } from './customCategories'
+import { addStreamIds, kindOf, moveItem, removeStreamId } from './customCategories'
 
 describe('moveItem', () => {
   it('moves an item forward and backward, returning a new array', () => {
@@ -41,5 +41,22 @@ describe('removeStreamId', () => {
   it('returns the SAME array when the id wasn\'t present', () => {
     const list = [1, 2]
     expect(removeStreamId(list, 9)).toBe(list)
+  })
+})
+
+describe('kindOf', () => {
+  it('treats a category saved before kinds existed as live', () => {
+    expect(kindOf(undefined)).toBe('live')
+    expect(kindOf({})).toBe('live')
+  })
+
+  it('passes through the explicit kinds', () => {
+    expect(kindOf({ kind: 'movie' })).toBe('movie')
+    expect(kindOf({ kind: 'series' })).toBe('series')
+    expect(kindOf({ kind: 'live' })).toBe('live')
+  })
+
+  it('falls back to live for a corrupted value rather than losing the category', () => {
+    expect(kindOf({ kind: 'nonsense' })).toBe('live')
   })
 })

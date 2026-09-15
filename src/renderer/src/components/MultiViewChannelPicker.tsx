@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { useAppStore } from '../store/useAppStore'
+import { kindOf } from '../lib/customCategories'
 import { useDebouncedValue } from '../lib/useDebouncedValue'
 import { EpgGrid } from './EpgGrid'
 import type { LiveStream } from '../lib/types'
@@ -93,9 +94,9 @@ export function MultiViewChannelPicker(): JSX.Element | null {
             >
               <option value="">All categories</option>
               {/* The user's own groupings first, mirroring the sidebar's own ordering. */}
-              {customCategories.length > 0 && (
+              {customCategories.some((cat) => kindOf(cat) === 'live') && (
                 <optgroup label="My Categories">
-                  {customCategories.map((cat) => (
+                  {customCategories.filter((cat) => kindOf(cat) === 'live').map((cat) => (
                     <option key={cat.id} value={`custom:${cat.id}`}>
                       {cat.name} ({cat.streamIds.length})
                     </option>

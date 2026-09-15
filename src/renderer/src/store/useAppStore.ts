@@ -45,13 +45,14 @@ import type {
   EpisodeProgress,
   AppSettings,
   CustomCategory,
+  CustomCategoryKind,
   EpgChannelMapping,
   VpnStatus,
   VpnProfile,
   MultiViewLayout
 } from '../lib/types'
 import { DEFAULT_SETTINGS, favoriteKey } from '../lib/types'
-import { addStreamIds, moveItem, removeStreamId } from '../lib/customCategories'
+import { addStreamIds, kindOf, moveItem, removeStreamId } from '../lib/customCategories'
 import { shouldWarnOnVpnDisconnect } from '../lib/vpnStatus'
 import { createReminder, reminderId, splitDueReminders, type EpgReminder } from '../lib/reminders'
 
@@ -169,6 +170,11 @@ interface AppState {
   // answer that. null until the first lookup; reset on connect()/disconnect() so a profile
   // switch can't resolve a typed number against a stale, different provider's lineup.
   numericChannelCatalog: LiveStream[] | null
+  // Full movies/series catalogs, cached the same way and for the same reason as
+  // numericChannelCatalog above — custom categories of those kinds resolve their stored ids
+  // against these rather than against the currently-browsed provider category's own list.
+  vodCatalog: VodStream[] | null
+  seriesCatalog: SeriesItem[] | null
 
   // Every parsed full-XMLTV guide available this session, in priority order: the provider's own
   // xmltv.php guide first (when the provider allows it), then each user-added third-party source
@@ -301,7 +307,7 @@ interface AppState {
   // immediately without a refetch.
   openCustomCategories: () => void
   closeCustomCategories: () => void
-  createCustomCategory: (name: string) => string
+  createCustomCategory: (name: string, kind?: CustomCategoryKind) => string
   renameCustomCategory: (id: string, name: string) => void
   deleteCustomCategory: (id: string) => void
   addChannelsToCustomCategory: (id: string, streamIds: number[]) => void
@@ -313,6 +319,10 @@ interface AppState {
   // Rebuilds liveStreams for a custom category from the cached catalog (no-op unless it's the
   // one currently selected) — see its implementation for why every edit path calls it.
   refreshCustomCategoryStreams: (id: string) => void
+  // Loads (once per session) the catalog a custom category of this kind resolves against — the
+  // live channel catalog, or the movies/series catalogs. Same "no category filter = whole
+  // catalog" call the live one already uses, and the same cache-until-reconnect lifetime.
+  ensureCustomCategoryCatalog: (kind: CustomCategoryKind) => Promise<void>
   setSearchTerm: (term: string) => void
   // Fetches (once) and searches the full live catalog by a channel's provider-assigned `num` —
   // for the numeric channel-entry shortcut (type a number, jump straight to that channel),
@@ -450,6 +460,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   series: [],
   searchTerm: '',
   numericChannelCatalog: null,
+  vodCatalog: null,
+  seriesCatalog: null,
 
   epgSources: [],
   epgSourceLabels: [],
@@ -675,6 +687,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         // cached numeric lookup would otherwise resolve a typed channel number against the
         // wrong account's lineup.
         numericChannelCatalog: null,
+        vodCatalog: null,
+        seriesCatalog: null,
         // Same wrong-provider story for EPG: stream IDs are only unique within one provider,
         // so cached listings from the previous profile are not just stale but potentially for a
         // completely different channel that happens to share the id.
@@ -742,6 +756,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       channelBarOpen: false,
       unlockedCategoryIds: [],
       numericChannelCatalog: null,
+      vodCatalog: null,
+      seriesCatalog: null,
       selectedCustomCategoryId: null
     })
   },
@@ -1123,11 +1139,30 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  ensureCustomCategoryCatalog: async (kind) => {
+    const { client } = get()
+    if (!client) return
+    try {
+      if (kind === 'movie') {
+        if (!get().vodCatalog) set({ vodCatalog: await client.getVodStreams() })
+      } else if (kind === 'series') {
+        if (!get().seriesCatalog) set({ seriesCatalog: await client.getSeries() })
+      } else {
+        await get().ensureChannelCatalog()
+      }
+    } catch (err) {
+      // Same reasoning as ensureChannelCatalog's own catch: a custom category is a convenience
+      // layer over the provider's catalog, and a transient fetch failure shouldn't become an
+      // error banner — the manager reports what it can show instead.
+      console.error('[store] failed to load the catalog for a custom category:', err)
+    }
+  },
+
   openCustomCategories: () => set({ customCategoriesOpen: true }),
   closeCustomCategories: () => set({ customCategoriesOpen: false }),
 
-  createCustomCategory: (name) => {
-    const category: CustomCategory = { id: crypto.randomUUID(), name: name.trim() || 'New category', streamIds: [] }
+  createCustomCategory: (name, kind = 'live') => {
+    const category: CustomCategory = { id: crypto.randomUUID(), name: name.trim() || 'New category', kind, streamIds: [] }
     get().updateSettings({ customCategories: [...get().settings.customCategories, category] })
     return category.id
   },
@@ -1192,34 +1227,71 @@ export const useAppStore = create<AppState>((set, get) => ({
   // immediately without a provider round-trip. No-ops when the edited category isn't the one on
   // screen (nothing to update) or when the catalog hasn't been loaded yet (selection loads it).
   refreshCustomCategoryStreams: (id) => {
-    const { numericChannelCatalog } = get()
-    if (!numericChannelCatalog || get().selectedCustomCategoryId !== id) return
+    if (get().selectedCustomCategoryId !== id) return
     const category = get().settings.customCategories.find((c) => c.id === id)
     if (!category) return
-    const byId = new Map(numericChannelCatalog.map((s) => [s.stream_id, s]))
-    const streams = category.streamIds.map((streamId) => byId.get(streamId)).filter((s): s is LiveStream => !!s)
-    set({ liveStreams: streams })
-    get().applyEpgPool()
+    // Each kind rebuilds the list its own surface renders — the grid's liveStreams, or the poster
+    // grid's vodStreams/series — from that kind's cached catalog.
+    if (kindOf(category) === 'movie') {
+      const catalog = get().vodCatalog
+      if (!catalog) return
+      const byId = new Map(catalog.map((s) => [s.stream_id, s]))
+      set({ vodStreams: category.streamIds.map((streamId) => byId.get(streamId)).filter((s): s is VodStream => !!s) })
+    } else if (kindOf(category) === 'series') {
+      const catalog = get().seriesCatalog
+      if (!catalog) return
+      const byId = new Map(catalog.map((s) => [s.series_id, s]))
+      set({ series: category.streamIds.map((seriesId) => byId.get(seriesId)).filter((s): s is SeriesItem => !!s) })
+    } else {
+      const catalog = get().numericChannelCatalog
+      if (!catalog) return
+      const byId = new Map(catalog.map((s) => [s.stream_id, s]))
+      const streams = category.streamIds.map((streamId) => byId.get(streamId)).filter((s): s is LiveStream => !!s)
+      set({ liveStreams: streams })
+      get().applyEpgPool()
+    }
   },
 
   requestCustomCategory: (id) => {
     // Custom categories are the user's own groupings — no parental lock applies (the lock exists
     // to gate provider categories), so this goes straight to loading rather than through
     // requestCategory's PIN check.
+    const requested = get().settings.customCategories.find((c) => c.id === id)
+    const kind = kindOf(requested)
     set({ selectedCustomCategoryId: id, selectedCategoryId: null, searchTerm: '', previewChannel: null })
     void (async () => {
-      if (!get().numericChannelCatalog) await get().ensureChannelCatalog()
-      const { numericChannelCatalog } = get()
+      await get().ensureCustomCategoryCatalog(kind)
       const category = get().settings.customCategories.find((c) => c.id === id)
       // The user may have switched elsewhere while the catalog was loading — committing now would
       // overwrite whatever they moved on to.
       if (!category || get().selectedCustomCategoryId !== id) return
-      if (!numericChannelCatalog) {
+      // Ids that don't resolve are skipped, not dropped from the stored order — see CustomCategory.
+      if (kind === 'movie') {
+        const catalog = get().vodCatalog
+        if (!catalog) {
+          set({ error: 'Could not load your movie list to open that category' })
+          return
+        }
+        const byId = new Map(catalog.map((s) => [s.stream_id, s]))
+        set({ vodStreams: category.streamIds.map((streamId) => byId.get(streamId)).filter((s): s is VodStream => !!s) })
+        return
+      }
+      if (kind === 'series') {
+        const catalog = get().seriesCatalog
+        if (!catalog) {
+          set({ error: 'Could not load your series list to open that category' })
+          return
+        }
+        const byId = new Map(catalog.map((s) => [s.series_id, s]))
+        set({ series: category.streamIds.map((seriesId) => byId.get(seriesId)).filter((s): s is SeriesItem => !!s) })
+        return
+      }
+      const catalog = get().numericChannelCatalog
+      if (!catalog) {
         set({ error: 'Could not load your channel list to open that category' })
         return
       }
-      // Ids that don't resolve are skipped, not dropped from the stored order — see CustomCategory.
-      const byId = new Map(numericChannelCatalog.map((s) => [s.stream_id, s]))
+      const byId = new Map(catalog.map((s) => [s.stream_id, s]))
       const streams = category.streamIds.map((streamId) => byId.get(streamId)).filter((s): s is LiveStream => !!s)
       set({ liveStreams: streams })
       get().applyEpgPool()

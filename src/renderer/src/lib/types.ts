@@ -215,9 +215,18 @@ export interface EpgChannelMapping {
 // providers the ids that don't resolve are skipped rather than dropped — the category and its
 // order come back intact the next time that provider is connected. Persisted in settings, so it
 // survives app restarts and upgrades and is included in backup export/import.
+export type CustomCategoryKind = 'live' | 'movie' | 'series'
+
 export interface CustomCategory {
   id: string
   name: string
+  // Which catalog the ids below point into. Optional so categories saved before movies/series
+  // groupings existed still load — undefined has always meant "live" for every category that
+  // predates this field (same convention as XtreamProfile.kind).
+  kind?: CustomCategoryKind
+  // Ordered ids of the entities in this category — Live stream_ids, VOD stream_ids, or
+  // series_ids depending on `kind`. One field for all three because the ordering, dedup and
+  // move semantics are identical; the kind decides which catalog they're resolved against.
   streamIds: number[]
 }
 

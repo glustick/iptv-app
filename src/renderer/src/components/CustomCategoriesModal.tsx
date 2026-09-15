@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
+import { kindOf } from '../lib/customCategories'
+import type { CustomCategoryKind, LiveStream, SeriesItem, VodStream } from '../lib/types'
 
 // The manager for "My Categories" (the sidebar's own section above the provider categories).
 // Three jobs, all persisted into settings.customCategories the moment they happen: create/rename/
@@ -12,7 +14,10 @@ export function CustomCategoriesModal(): JSX.Element | null {
   const open = useAppStore((s) => s.customCategoriesOpen)
   const close = useAppStore((s) => s.closeCustomCategories)
   const categories = useAppStore((s) => s.settings.customCategories)
-  const catalog = useAppStore((s) => s.numericChannelCatalog)
+  const liveCatalog = useAppStore((s) => s.numericChannelCatalog)
+  const vodCatalog = useAppStore((s) => s.vodCatalog)
+  const seriesCatalog = useAppStore((s) => s.seriesCatalog)
+  const viewMode = useAppStore((s) => s.viewMode)
   const selectedCustomCategoryId = useAppStore((s) => s.selectedCustomCategoryId)
   const createCustomCategory = useAppStore((s) => s.createCustomCategory)
   const renameCustomCategory = useAppStore((s) => s.renameCustomCategory)
@@ -21,9 +26,12 @@ export function CustomCategoriesModal(): JSX.Element | null {
   const removeChannelFromCustomCategory = useAppStore((s) => s.removeChannelFromCustomCategory)
   const reorderCustomCategoryChannels = useAppStore((s) => s.reorderCustomCategoryChannels)
   const reorderCustomCategories = useAppStore((s) => s.reorderCustomCategories)
-  const ensureChannelCatalog = useAppStore((s) => s.ensureChannelCatalog)
+  const ensureCustomCategoryCatalog = useAppStore((s) => s.ensureCustomCategoryCatalog)
   const requestCustomCategory = useAppStore((s) => s.requestCustomCategory)
 
+  // Which kind of grouping is being managed. Initialised from the tab the user was on, and reset
+  // to it every time the modal opens, so opening it from Movies lands on Movies.
+  const [tab, setTab] = useState<CustomCategoryKind>('live')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [newName, setNewName] = useState('')
   const [nameDraft, setNameDraft] = useState('')
@@ -37,30 +45,48 @@ export function CustomCategoriesModal(): JSX.Element | null {
   const [catDragIndex, setCatDragIndex] = useState<number | null>(null)
   const [catOverIndex, setCatOverIndex] = useState<number | null>(null)
 
-  // Default to whatever the sidebar has selected (or the first category) rather than opening on
-  // an empty right-hand pane the user has to fill by clicking.
+  const tabCategories = categories.filter((cat) => kindOf(cat) === tab)
+
+  // Default to whatever the sidebar has selected (or the first category OF THIS KIND) rather than
+  // opening on an empty right-hand pane the user has to fill by clicking.
   const active =
-    categories.find((c) => c.id === editingId) ??
-    categories.find((c) => c.id === selectedCustomCategoryId) ??
-    categories[0] ??
+    tabCategories.find((c) => c.id === editingId) ??
+    tabCategories.find((c) => c.id === selectedCustomCategoryId) ??
+    tabCategories[0] ??
     null
 
   useEffect(() => {
     setNameDraft(active?.name ?? '')
   }, [active?.id, active?.name])
 
+  // Opening the manager jumps to the kind the user was browsing, and loads that kind's catalog
+  // for the "add" list. Switching tabs loads the newly-selected kind's.
   useEffect(() => {
-    if (open) void ensureChannelCatalog()
-  }, [open, ensureChannelCatalog])
+    if (!open) return
+    setTab(viewMode === 'movies' ? 'movie' : viewMode === 'series' ? 'series' : 'live')
+    setEditingId(null)
+  }, [open, viewMode])
+
+  useEffect(() => {
+    if (open) void ensureCustomCategoryCatalog(tab)
+  }, [open, tab, ensureCustomCategoryCatalog])
 
   if (!open) return null
 
-  const byId = new Map((catalog ?? []).map((s) => [s.stream_id, s]))
+  // One catalog per kind, and one id accessor for all three shapes (live/VOD use stream_id,
+  // series uses series_id) — the stored ids and the ordering logic are identical.
+  const catalogItems: Array<LiveStream | VodStream | SeriesItem> =
+    (tab === 'movie' ? vodCatalog : tab === 'series' ? seriesCatalog : liveCatalog) ?? []
+  const itemId = (item: LiveStream | VodStream | SeriesItem): number => ('series_id' in item ? item.series_id : item.stream_id)
+  const catalogLoaded = catalogItems.length > 0
+  const itemNoun = tab === 'live' ? 'channel' : tab === 'movie' ? 'movie' : 'series'
+
+  const byId = new Map(catalogItems.map((item) => [itemId(item), item]))
   const missingCount = active ? active.streamIds.length - active.streamIds.filter((id) => byId.has(id)).length : 0
 
   const query = search.trim().toLowerCase()
-  const candidates = (catalog ?? []).filter(
-    (s) => (active ? !active.streamIds.includes(s.stream_id) : false) && (!query || s.name.toLowerCase().includes(query))
+  const candidates = catalogItems.filter(
+    (item) => (active ? !active.streamIds.includes(itemId(item)) : false) && (!query || item.name.toLowerCase().includes(query))
   )
   const shownCandidates = candidates.slice(0, CHANNEL_LIST_CAP)
 
@@ -82,10 +108,24 @@ export function CustomCategoriesModal(): JSX.Element | null {
         <p className="settings-hint custom-cat-list-hint">
           Drag the ⠿ handles (or use ⬆⬇) to set the order these categories appear in the sidebar.
         </p>
+        <div className="custom-cat-tabs">
+          {(['live', 'movie', 'series'] as const).map((kind) => (
+            <button
+              key={kind}
+              className={tab === kind ? 'choice-button active' : 'choice-button'}
+              onClick={() => setTab(kind)}
+            >
+              {kind === 'live' ? 'Live TV' : kind === 'movie' ? 'Movies' : 'Series'}
+            </button>
+          ))}
+        </div>
+
         <div className="custom-cat-body">
           <ul className="custom-cat-list">
-            {categories.length === 0 && <li className="settings-hint">No categories yet — create your first one below.</li>}
-            {categories.map((cat, index) => (
+            {tabCategories.length === 0 && (
+              <li className="settings-hint">No {tab === 'live' ? 'live TV' : itemNoun} categories yet — create one below.</li>
+            )}
+            {tabCategories.map((cat, index) => (
               <li
                 key={cat.id}
                 draggable
@@ -136,7 +176,7 @@ export function CustomCategoriesModal(): JSX.Element | null {
                   </button>
                   <button
                     className="icon-button"
-                    disabled={index === categories.length - 1}
+                    disabled={index === tabCategories.length - 1}
                     onClick={() => reorderCustomCategories(index, index + 1)}
                     aria-label={`Move ${cat.name} down`}
                     title="Move down"
@@ -156,7 +196,7 @@ export function CustomCategoriesModal(): JSX.Element | null {
               <button
                 disabled={!newName.trim()}
                 onClick={() => {
-                  setEditingId(createCustomCategory(newName))
+                  setEditingId(createCustomCategory(newName, tab))
                   setNewName('')
                 }}
               >
@@ -204,16 +244,17 @@ export function CustomCategoriesModal(): JSX.Element | null {
                 </div>
 
                 <h4 className="custom-cat-heading">
-                  Channels in this category — drag to reorder ({active.streamIds.length})
+                  {tab === 'live' ? 'Channels' : tab === 'movie' ? 'Movies' : 'Series'} in this category — drag to
+                  reorder ({active.streamIds.length})
                 </h4>
                 {missingCount > 0 && (
                   <p className="settings-hint">
-                    {missingCount} channel{missingCount === 1 ? '' : 's'} in this category belong to a different provider —
+                    {missingCount} entr{missingCount === 1 ? 'y' : 'ies'} in this category belong to a different provider —
                     they&apos;re kept in place and reappear if you connect to that provider again.
                   </p>
                 )}
                 {active.streamIds.length === 0 ? (
-                  <p className="settings-hint">No channels yet — add some from the list below.</p>
+                  <p className="settings-hint">Nothing here yet — add some from the list below.</p>
                 ) : (
                   <ul className="custom-cat-channels">
                     {active.streamIds.map((streamId, index) => {
@@ -288,28 +329,28 @@ export function CustomCategoriesModal(): JSX.Element | null {
                   </ul>
                 )}
 
-                <h4 className="custom-cat-heading">Add channels</h4>
+                <h4 className="custom-cat-heading">Add {tab === 'live' ? 'channels' : itemNoun}</h4>
                 <input
                   type="text"
-                  placeholder={catalog ? `Search ${candidates.length} available channels…` : 'Loading your channel list…'}
+                  placeholder={catalogLoaded ? `Search ${candidates.length} available ${itemNoun}…` : `Loading your ${itemNoun} list…`}
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  disabled={!catalog}
+                  disabled={!catalogLoaded}
                 />
                 <div className="epg-mapping-options custom-cat-candidates">
-                  {shownCandidates.map((channel) => (
+                  {shownCandidates.map((item) => (
                     <button
-                      key={channel.stream_id}
+                      key={itemId(item)}
                       type="button"
                       className="epg-mapping-option"
-                      onClick={() => addChannelsToCustomCategory(active.id, [channel.stream_id])}
+                      onClick={() => addChannelsToCustomCategory(active.id, [itemId(item)])}
                     >
-                      {channel.name} <small>#{channel.stream_id}</small>
+                      {item.name} <small>#{itemId(item)}</small>
                     </button>
                   ))}
-                  {catalog && candidates.length === 0 && (
+                  {catalogLoaded && candidates.length === 0 && (
                     <p className="epg-mapping-empty">
-                      {query ? 'No channels match.' : 'Every channel is already in this category.'}
+                      {query ? `No ${itemNoun} match.` : `Every ${itemNoun} is already in this category.`}
                     </p>
                   )}
                   {candidates.length > CHANNEL_LIST_CAP && (

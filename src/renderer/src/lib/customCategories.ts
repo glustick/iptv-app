@@ -38,6 +38,16 @@ export function addStreamIds(current: number[], toAdd: number[]): number[] {
   return next
 }
 
+/**
+ * A category's kind, with the "undefined means live" rule in one place — every category saved
+ * before movies/series groupings existed has no `kind` field at all, and treating those as
+ * anything other than live would orphan the user's existing setup.
+ */
+export function kindOf(category: { kind?: string } | undefined): 'live' | 'movie' | 'series' {
+  const kind = category?.kind
+  return kind === 'movie' || kind === 'series' ? kind : 'live'
+}
+
 /** Removes one stream id, returning a new array (and the original when it wasn't present). */
 export function removeStreamId(current: number[], streamId: number): number[] {
   if (!current.includes(streamId)) return current

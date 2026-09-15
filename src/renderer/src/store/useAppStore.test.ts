@@ -4,7 +4,7 @@ import { XtreamClient } from '../lib/xtream'
 import { DEFAULT_SETTINGS } from '../lib/types'
 import { saveSettings, saveProfiles, saveActiveProfileId } from '../lib/storage'
 import { parseXmltv } from '../lib/epg'
-import type { LiveStream, VodStream, FavoriteEntry, RecentlyWatchedEntry, VpnProfile, XtreamProfile, ShortEpgProgram } from '../lib/types'
+import type { LiveStream, VodStream, SeriesItem, FavoriteEntry, RecentlyWatchedEntry, VpnProfile, XtreamProfile, ShortEpgProgram } from '../lib/types'
 
 // Same rationale as storage.test.ts: the vitest environment is plain Node (see
 // vitest.config.mts), so useAppStore's own calls into lib/storage.ts (updateSettings,
@@ -1534,7 +1534,9 @@ describe('My Categories (custom categories)', () => {
 
   it('creates, renames and deletes a category, persisting each change into settings', () => {
     const id = useAppStore.getState().createCustomCategory('Sports')
-    expect(useAppStore.getState().settings.customCategories).toEqual([{ id, name: 'Sports', streamIds: [] }])
+    expect(useAppStore.getState().settings.customCategories).toEqual([
+      { id, name: 'Sports', kind: 'live', streamIds: [] }
+    ])
 
     useAppStore.getState().renameCustomCategory(id, 'Live Sport')
     expect(useAppStore.getState().settings.customCategories[0].name).toBe('Live Sport')
@@ -1620,6 +1622,53 @@ describe('My Categories (custom categories)', () => {
 
     useAppStore.getState().removeChannelFromCustomCategory('c1', 1)
     expect(useAppStore.getState().liveStreams.map((s) => s.stream_id)).toEqual([3, 2])
+  })
+
+  it('opens a movie category into vodStreams, in stored order', async () => {
+    const movies: VodStream[] = [
+      { num: 1, name: 'Movie A', stream_type: 'movie', stream_id: 11, stream_icon: '', rating: '', rating_5based: 0, added: '', category_id: '1', container_extension: 'mp4' },
+      { num: 2, name: 'Movie B', stream_type: 'movie', stream_id: 12, stream_icon: '', rating: '', rating_5based: 0, added: '', category_id: '1', container_extension: 'mkv' }
+    ]
+    vi.spyOn(XtreamClient.prototype, 'getVodStreams').mockResolvedValue(movies)
+    useAppStore.setState({
+      client: new XtreamClient('http://example.com', 'user', 'pass'),
+      vodCatalog: null,
+      liveStreams: [],
+      vodStreams: [],
+      settings: { ...DEFAULT_SETTINGS, customCategories: [{ id: 'm1', name: 'Faves', kind: 'movie', streamIds: [12, 11] }] }
+    })
+
+    useAppStore.getState().requestCustomCategory('m1')
+
+    await vi.waitFor(() => expect(useAppStore.getState().vodStreams).toHaveLength(2))
+    // Stored order wins, and the live list is left alone — the kinds never cross.
+    expect(useAppStore.getState().vodStreams.map((s) => s.stream_id)).toEqual([12, 11])
+    expect(useAppStore.getState().liveStreams).toEqual([])
+  })
+
+  it('opens a series category into series, and keeps editing scoped to that list', async () => {
+    const shows: SeriesItem[] = [
+      { num: 1, name: 'Show A', series_id: 7, cover: '', plot: '', cast: '', director: '', genre: '', releaseDate: '', rating: '', category_id: '1' },
+      { num: 2, name: 'Show B', series_id: 8, cover: '', plot: '', cast: '', director: '', genre: '', releaseDate: '', rating: '', category_id: '1' }
+    ]
+    vi.spyOn(XtreamClient.prototype, 'getSeries').mockResolvedValue(shows)
+    useAppStore.setState({
+      client: new XtreamClient('http://example.com', 'user', 'pass'),
+      seriesCatalog: null,
+      series: [],
+      vodStreams: [],
+      settings: { ...DEFAULT_SETTINGS, customCategories: [{ id: 's1', name: 'Binge', kind: 'series', streamIds: [8, 7] }] }
+    })
+
+    useAppStore.getState().requestCustomCategory('s1')
+    await vi.waitFor(() => expect(useAppStore.getState().series).toHaveLength(2))
+    expect(useAppStore.getState().series.map((s) => s.series_id)).toEqual([8, 7])
+
+    // Reordering the selected series category reorders the series list, and nothing else.
+    useAppStore.getState().reorderCustomCategoryChannels('s1', 0, 1)
+    expect(useAppStore.getState().series.map((s) => s.series_id)).toEqual([7, 8])
+    expect(useAppStore.getState().vodStreams).toEqual([])
+    expect(useAppStore.getState().liveStreams).toEqual([])
   })
 
   it('leaves the grid alone when editing a category that is not the selected one', () => {
