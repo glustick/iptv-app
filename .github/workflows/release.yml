@@ -82,6 +82,27 @@ jobs:
         if: env.WIN_SIGNING_READY != 'true'
         run: npx electron-builder --publish always
 
+  # Runs only after all three platform builds have published, then fills the release's own body
+  # from the same notes the update feeds carry (scripts/extract-release-notes.mjs). electron-builder
+  # writes releaseNotes into the feed but leaves the release description empty, so the page a user
+  # actually reads needed this extra step. gh is preinstalled on GitHub-hosted runners; no
+  # npm install is needed since the script only touches Node's own fs/path/url modules.
+  notes:
+    needs: [mac, windows, linux]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: node scripts/extract-release-notes.mjs
+
+      - run: gh release edit "${GITHUB_REF_NAME}" --notes-file build/release-notes.md
+
   linux:
     runs-on: ubuntu-latest
     env:

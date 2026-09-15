@@ -66,7 +66,9 @@ This is the part with the most moving pieces, so it's worth understanding as a w
 
 - Push `main` → **CI** workflow (Node 20: typecheck, lint, test, build).
 - Push a `v*` tag → **Release** workflow: three explicit jobs (mac / windows / linux), each building
-  and publishing installers + update feeds to the GitHub Release.
+  and publishing installers + update feeds to the GitHub Release, then a fourth `notes` job that
+  fills the release body from this version's ROADMAP entry (`scripts/extract-release-notes.mjs`,
+  which also feeds the in-app update prompt via the update feed's `releaseNotes`).
 - **Code signing is wired and dormant**: each job checks for its own certificate secret at job level
   (`MAC_SIGNING_READY` / `WIN_SIGNING_READY`) and applies signing envs only on the signed step.
   Required secrets, documented in the README: `MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD`, `APPLE_ID`,
