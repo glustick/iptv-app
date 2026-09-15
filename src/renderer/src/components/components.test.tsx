@@ -45,7 +45,6 @@ beforeEach(() => {
     updateDownloadPercent: null,
     updateError: null,
     customCategoriesOpen: false,
-    viewMode: 'live',
     settings: DEFAULT_SETTINGS,
     numericChannelCatalog: null,
     vodCatalog: null,
