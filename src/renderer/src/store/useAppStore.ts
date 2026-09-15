@@ -342,6 +342,14 @@ interface AppState {
   // sources ▸ Map channels) — creates ordinary manual mappings, so every one stays individually
   // reviewable and removable afterwards. Returns what it did for the editor to report.
   applySuggestedMappings: (sourceUrl: string, threshold: number) => { applied: number; stillUnmatched: number }
+  // The same bulk apply, run across every user-added source in priority order: per source, only
+  // channels nothing has resolved yet (and nothing has been mapped for by an earlier source in
+  // this same run). Returns what each source contributed, since "which source did that" is the
+  // only useful thing to report for a cross-source action.
+  applySuggestedMappingsAcrossSources: (threshold: number) => {
+    applied: number
+    perSource: Array<{ source: string; applied: number }>
+  }
   addCustomEpgUrl: (url: string) => void
   removeCustomEpgUrl: (url: string) => void
   // Reorders the user's EPG sources — their sequence in settings IS their priority: the provider's
@@ -1059,6 +1067,61 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Refresh the pool and the match report so the editor shows the new state immediately.
     get().applyEpgPool()
     return { applied: plan.applied.length, stillUnmatched: plan.belowThreshold }
+  },
+
+  applySuggestedMappingsAcrossSources: (threshold) => {
+    const { epgSources, epgSourceLabels, numericChannelCatalog, settings } = get()
+    const catalog = numericChannelCatalog ?? []
+    const perSource: Array<{ source: string; applied: number }> = []
+    if (catalog.length === 0 || epgSources.length === 0) return { applied: 0, perSource }
+
+    const nameByStreamId = new Map(catalog.map((s) => [s.stream_id, s.name]))
+    // Channels this run has already given a mapping to. Each source keeps its own mapping list
+    // (they're independent — that's what source priority is for), but planning the NEXT source
+    // should skip them: the highest-priority source able to place a channel is the one that
+    // should, and without this every source would happily map the same channel again.
+    const plannedHere = new Map<number, string>()
+    const newMappings: EpgChannelMapping[] = []
+
+    epgSourceLabels.forEach((label, index) => {
+      // The provider's own guide isn't manually mappable at all (see EpgChannelMapping) — its ids
+      // are what epg_channel_id already refers to, so there is nothing to plan for it.
+      if (label === PROVIDER_GUIDE_LABEL) return
+      const guide = epgSources[index]
+      if (!guide) return
+
+      const guideIndex = buildGuideIndex(guide)
+      const manual = new Map(
+        settings.epgChannelMappings.filter((m) => m.sourceUrl === label).map((m) => [m.streamId, m.guideChannelId])
+      )
+      for (const [streamId, channelId] of plannedHere) manual.set(streamId, channelId)
+
+      const plan = planBulkSuggestionApply(catalog, guideIndex, manual, threshold)
+      if (plan.applied.length === 0) return
+      for (const { streamId, channelId } of plan.applied) plannedHere.set(streamId, channelId)
+      newMappings.push(
+        ...plan.applied.map(({ streamId, channelId }) => ({
+          sourceUrl: label,
+          guideChannelId: channelId,
+          streamId,
+          guideChannelName: guideIndex.channels.get(channelId)?.displayName,
+          streamName: nameByStreamId.get(streamId)
+        }))
+      )
+      perSource.push({ source: label, applied: plan.applied.length })
+    })
+
+    if (newMappings.length > 0) {
+      const appliedIds = new Set(newMappings.map((m) => m.streamId))
+      get().updateSettings({
+        epgChannelMappings: [
+          ...settings.epgChannelMappings.filter((m) => !appliedIds.has(m.streamId)),
+          ...newMappings
+        ]
+      })
+    }
+    get().applyEpgPool()
+    return { applied: newMappings.length, perSource }
   },
 
   addCustomEpgUrl: (url) => {

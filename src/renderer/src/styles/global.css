@@ -2340,6 +2340,51 @@ body.resizing-col {
   border-color: var(--accent);
 }
 
+/* A sidebar category row: the select button plus hover-revealed rename/delete actions. The actions
+   stay in the DOM (keyboard-reachable via focus-within) and are only visually hidden, rather than
+   unmounted — which also keeps their aria-labels stable for the component tests. */
+.my-categories-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.my-categories-row .category {
+  flex: 1;
+  min-width: 0;
+}
+
+.my-categories-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.my-categories-row:hover .my-categories-actions,
+.my-categories-row:focus-within .my-categories-actions {
+  opacity: 1;
+}
+
+.my-categories-actions .icon-button {
+  padding: 2px 6px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.my-categories-rename {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  padding: 6px 8px;
+}
+
 .my-categories-empty {
   margin: 0 0 4px;
   padding: 0 4px;

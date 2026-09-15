@@ -45,6 +45,7 @@ export function SettingsPage(): JSX.Element | null {
   const removeEpgChannelMapping = useAppStore((s) => s.removeEpgChannelMapping)
   const ensureChannelCatalog = useAppStore((s) => s.ensureChannelCatalog)
   const applySuggestedMappings = useAppStore((s) => s.applySuggestedMappings)
+  const applySuggestedMappingsAcrossSources = useAppStore((s) => s.applySuggestedMappingsAcrossSources)
 
   const [pinDraft, setPinDraft] = useState('')
   // Only set when opening the log fails (no active connection, or the file hasn't been written
@@ -77,6 +78,9 @@ export function SettingsPage(): JSX.Element | null {
   // Bulk suggestion apply: the confidence floor to use, and what the last run reported.
   const [bulkThreshold, setBulkThreshold] = useState(0.8)
   const [bulkResult, setBulkResult] = useState<string | null>(null)
+  // The section-level "all sources at once" run reports separately from the per-source one inside
+  // the mapping editor — different scopes, so sharing one message would be confusing.
+  const [bulkAllResult, setBulkAllResult] = useState<string | null>(null)
 
   if (!settingsOpen) return null
 
@@ -136,6 +140,20 @@ export function SettingsPage(): JSX.Element | null {
       return
     }
     refreshUnmatchedFilter(sourceUrl)
+  }
+
+  // The section-level version: every user-added source, highest priority first, each only picking
+  // up what nothing else has resolved or already claimed in this run.
+  function handleBulkApplyAll(): void {
+    const percent = Math.round(bulkThreshold * 100)
+    const result = applySuggestedMappingsAcrossSources(bulkThreshold)
+    setBulkAllResult(
+      result.applied > 0
+        ? `Applied ${result.applied} mapping${result.applied === 1 ? '' : 's'} across ${
+            result.perSource.length
+          } source${result.perSource.length === 1 ? '' : 's'} — see "by manual mapping" below.`
+        : `No unmatched channel scored ${percent}% or better in any source — try a lower threshold.`
+    )
   }
 
   // Applies the good suggestions for the whole source in one go, then reports exactly what it did
@@ -650,6 +668,29 @@ export function SettingsPage(): JSX.Element | null {
               Add source
             </button>
           </div>
+          {/* Section-level bulk apply: one action over every source, for when the residue is
+              spread across several of them and working source-by-source would be tedious. */}
+          {settings.customEpgUrls.length > 0 && (
+            <>
+              <div className="epg-bulk-apply">
+                <label>
+                  Auto-map every source at
+                  <select value={bulkThreshold} onChange={(e) => setBulkThreshold(Number(e.target.value))}>
+                    {[0.6, 0.7, 0.8, 0.9, 1].map((value) => (
+                      <option key={value} value={value}>
+                        {Math.round(value * 100)}%
+                      </option>
+                    ))}
+                  </select>
+                  or better
+                </label>
+                <button className="secondary-button" onClick={handleBulkApplyAll}>
+                  Apply across all sources
+                </button>
+              </div>
+              {bulkAllResult && <p className="epg-bulk-result">{bulkAllResult}</p>}
+            </>
+          )}
           {epgSourceMatchStats.length > 0 && (
             <div className="epg-match-report">
               <h4>Guide matching</h4>

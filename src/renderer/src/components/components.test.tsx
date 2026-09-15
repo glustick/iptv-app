@@ -11,9 +11,10 @@
 // where a JSX runtime has to be enabled explicitly (`oxc: { jsx: 'automatic' }` in
 // vitest.config.mts). Without it, rendering any component here fails at transform time — the
 // renderer's own JSX is compiled by electron-vite, not by this config.
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { UpdatePrompt } from './UpdatePrompt'
+import { Sidebar } from './Sidebar'
 import { CustomCategoriesModal } from './CustomCategoriesModal'
 import { useAppStore } from '../store/useAppStore'
 import { DEFAULT_SETTINGS } from '../lib/types'
@@ -44,6 +45,7 @@ beforeEach(() => {
     updateDownloadPercent: null,
     updateError: null,
     customCategoriesOpen: false,
+    viewMode: 'live',
     settings: DEFAULT_SETTINGS,
     numericChannelCatalog: null,
     vodCatalog: null,
@@ -142,5 +144,83 @@ describe('CustomCategoriesModal', () => {
     fireEvent.click(screen.getByLabelText('Remove Only Channel from this category'))
 
     expect(useAppStore.getState().settings.customCategories[0].streamIds).toEqual([])
+  })
+})
+
+describe('Sidebar My Categories rows', () => {
+  function withCategory(): void {
+    useAppStore.setState({
+      viewMode: 'live',
+      settings: {
+        ...DEFAULT_SETTINGS,
+        customCategories: [{ id: 'a', name: 'Mine', kind: 'live', streamIds: [1, 2] }]
+      }
+    })
+  }
+
+  it('deletes a category from the sidebar, after confirmation', () => {
+    withCategory()
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    render(<Sidebar />)
+
+    fireEvent.click(screen.getByLabelText('Delete Mine'))
+
+    expect(confirmSpy).toHaveBeenCalled()
+    expect(useAppStore.getState().settings.customCategories).toEqual([])
+    confirmSpy.mockRestore()
+  })
+
+  it('keeps the category when the confirmation is declined', () => {
+    withCategory()
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    render(<Sidebar />)
+
+    fireEvent.click(screen.getByLabelText('Delete Mine'))
+
+    expect(useAppStore.getState().settings.customCategories).toHaveLength(1)
+    confirmSpy.mockRestore()
+  })
+
+  it('renames inline — the pencil opens an input and Enter commits', () => {
+    withCategory()
+    render(<Sidebar />)
+
+    fireEvent.click(screen.getByLabelText('Rename Mine'))
+    const input = screen.getByLabelText('New name for Mine')
+    fireEvent.change(input, { target: { value: 'Favourites' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(useAppStore.getState().settings.customCategories[0].name).toBe('Favourites')
+    // …and the row is back to its button form.
+    expect(screen.queryByLabelText('New name for Mine')).toBeNull()
+  })
+
+  it('backs out of a rename on Escape without renaming', () => {
+    withCategory()
+    render(<Sidebar />)
+
+    fireEvent.click(screen.getByLabelText('Rename Mine'))
+    const input = screen.getByLabelText('New name for Mine')
+    fireEvent.change(input, { target: { value: 'Discarded' } })
+    fireEvent.keyDown(input, { key: 'Escape' })
+
+    expect(useAppStore.getState().settings.customCategories[0].name).toBe('Mine')
+  })
+
+  it('shows only the categories of the current tab\'s kind', () => {
+    useAppStore.setState({
+      viewMode: 'movies',
+      settings: {
+        ...DEFAULT_SETTINGS,
+        customCategories: [
+          { id: 'l', name: 'Live One', kind: 'live', streamIds: [] },
+          { id: 'm', name: 'Movie One', kind: 'movie', streamIds: [] }
+        ]
+      }
+    })
+    render(<Sidebar />)
+
+    expect(screen.getByText('Movie One')).toBeTruthy()
+    expect(screen.queryByText('Live One')).toBeNull()
   })
 })

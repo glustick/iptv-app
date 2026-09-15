@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { useAppStore } from './useAppStore'
+import { useAppStore, PROVIDER_GUIDE_LABEL } from './useAppStore'
 import { XtreamClient } from '../lib/xtream'
 import { DEFAULT_SETTINGS } from '../lib/types'
 import { saveSettings, saveProfiles, saveActiveProfileId } from '../lib/storage'
@@ -1769,6 +1769,61 @@ describe('bulk-applying EPG suggestions', () => {
     const mappings = useAppStore.getState().settings.epgChannelMappings
     expect(mappings).toHaveLength(2)
     expect(mappings).toContainEqual(other)
+  })
+
+  it('applies across every source at once, giving each channel to the highest-priority source that can place it', () => {
+    const XML_SECOND = `<?xml version="1.0"?>
+<tv>
+  <channel id="s1"><display-name>Second Channel</display-name></channel>
+  <programme start="20300101120000 +0000" stop="20300101130000 +0000" channel="s1"><title>Also</title></programme>
+</tv>`
+    const SECOND = 'http://guides.example.com/second.xml'
+    useAppStore.setState({
+      // BOTH sources can supply "Channel One Extra" (their guide entries are worded the same way),
+      // and only the second covers "Second Channel".
+      numericChannelCatalog: [stream(2, 'Channel One Extra'), stream(5, 'Second Channel Extra')],
+      // The report describes the currently-loaded channels, so they have to be loaded for the
+      // "by manual mapping" counts below to mean anything.
+      liveStreams: [stream(2, 'Channel One Extra'), stream(5, 'Second Channel Extra')],
+      epgSources: [parseXmltv(GUIDE_XML), parseXmltv(XML_SECOND)],
+      epgSourceLabels: [SOURCE, SECOND],
+      settings: { ...DEFAULT_SETTINGS, customEpgUrls: [SOURCE, SECOND] }
+    })
+
+    const result = useAppStore.getState().applySuggestedMappingsAcrossSources(0.8)
+
+    // One mapping per channel, both sources contributing, and the shared channel goes to whichever
+    // source is listed first (SOURCE here) rather than being mapped twice.
+    expect(result.applied).toBe(2)
+    const mappings = useAppStore.getState().settings.epgChannelMappings
+    expect(mappings).toHaveLength(2)
+    expect(mappings.find((m) => m.streamId === 2)?.sourceUrl).toBe(SOURCE)
+    expect(mappings.find((m) => m.streamId === 5)?.sourceUrl).toBe(SECOND)
+    expect(result.perSource).toEqual([
+      { source: SOURCE, applied: 1 },
+      { source: SECOND, applied: 1 }
+    ])
+    // The report reflects both immediately.
+    const stats = useAppStore.getState().epgSourceMatchStats
+    expect(stats.reduce((sum, s) => sum + s.byManual, 0)).toBe(2)
+  })
+
+  it('never plans for the provider\'s own guide and keeps existing mappings', () => {
+    const EXISTING = { sourceUrl: SOURCE, guideChannelId: 'other', streamId: 9 }
+    useAppStore.setState({
+      numericChannelCatalog: [stream(2, 'Channel One Extra')],
+      liveStreams: [],
+      epgSources: [parseXmltv(GUIDE_XML), parseXmltv(GUIDE_XML)],
+      // Index 0 is the provider's own guide row (skipped — its ids are what epg_channel_id already
+      // refers to, so it is not manually mappable); index 1 is the user-added source.
+      epgSourceLabels: [PROVIDER_GUIDE_LABEL, SOURCE],
+      settings: { ...DEFAULT_SETTINGS, customEpgUrls: [SOURCE], epgChannelMappings: [EXISTING] }
+    })
+
+    const result = useAppStore.getState().applySuggestedMappingsAcrossSources(0.8)
+
+    expect(result.applied).toBe(1)
+    expect(useAppStore.getState().settings.epgChannelMappings).toContainEqual(EXISTING)
   })
 
   it('does nothing when the source is not loaded or the catalog has not been fetched', () => {

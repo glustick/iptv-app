@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { kindOf } from '../lib/customCategories'
 import type { CustomCategoryKind } from '../lib/types'
@@ -21,6 +22,24 @@ export function Sidebar(): JSX.Element | null {
   const selectedCustomCategoryId = useAppStore((s) => s.selectedCustomCategoryId)
   const requestCustomCategory = useAppStore((s) => s.requestCustomCategory)
   const openCustomCategories = useAppStore((s) => s.openCustomCategories)
+  const renameCustomCategory = useAppStore((s) => s.renameCustomCategory)
+  const deleteCustomCategory = useAppStore((s) => s.deleteCustomCategory)
+  // Inline rename, so the two things a user reaches for most (renaming, deleting a category they
+  // just made) don't require opening the manager. Deleting is confirmed because it discards the
+  // curation, even though it never touches the channels themselves.
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
+
+  function commitRename(id: string): void {
+    renameCustomCategory(id, renameDraft)
+    setRenamingId(null)
+  }
+
+  function confirmDelete(id: string, name: string): void {
+    if (window.confirm(`Delete the category "${name}"? The channels themselves are not removed.`)) {
+      deleteCustomCategory(id)
+    }
+  }
 
   const { width, startDrag } = useResizableWidth(sidebarWidth, 1, {
     min: 160,
@@ -71,15 +90,59 @@ export function Sidebar(): JSX.Element | null {
               <p className="my-categories-empty">None yet — Manage to create one.</p>
             ) : (
               myCategories.map((cat) => (
-                <button
-                  key={cat.id}
-                  className={selectedCustomCategoryId === cat.id ? 'category active' : 'category'}
-                  onClick={() => requestCustomCategory(cat.id)}
-                  title={`${cat.streamIds.length} channel${cat.streamIds.length === 1 ? '' : 's'}`}
-                >
-                  {cat.name}
-                  <span className="category-count">{cat.streamIds.length}</span>
-                </button>
+                <div key={cat.id} className="my-categories-row">
+                  {renamingId === cat.id ? (
+                    <input
+                      className="my-categories-rename"
+                      // A callback ref rather than autoFocus: this input is mounted dynamically, and
+                      // prop-based autofocus only applies to elements present in the initial parse.
+                      ref={(el) => el?.focus()}
+                      value={renameDraft}
+                      onChange={(e) => setRenameDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') commitRename(cat.id)
+                        if (e.key === 'Escape') {
+                          // Stop the app's central Escape handler from closing something else
+                          // behind the sidebar while the user is just backing out of a rename.
+                          e.stopPropagation()
+                          setRenamingId(null)
+                        }
+                      }}
+                      onBlur={() => commitRename(cat.id)}
+                      aria-label={`New name for ${cat.name}`}
+                    />
+                  ) : (
+                    <button
+                      className={selectedCustomCategoryId === cat.id ? 'category active' : 'category'}
+                      onClick={() => requestCustomCategory(cat.id)}
+                      title={`${cat.streamIds.length} channel${cat.streamIds.length === 1 ? '' : 's'}`}
+                    >
+                      {cat.name}
+                      <span className="category-count">{cat.streamIds.length}</span>
+                    </button>
+                  )}
+                  <span className="my-categories-actions">
+                    <button
+                      className="icon-button"
+                      title="Rename"
+                      aria-label={`Rename ${cat.name}`}
+                      onClick={() => {
+                        setRenameDraft(cat.name)
+                        setRenamingId(cat.id)
+                      }}
+                    >
+                      ✎
+                    </button>
+                    <button
+                      className="icon-button"
+                      title="Delete this category"
+                      aria-label={`Delete ${cat.name}`}
+                      onClick={() => confirmDelete(cat.id, cat.name)}
+                    >
+                      ✕
+                    </button>
+                  </span>
+                </div>
               ))
             )}
           </div>
