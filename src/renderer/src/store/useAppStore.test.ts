@@ -3,6 +3,7 @@ import { useAppStore } from './useAppStore'
 import { XtreamClient } from '../lib/xtream'
 import { DEFAULT_SETTINGS } from '../lib/types'
 import { saveSettings, saveProfiles, saveActiveProfileId } from '../lib/storage'
+import { parseXmltv } from '../lib/epg'
 import type { LiveStream, VodStream, FavoriteEntry, RecentlyWatchedEntry, VpnProfile, XtreamProfile, ShortEpgProgram } from '../lib/types'
 
 // Same rationale as storage.test.ts: the vitest environment is plain Node (see
@@ -1565,5 +1566,83 @@ describe('My Categories (custom categories)', () => {
 
     expect(useAppStore.getState().settings.customCategories).toEqual([])
     expect(useAppStore.getState().selectedCustomCategoryId).toBeNull()
+  })
+})
+
+describe('bulk-applying EPG suggestions', () => {
+  const GUIDE_XML = `<?xml version="1.0"?>
+<tv>
+  <channel id="c1"><display-name>Channel One</display-name></channel>
+  <programme start="20300101120000 +0000" stop="20300101130000 +0000" channel="c1"><title>Show</title></programme>
+</tv>`
+  const SOURCE = 'http://guides.example.com/g.xml'
+
+  function stream(streamId: number, name: string): LiveStream {
+    return {
+      num: streamId,
+      name,
+      stream_type: 'live',
+      stream_id: streamId,
+      stream_icon: '',
+      epg_channel_id: null,
+      added: '',
+      category_id: '1',
+      custom_sid: null,
+      tv_archive: 0,
+      direct_source: '',
+      tv_archive_duration: 0
+    }
+  }
+
+  it('maps unresolved channels from their best suggestion, leaves the rest, and is idempotent', () => {
+    const catalog = [stream(1, 'Channel One'), stream(2, 'Channel One Extra'), stream(3, 'Totally Different')]
+    useAppStore.setState({
+      numericChannelCatalog: catalog,
+      liveStreams: catalog,
+      epgSources: [parseXmltv(GUIDE_XML)],
+      epgSourceLabels: [SOURCE],
+      settings: { ...DEFAULT_SETTINGS, customEpgUrls: [SOURCE] }
+    })
+
+    const first = useAppStore.getState().applySuggestedMappings(SOURCE, 0.8)
+    expect(first).toEqual({ applied: 1, stillUnmatched: 1 })
+
+    const mappings = useAppStore.getState().settings.epgChannelMappings
+    expect(mappings).toHaveLength(1)
+    expect(mappings[0]).toMatchObject({
+      sourceUrl: SOURCE,
+      guideChannelId: 'c1',
+      streamId: 2,
+      guideChannelName: 'Channel One',
+      streamName: 'Channel One Extra'
+    })
+    // The match report picks the new manual mapping up straight away.
+    expect(useAppStore.getState().epgSourceMatchStats[0]).toMatchObject({ byManual: 1 })
+
+    // A second run finds nothing to do — already-mapped channels are never re-planned.
+    expect(useAppStore.getState().applySuggestedMappings(SOURCE, 0.8).applied).toBe(0)
+    expect(useAppStore.getState().settings.epgChannelMappings).toHaveLength(1)
+  })
+
+  it('leaves the mappings of other sources untouched', () => {
+    const other = { sourceUrl: 'http://other.example.com/g.xml', guideChannelId: 'x1', streamId: 9 }
+    useAppStore.setState({
+      numericChannelCatalog: [stream(2, 'Channel One Extra')],
+      liveStreams: [],
+      epgSources: [parseXmltv(GUIDE_XML)],
+      epgSourceLabels: [SOURCE],
+      settings: { ...DEFAULT_SETTINGS, customEpgUrls: [SOURCE], epgChannelMappings: [other] }
+    })
+
+    useAppStore.getState().applySuggestedMappings(SOURCE, 0.8)
+
+    const mappings = useAppStore.getState().settings.epgChannelMappings
+    expect(mappings).toHaveLength(2)
+    expect(mappings).toContainEqual(other)
+  })
+
+  it('does nothing when the source is not loaded or the catalog has not been fetched', () => {
+    useAppStore.setState({ numericChannelCatalog: null, epgSources: [], epgSourceLabels: [], settings: DEFAULT_SETTINGS })
+    expect(useAppStore.getState().applySuggestedMappings(SOURCE, 0.8)).toEqual({ applied: 0, stillUnmatched: 0 })
   })
 })

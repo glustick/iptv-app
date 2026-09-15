@@ -277,6 +277,14 @@ export interface GuideIndex {
   byLooseName: Map<string, string>
   /** guide channel id → its loose token set (suggestion scoring) */
   tokensById: Map<string, Set<string>>
+  /** loose token → ids of the guide channels containing it, in guide order. Lets suggestion
+   * scoring and the bulk planner consider only channels that share at least one token, instead
+   * of scanning every channel in the guide for every lookup — the difference between a click
+   * that responds instantly on a 5,000-channel guide and one that takes seconds across a
+   * 30,000-channel catalog's unmatched residue. */
+  channelsByToken: Map<string, string[]>
+  /** guide channel id → its position in the guide (stable tie-break for equal suggestions) */
+  orderById: Map<string, number>
 }
 
 export function buildGuideIndex(epg: EpgData): GuideIndex {
@@ -286,17 +294,26 @@ export function buildGuideIndex(epg: EpgData): GuideIndex {
   const byExactName = new Map<string, string>()
   const byLooseName = new Map<string, string>()
   const tokensById = new Map<string, Set<string>>()
+  const channelsByToken = new Map<string, string[]>()
+  const orderById = new Map<string, number>()
+  let order = 0
   for (const [id, channel] of epg.channels) {
     const exact = normalizeName(channel.displayName)
     if (exact && !byExactName.has(exact)) byExactName.set(exact, id)
     const tokens = new Set(looseTokens(channel.displayName))
     tokensById.set(id, tokens)
+    orderById.set(id, order++)
+    for (const token of tokens) {
+      const posting = channelsByToken.get(token)
+      if (posting) posting.push(id)
+      else channelsByToken.set(token, [id])
+    }
     // Same first-wins rule as the exact map, so a guide carrying both "BBC One" and a noisy
     // variant resolves deterministically.
     const loose = [...tokens].sort().join(' ')
     if (loose && !byLooseName.has(loose)) byLooseName.set(loose, id)
   }
-  return { channels, programmeCounts, byExactName, byLooseName, tokensById }
+  return { channels, programmeCounts, byExactName, byLooseName, tokensById, channelsByToken, orderById }
 }
 
 /** One stream resolved against one guide — matched channel, join method, and whether that
@@ -363,9 +380,21 @@ const SUGGESTION_MIN_SCORE = 0.6
 export function suggestGuideChannels(streamName: string, index: GuideIndex, limit = 3): GuideCandidate[] {
   const tokens = new Set(looseTokens(streamName))
   if (tokens.size === 0) return []
+  // Only channels sharing at least one token can score above zero, so candidate gathering reads
+  // the token postings and de-duplicates, rather than walking the whole guide.
+  const candidateIds: string[] = []
+  const seen = new Set<string>()
+  for (const token of tokens) {
+    for (const id of index.channelsByToken.get(token) ?? []) {
+      if (seen.has(id)) continue
+      seen.add(id)
+      candidateIds.push(id)
+    }
+  }
   const scored: GuideCandidate[] = []
-  for (const [id, guideTokens] of index.tokensById) {
-    if (guideTokens.size === 0) continue
+  for (const id of candidateIds) {
+    const guideTokens = index.tokensById.get(id)
+    if (!guideTokens || guideTokens.size === 0) continue
     let shared = 0
     for (const token of tokens) if (guideTokens.has(token)) shared += 1
     if (shared === 0) continue
@@ -373,8 +402,68 @@ export function suggestGuideChannels(streamName: string, index: GuideIndex, limi
     if (score < SUGGESTION_MIN_SCORE) continue
     scored.push({ channelId: id, displayName: index.channels.get(id)?.displayName ?? id, score })
   }
-  scored.sort((a, b) => b.score - a.score || a.displayName.localeCompare(b.displayName))
+  // Score, then display name, then guide position — the last one keeps results identical to the
+  // pre-postings implementation (which saw channels in guide order) when two candidates tie on
+  // score AND name, and keeps the order stable across runs regardless of token iteration order.
+  scored.sort(
+    (a, b) =>
+      b.score - a.score ||
+      a.displayName.localeCompare(b.displayName) ||
+      (index.orderById.get(a.channelId) ?? 0) - (index.orderById.get(b.channelId) ?? 0)
+  )
   return scored.slice(0, limit)
+}
+
+/** What a bulk suggestion run did — shown in the mapping editor so the action is never a mystery. */
+export interface BulkSuggestionPlan {
+  /** Mappings to create: the best candidate at or above the threshold, per unmatched channel. */
+  applied: Array<{ streamId: number; channelId: string; score: number }>
+  /** Channels with no usable listings from this source (the pool the planner worked from). */
+  considered: number
+  /** Skipped because a manual mapping already exists for them. */
+  alreadyMapped: number
+  /** Unmatched, but nothing scored high enough to apply automatically. */
+  belowThreshold: number
+}
+
+/**
+ * Plans a bulk "apply the good suggestions" run for one source: walks the catalog, ignores
+ * channels a manual mapping already covers (the user's own decisions are never overwritten) and
+ * channels the automatic tiers already resolve WITH programmes (nothing to fix), and for the
+ * rest takes the single best suggestion when it scores at or above `threshold`.
+ *
+ * Deliberately conservative: one mapping per channel, only above the threshold, and the score is
+ * returned so the caller can report what happened. Nothing is applied here — the store does that,
+ * so this stays pure and testable. Cost is one loose normalization per unmatched channel plus
+ * postings lookups; on a 30k catalog that's a few hundred milliseconds at worst, which is why the
+ * UI runs it behind an explicit button rather than on render.
+ */
+export function planBulkSuggestionApply(
+  streams: LiveStream[],
+  index: GuideIndex,
+  manualByStreamId: Map<number, string>,
+  threshold = 0.8
+): BulkSuggestionPlan {
+  const applied: Array<{ streamId: number; channelId: string; score: number }> = []
+  let considered = 0
+  let alreadyMapped = 0
+  let belowThreshold = 0
+  for (const stream of streams) {
+    if (manualByStreamId.has(stream.stream_id)) {
+      alreadyMapped += 1
+      continue
+    }
+    const resolved = resolveStreamToGuide(stream, index)
+    if (resolved && resolved.programmeCount > 0) continue
+    considered += 1
+    const best = suggestGuideChannels(stream.name, index, 1)[0]
+    if (best && best.score >= threshold) {
+      applied.push({ streamId: stream.stream_id, channelId: best.channelId, score: best.score })
+    } else {
+      belowThreshold += 1
+    }
+  }
+  return { applied, considered, alreadyMapped, belowThreshold }
 }
 
 /** One matched channel: which guide channel it resolved to, and by which join method. */

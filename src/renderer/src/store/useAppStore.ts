@@ -8,6 +8,8 @@ import {
   mergeShortEpg,
   xmltvProgrammesToShort,
   decodeMaybeGzipBytes,
+  buildGuideIndex,
+  planBulkSuggestionApply,
   type EpgData
 } from '../lib/epg'
 import {
@@ -319,6 +321,10 @@ interface AppState {
   // yet have provider-fetched data — runs after a pool loads and after each category's
   // liveStreams arrive, since matching needs the channel list.
   applyEpgPool: () => void
+  // Bulk-applies high-confidence suggestions for one source's unmatched channels (Settings ▸ EPG
+  // sources ▸ Map channels) — creates ordinary manual mappings, so every one stays individually
+  // reviewable and removable afterwards. Returns what it did for the editor to report.
+  applySuggestedMappings: (sourceUrl: string, threshold: number) => { applied: number; stillUnmatched: number }
   addCustomEpgUrl: (url: string) => void
   removeCustomEpgUrl: (url: string) => void
   // Manual guide-channel → app-channel links (Settings ▸ EPG sources ▸ Map channels) —
@@ -974,6 +980,42 @@ export const useAppStore = create<AppState>((set, get) => ({
       changed = true
     }
     if (changed) set({ shortEpgByStream: nextShort })
+  },
+
+  applySuggestedMappings: (sourceUrl, threshold) => {
+    const { epgSources, epgSourceLabels, numericChannelCatalog, settings } = get()
+    const sourceIndex = epgSourceLabels.indexOf(sourceUrl)
+    const guide = sourceIndex >= 0 ? epgSources[sourceIndex] : undefined
+    const catalog = numericChannelCatalog ?? []
+    if (!guide || catalog.length === 0) return { applied: 0, stillUnmatched: 0 }
+
+    const index = buildGuideIndex(guide)
+    const manual = new Map(
+      settings.epgChannelMappings.filter((m) => m.sourceUrl === sourceUrl).map((m) => [m.streamId, m.guideChannelId])
+    )
+    const plan = planBulkSuggestionApply(catalog, index, manual, threshold)
+    if (plan.applied.length > 0) {
+      const nameByStreamId = new Map(catalog.map((s) => [s.stream_id, s.name]))
+      const appliedStreamIds = new Set(plan.applied.map((a) => a.streamId))
+      // Same replace semantics as a single add: an existing mapping for a stream is superseded,
+      // and every other source's mappings are left untouched.
+      const rest = settings.epgChannelMappings.filter((m) => !(m.sourceUrl === sourceUrl && appliedStreamIds.has(m.streamId)))
+      get().updateSettings({
+        epgChannelMappings: [
+          ...rest,
+          ...plan.applied.map((a) => ({
+            sourceUrl,
+            guideChannelId: a.channelId,
+            streamId: a.streamId,
+            guideChannelName: index.channels.get(a.channelId)?.displayName,
+            streamName: nameByStreamId.get(a.streamId)
+          }))
+        ]
+      })
+    }
+    // Refresh the pool and the match report so the editor shows the new state immediately.
+    get().applyEpgPool()
+    return { applied: plan.applied.length, stillUnmatched: plan.belowThreshold }
   },
 
   addCustomEpgUrl: (url) => {

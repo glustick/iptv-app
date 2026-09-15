@@ -43,6 +43,7 @@ export function SettingsPage(): JSX.Element | null {
   const addEpgChannelMapping = useAppStore((s) => s.addEpgChannelMapping)
   const removeEpgChannelMapping = useAppStore((s) => s.removeEpgChannelMapping)
   const ensureChannelCatalog = useAppStore((s) => s.ensureChannelCatalog)
+  const applySuggestedMappings = useAppStore((s) => s.applySuggestedMappings)
 
   const [pinDraft, setPinDraft] = useState('')
   // Only set when opening the log fails (no active connection, or the file hasn't been written
@@ -72,6 +73,9 @@ export function SettingsPage(): JSX.Element | null {
   const [guideIndex, setGuideIndex] = useState<GuideIndex | null>(null)
   const [onlyUnmatched, setOnlyUnmatched] = useState(false)
   const [unmatchedIds, setUnmatchedIds] = useState<Set<number> | null>(null)
+  // Bulk suggestion apply: the confidence floor to use, and what the last run reported.
+  const [bulkThreshold, setBulkThreshold] = useState(0.8)
+  const [bulkResult, setBulkResult] = useState<string | null>(null)
 
   if (!settingsOpen) return null
 
@@ -92,6 +96,7 @@ export function SettingsPage(): JSX.Element | null {
     setSelectedStreamId(null)
     setOnlyUnmatched(false)
     setUnmatchedIds(null)
+    setBulkResult(null)
     // Index this source's guide once (see GuideIndex) — the suggestion ranking and the
     // unmatched-filter both read from it, and rebuilding per stream/keystroke would pay the
     // Unicode-normalization cost thousands of times.
@@ -106,13 +111,9 @@ export function SettingsPage(): JSX.Element | null {
   // Resolves the WHOLE catalog against the open source's guide to find channels that still have
   // no listings from it — the residue left after the automatic tiers and manual mappings (a
   // match with zero programmes counts as unresolved, same rule as the store's match report).
-  // Runs from the checkbox handler, once per toggle, not per render.
-  function applyUnmatchedFilter(enabled: boolean, sourceUrl: string): void {
-    setOnlyUnmatched(enabled)
-    if (!enabled) {
-      setUnmatchedIds(null)
-      return
-    }
+  // Runs from event handlers only, never per render: the walk is fine as a one-off on a click,
+  // but it would make typing in the search box stutter.
+  function refreshUnmatchedFilter(sourceUrl: string): void {
     const catalog = numericChannelCatalog ?? []
     const manual = new Map(
       settings.epgChannelMappings.filter((m) => m.sourceUrl === sourceUrl).map((m) => [m.streamId, m.guideChannelId])
@@ -125,6 +126,32 @@ export function SettingsPage(): JSX.Element | null {
       }
     }
     setUnmatchedIds(ids)
+  }
+
+  function applyUnmatchedFilter(enabled: boolean, sourceUrl: string): void {
+    setOnlyUnmatched(enabled)
+    if (!enabled) {
+      setUnmatchedIds(null)
+      return
+    }
+    refreshUnmatchedFilter(sourceUrl)
+  }
+
+  // Applies the good suggestions for the whole source in one go, then reports exactly what it did
+  // — including how many channels still need a human eye. If the "only unmatched" filter is on,
+  // its set is recomputed so the list immediately reflects what's left.
+  function handleBulkApply(sourceUrl: string): void {
+    const percent = Math.round(bulkThreshold * 100)
+    const result = applySuggestedMappings(sourceUrl, bulkThreshold)
+    const remaining = `${result.stillUnmatched} channel${result.stillUnmatched === 1 ? '' : 's'} still need${
+      result.stillUnmatched === 1 ? 's' : ''
+    } attention`
+    setBulkResult(
+      result.applied > 0
+        ? `Applied ${result.applied} mapping${result.applied === 1 ? '' : 's'} at ${percent}% or better — ${remaining}.`
+        : `Nothing scored ${percent}% or better — ${remaining}, or try a lower threshold.`
+    )
+    if (onlyUnmatched) refreshUnmatchedFilter(sourceUrl)
   }
 
   // The per-source mapping panel: existing guide→channel links, plus a two-pane searchable
@@ -255,6 +282,23 @@ export function SettingsPage(): JSX.Element | null {
                       Only channels with no listings from this source
                       {onlyUnmatched && unmatchedIds ? ` (${unmatchedIds.size})` : ''}
                     </label>
+                    <div className="epg-bulk-apply">
+                      <label>
+                        Auto-map suggestions at
+                        <select value={bulkThreshold} onChange={(e) => setBulkThreshold(Number(e.target.value))}>
+                          {[0.6, 0.7, 0.8, 0.9, 1].map((value) => (
+                            <option key={value} value={value}>
+                              {Math.round(value * 100)}%
+                            </option>
+                          ))}
+                        </select>
+                        or better
+                      </label>
+                      <button className="secondary-button" onClick={() => handleBulkApply(url)}>
+                        Apply to all unmatched
+                      </button>
+                    </div>
+                    {bulkResult && <p className="epg-bulk-result">{bulkResult}</p>}
                     <input
                       type="text"
                       placeholder={`Search ${baseStreams.length} channels…`}

@@ -2499,6 +2499,38 @@ body.resizing-col {
   max-height: 200px;
 }
 
+/* Bulk "apply the good suggestions" row in the mapping editor — sits under the unmatched filter
+   since both are ways of working through the same residue. */
+.epg-bulk-apply {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.epg-bulk-apply label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.epg-bulk-apply select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 11px;
+  padding: 2px 4px;
+}
+
+.epg-bulk-result {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
 .custom-cat-detail > input[type='text'] {
   background: var(--bg);
   border: 1px solid var(--border);

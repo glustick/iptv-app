@@ -11,7 +11,8 @@ import {
   unionEpgSourceUrls,
   buildGuideIndex,
   resolveStreamToGuide,
-  suggestGuideChannels
+  suggestGuideChannels,
+  planBulkSuggestionApply
 } from './epg'
 import type { LiveStream, ShortEpgProgram } from './types'
 
@@ -298,6 +299,58 @@ describe('guide index, stream resolution, and suggestions', () => {
     const index = buildGuideIndex(guide)
     expect(suggestGuideChannels('Sky Sports', index, 1)).toHaveLength(1)
     expect(suggestGuideChannels('   ', index)).toEqual([])
+  })
+})
+
+describe('planBulkSuggestionApply', () => {
+  // bbcone carries a programme; bbctwo is a guide entry with none — so a channel that matches
+  // bbctwo is "matched but not resolved", exactly the case the bulk planner exists for.
+  const guide = parseXmltv(`<tv>
+    <channel id="bbcone"><display-name>BBC One</display-name></channel>
+    <channel id="bbctwo"><display-name>BBC Two</display-name></channel>
+    <programme start="20300101120000 +0000" stop="20300101130000 +0000" channel="bbcone"><title>Show</title></programme>
+  </tv>`)
+
+  it('plans mappings only for unresolved channels whose best candidate clears the threshold', () => {
+    const index = buildGuideIndex(guide)
+    const plan = planBulkSuggestionApply(
+      [
+        makeStream({ stream_id: 1, name: 'BBC One' }), // exact name match, has programmes → skipped
+        makeStream({ stream_id: 2, name: '101 BBC One HD' }), // relaxed match, has programmes → skipped
+        makeStream({ stream_id: 3, name: 'BBC Two HD' }), // matches bbctwo, which has no programmes → planned
+        makeStream({ stream_id: 4, name: 'Totally Unrelated' }) // no candidate at all
+      ],
+      index,
+      new Map(),
+      0.8
+    )
+    expect(plan.applied).toEqual([{ streamId: 3, channelId: 'bbctwo', score: 1 }])
+    expect(plan.considered).toBe(2)
+    expect(plan.belowThreshold).toBe(1)
+    expect(plan.alreadyMapped).toBe(0)
+  })
+
+  it('never overwrites — or even re-plans — a channel that already has a manual mapping', () => {
+    const index = buildGuideIndex(guide)
+    const plan = planBulkSuggestionApply(
+      [makeStream({ stream_id: 3, name: 'BBC Two HD' })],
+      index,
+      new Map([[3, 'bbctwo']]),
+      0.8
+    )
+    expect(plan.applied).toEqual([])
+    expect(plan.alreadyMapped).toBe(1)
+    expect(plan.considered).toBe(0)
+  })
+
+  it('respects the threshold exactly at the boundary', () => {
+    const index = buildGuideIndex(guide)
+    // "BBC One Extra" scores 2*2/(3+2) = 0.8 against BBC One (and matches nothing else), so it
+    // qualifies at 0.8 and not at 0.9.
+    const streams = [makeStream({ stream_id: 5, name: 'BBC One Extra' })]
+    expect(planBulkSuggestionApply(streams, index, new Map(), 0.8).applied).toHaveLength(1)
+    expect(planBulkSuggestionApply(streams, index, new Map(), 0.9).applied).toHaveLength(0)
+    expect(planBulkSuggestionApply(streams, index, new Map(), 0.9).belowThreshold).toBe(1)
   })
 })
 
