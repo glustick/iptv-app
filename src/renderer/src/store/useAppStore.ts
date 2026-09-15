@@ -178,6 +178,11 @@ interface AppState {
   // Label for each entry in epgSources, index-aligned: the provider guide's display name or
   // the custom URL it was fetched from — what applyEpgPool's match report calls each source.
   epgSourceLabels: string[]
+  // Which guide source actually supplied each live channel's pooled listings, keyed by streamId —
+  // the FIRST source in priority order that has programmes for it (see applyEpgPool). Surfaced in
+  // the channel preview so "why does this channel have listings and that one doesn't" has an
+  // answer on screen instead of only in the match report. Reset with the rest of the EPG state.
+  epgSourceByStream: Record<number, string>
   // true/false once an Xtream connect has tried the provider's own xmltv.php guide; null on
   // M3U profiles (their playlist guide never enters the pool as a separate source).
   providerGuideAvailable: boolean | null
@@ -329,6 +334,10 @@ interface AppState {
   applySuggestedMappings: (sourceUrl: string, threshold: number) => { applied: number; stillUnmatched: number }
   addCustomEpgUrl: (url: string) => void
   removeCustomEpgUrl: (url: string) => void
+  // Reorders the user's EPG sources — their sequence in settings IS their priority: the provider's
+  // own guide is always tried first, then custom sources top to bottom, and the first source with
+  // programmes for a channel wins it.
+  reorderCustomEpgUrls: (fromIndex: number, toIndex: number) => void
   // Manual guide-channel → app-channel links (Settings ▸ EPG sources ▸ Map channels) —
   // persisted in settings.epgChannelMappings and applied on the next applyEpgPool.
   addEpgChannelMapping: (mapping: EpgChannelMapping) => void
@@ -444,6 +453,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   epgSources: [],
   epgSourceLabels: [],
+  epgSourceByStream: {},
   providerGuideAvailable: null,
   epgSourcesStatus: 'idle',
   epgSourceIssues: {},
@@ -672,6 +682,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         shortEpgFetchedAt: {},
         epgSources: [],
         epgSourceLabels: [],
+        epgSourceByStream: {},
         providerGuideAvailable: null,
         epgSourcesStatus: 'idle',
         epgSourceIssues: {},
@@ -719,6 +730,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       // stream-id collisions across profiles for why these can't survive a disconnect.
       epgSources: [],
       epgSourceLabels: [],
+      epgSourceByStream: {},
       providerGuideAvailable: null,
       epgSourcesStatus: 'idle',
       epgSourceIssues: {},
@@ -897,6 +909,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     // the provider's own guide outranks a third party's, and earlier custom URLs outrank later
     // ones.
     const pool = new Map<number, ShortEpgProgram[]>()
+    // Provenance for the preview panel: which source won each channel (first in priority order
+    // with programmes for it — the same rule that decides the pool entry right below).
+    const sourceByStream: Record<number, string> = {}
     // Per-source matching report for Settings — what a source actually did against the
     // currently-loaded channels, including how much of its matching rests on the weaker
     // name join and which channel names found no counterpart at all.
@@ -946,7 +961,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       for (const [streamId, match] of matches) {
         if (pool.has(streamId)) continue
         const programmes = source.programmesByChannel.get(match.channelId)
-        if (programmes?.length) pool.set(streamId, xmltvProgrammesToShort(programmes, match.channelId))
+        if (programmes?.length) {
+          pool.set(streamId, xmltvProgrammesToShort(programmes, match.channelId))
+          sourceByStream[streamId] = label
+        }
       }
     })
     // Sources that failed to load never enter epgSources, so the loop above never sees them —
@@ -966,7 +984,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         unmatchedNames: []
       })
     }
-    set({ epgSourceMatchStats: stats })
+    set({ epgSourceMatchStats: stats, epgSourceByStream: sourceByStream })
     if (epgSources.length === 0 || liveStreams.length === 0) return
     if (pool.size === 0) return
     const nextShort = { ...shortEpgByStream }
@@ -1028,6 +1046,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     get().updateSettings({ customEpgUrls: [...current, trimmed] })
     // Apply immediately rather than waiting for the next connect — adding a source is an
     // explicit "make my guide better" action, and the whole fetch is best-effort anyway.
+    if (get().client) void get().loadEpgSources()
+  },
+
+  reorderCustomEpgUrls: (fromIndex, toIndex) => {
+    const current = get().settings.customEpgUrls
+    const next = moveItem(current, fromIndex, toIndex)
+    if (next === current) return
+    get().updateSettings({ customEpgUrls: next })
+    // Priority changed, so the pool's "first source with programmes wins" rule can land on a
+    // different source for any overlapping channel — reload rather than trying to patch.
     if (get().client) void get().loadEpgSources()
   },
 

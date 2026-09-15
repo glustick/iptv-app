@@ -2550,6 +2550,14 @@ body.resizing-col {
   padding: 2px 4px;
 }
 
+/* Provenance line under the preview's Watch button — which source feeds this channel. */
+.epg-guide-source {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
 .epg-bulk-result {
   margin: 0;
   font-size: 11px;

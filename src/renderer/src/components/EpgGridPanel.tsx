@@ -36,6 +36,7 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
   const showHiddenLiveChannels = useAppStore((s) => s.showHiddenLiveChannels)
   const setShowHiddenLiveChannels = useAppStore((s) => s.setShowHiddenLiveChannels)
   const openChannelPreview = useAppStore((s) => s.openChannelPreview)
+  const epgSourceByStream = useAppStore((s) => s.epgSourceByStream)
   const findChannelByNumber = useAppStore((s) => s.findChannelByNumber)
   const compact = epgRowDensity === 'compact'
 
@@ -175,6 +176,14 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
             <button className="watch-now-button watch-now-button--compact" onClick={() => watchFullscreen()}>
               ⛶ Watch fullscreen
             </button>
+            {epgSourceByStream[previewChannel.stream_id] && (
+              <p
+                className="epg-guide-source"
+                title="Which guide source supplies this channel's listings beyond the provider's own today-window"
+              >
+                Guide: {epgSourceByStream[previewChannel.stream_id]}
+              </p>
+            )}
           </div>
         </div>
 

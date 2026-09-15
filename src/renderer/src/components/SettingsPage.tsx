@@ -33,6 +33,7 @@ export function SettingsPage(): JSX.Element | null {
   const importBackup = useAppStore((s) => s.importBackup)
   const addCustomEpgUrl = useAppStore((s) => s.addCustomEpgUrl)
   const removeCustomEpgUrl = useAppStore((s) => s.removeCustomEpgUrl)
+  const reorderCustomEpgUrls = useAppStore((s) => s.reorderCustomEpgUrls)
   const epgSourcesStatus = useAppStore((s) => s.epgSourcesStatus)
   const epgSourceIssues = useAppStore((s) => s.epgSourceIssues)
   const epgSourceMatchStats = useAppStore((s) => s.epgSourceMatchStats)
@@ -571,16 +572,44 @@ export function SettingsPage(): JSX.Element | null {
             relaxed match that ignores HD/SD tags, leading channel numbers, country prefixes
             and accents — and a channel you map manually overrides all of those when the
             automatic joins still get one wrong or miss it. Your provider&apos;s own listings
-            always win where they exist.
+            always win where they exist. Sources are tried in priority order — the provider&apos;s
+            guide first, then your sources top to bottom (use ⬆⬇ to reprioritise) — and the first
+            one with programmes for a channel supplies it; the channel preview shows which source
+            that was.
           </p>
           {listedSources.length > 0 && (
             <ul className="lock-list">
               {listedSources.map((url) => {
                 const mappings = settings.epgChannelMappings.filter((m) => m.sourceUrl === url)
+                // Priority arrows only make sense for sources that are actually persisted — a row
+                // that only exists as live pool state has no stored position to move.
+                const persistedIndex = settings.customEpgUrls.indexOf(url)
                 return (
                   <li key={url}>
                     <label>
                       <span className="epg-source-url">{url}</span>
+                      {persistedIndex >= 0 && (
+                        <>
+                          <button
+                            className="icon-button"
+                            disabled={persistedIndex === 0}
+                            onClick={() => reorderCustomEpgUrls(persistedIndex, persistedIndex - 1)}
+                            title="Higher priority"
+                            aria-label={`Move ${url} up in priority`}
+                          >
+                            ⬆
+                          </button>
+                          <button
+                            className="icon-button"
+                            disabled={persistedIndex === settings.customEpgUrls.length - 1}
+                            onClick={() => reorderCustomEpgUrls(persistedIndex, persistedIndex + 1)}
+                            title="Lower priority"
+                            aria-label={`Move ${url} down in priority`}
+                          >
+                            ⬇
+                          </button>
+                        </>
+                      )}
                       <button
                         className="secondary-button"
                         onClick={() => toggleMappingEditor(url)}

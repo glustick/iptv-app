@@ -475,6 +475,71 @@ describe('EPG source loading (loadEpgSources)', () => {
     expect(useAppStore.getState().epgSources).toHaveLength(1)
   })
 
+  it('records which guide source supplied each channel, for the preview to show', async () => {
+    mockFetchBody(() => ({ ok: true, body: GOOD_XML }))
+    useAppStore.setState({
+      client: makeClient(),
+      proxyBase: 'http://proxy',
+      settings: { ...DEFAULT_SETTINGS, customEpgUrls: ['http://guides.example.com/g.xml'] },
+      liveStreams: [{ ...makeLiveStream(31, 'Channel One'), epg_channel_id: null }]
+    })
+
+    await useAppStore.getState().loadEpgSources()
+
+    expect(useAppStore.getState().epgSourceByStream[31]).toBe('http://guides.example.com/g.xml')
+  })
+
+  it('clears the recorded per-channel source on disconnect', async () => {
+    mockFetchBody(() => ({ ok: true, body: GOOD_XML }))
+    useAppStore.setState({
+      client: makeClient(),
+      proxyBase: 'http://proxy',
+      settings: { ...DEFAULT_SETTINGS, customEpgUrls: ['http://guides.example.com/g.xml'] },
+      liveStreams: [{ ...makeLiveStream(31, 'Channel One'), epg_channel_id: null }]
+    })
+    await useAppStore.getState().loadEpgSources()
+    expect(useAppStore.getState().epgSourceByStream[31]).toBeDefined()
+
+    useAppStore.getState().disconnect()
+
+    expect(useAppStore.getState().epgSourceByStream).toEqual({})
+  })
+
+  it('gives an overlapping channel to the higher-priority source, and reprioritising changes the winner', async () => {
+    const XML_A = `<?xml version="1.0"?>
+<tv>
+  <channel id="a1"><display-name>Alpha</display-name></channel>
+  <programme start="20300101120000 +0000" stop="20300101130000 +0000" channel="a1"><title>From A</title></programme>
+</tv>`
+    const XML_B = `<?xml version="1.0"?>
+<tv>
+  <channel id="b1"><display-name>Alpha</display-name></channel>
+  <programme start="20300101120000 +0000" stop="20300101130000 +0000" channel="b1"><title>From B</title></programme>
+</tv>`
+    mockFetchBody((url) => ({ ok: true, body: url.includes('source-a') ? XML_A : XML_B }))
+    useAppStore.setState({
+      client: makeClient(),
+      proxyBase: 'http://proxy',
+      settings: {
+        ...DEFAULT_SETTINGS,
+        customEpgUrls: ['http://guides.example.com/source-a.xml', 'http://guides.example.com/source-b.xml']
+      },
+      liveStreams: [{ ...makeLiveStream(50, 'Alpha'), epg_channel_id: null }]
+    })
+
+    await useAppStore.getState().loadEpgSources()
+    // Both sources can supply this channel; the first one listed wins.
+    expect(useAppStore.getState().epgSourceByStream[50]).toBe('http://guides.example.com/source-a.xml')
+    expect(useAppStore.getState().shortEpgByStream[50]?.[0]?.title).toBe('From A')
+
+    // Moving B above A changes the priority — and therefore the data.
+    useAppStore.getState().reorderCustomEpgUrls(1, 0)
+    expect(useAppStore.getState().settings.customEpgUrls[0]).toBe('http://guides.example.com/source-b.xml')
+
+    await vi.waitFor(() => expect(useAppStore.getState().epgSourceByStream[50]).toBe('http://guides.example.com/source-b.xml'))
+    expect(useAppStore.getState().shortEpgByStream[50]?.[0]?.title).toBe('From B')
+  })
+
   it('reports a failed source in the match report with its exact load reason', async () => {
     mockFetchBody((url) => (url.includes('bad') ? { ok: false, status: 503, body: '' } : { ok: true, body: GOOD_XML }))
     useAppStore.setState({
