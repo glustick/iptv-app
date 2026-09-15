@@ -94,6 +94,11 @@ This is the part with the most moving pieces, so it's worth understanding as a w
   jsdom 25 for exactly this reason).
 - Overlay/Escape behaviour is decided by the pure `resolveEscapeAction` in `lib/overlays.ts`, with
   the priority order pinned by tests — add new overlays to that chain, not to App.tsx.
+- **A synthetic Xtream provider exists** (`lib/testFixtures/mockXtreamServer.ts`, serving the
+  `player_api.php`/`xmltv.php`/`__fetch` subset the app uses) and `lib/xtreamIntegration.test.ts`
+  drives the real client and store against it over a real socket with nothing mocked — that is the
+  place to verify EPG pipeline behaviour without the real provider. Still missing: driving the GUI
+  itself (needs the app launched + CDP), and playable stream fixtures for playback tests.
 - Destructive or irreversible actions ask first (`window.confirm`), and are called out in code
   comments with the reasoning.
 
