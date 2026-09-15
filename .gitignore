@@ -9,3 +9,6 @@ dist/
 swiss_travel_router_openvpn.zip
 swiss_travel_router_openvpn/
 user.txt
+
+# Generated from ROADMAP.md at build time (scripts/extract-release-notes.mjs)
+build/release-notes.md

@@ -1,4 +1,5 @@
 import { useAppStore } from '../store/useAppStore'
+import { formatReleaseNotes } from '../lib/releaseNotes'
 
 // Backed by autoUpdater in src/main/index.ts, which checks the GitHub Releases this app's own
 // CI publishes to (see .github/workflows/release.yml). autoDownload is off there specifically so
@@ -20,6 +21,9 @@ export function UpdatePrompt(): JSX.Element | null {
   if (!updateInfo || dismissed) return null
 
   const downloading = downloadPercent !== null
+  // Plain-text rendering of the release's own notes (see lib/releaseNotes.ts) — shown in both the
+  // "available" and "ready to install" states, i.e. wherever the user is being asked to care.
+  const notes = updateInfo.releaseNotes ? formatReleaseNotes(updateInfo.releaseNotes) : ''
 
   return (
     <div className="modal-overlay" onClick={dismissUpdatePrompt}>
@@ -35,6 +39,7 @@ export function UpdatePrompt(): JSX.Element | null {
             <p className="modal-plot">
               Version {updateInfo.version} has been downloaded. Restart AllisonIPTV to finish installing it.
             </p>
+            {notes && <pre className="update-notes">{notes}</pre>}
             <div className="pin-actions">
               <button type="button" className="secondary-button" onClick={dismissUpdatePrompt}>
                 Later
@@ -54,6 +59,7 @@ export function UpdatePrompt(): JSX.Element | null {
         ) : (
           <>
             <p className="modal-plot">Version {updateInfo.version} is available.</p>
+            {notes && <pre className="update-notes">{notes}</pre>}
             {error && <div className="login-error">Update failed: {error}</div>}
             <div className="pin-actions">
               <button type="button" className="secondary-button" onClick={dismissUpdatePrompt}>

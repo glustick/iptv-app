@@ -373,6 +373,17 @@ export function EpgGrid({
       const next = Math.max(0, focusedIndex - 1)
       setFocusedIndex(next)
       listRef.current?.scrollToRow({ index: next, align: 'smart' })
+    } else if (e.key === 'PageDown' || e.key === 'PageUp') {
+      e.preventDefault()
+      // A screenful, measured at press time from this grid's own height rather than assumed: the
+      // grid is resize-draggable and mounts at two very different heights (docked panel vs the
+      // fullscreen channel bar), so a fixed row count would overshoot one and undershoot the
+      // other. One row is subtracted so a page always overlaps the previous view slightly.
+      const pageRows = Math.max(1, Math.floor((rootRef.current?.clientHeight ?? 400) / rowHeight) - 1)
+      const delta = e.key === 'PageDown' ? pageRows : -pageRows
+      const next = Math.max(0, Math.min(channels.length - 1, focusedIndex + delta))
+      setFocusedIndex(next)
+      listRef.current?.scrollToRow({ index: next, align: 'smart' })
     } else if (e.key === 'Enter') {
       e.preventDefault()
       const channel = channels[focusedIndex]

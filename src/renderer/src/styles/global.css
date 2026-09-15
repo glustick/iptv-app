@@ -2571,6 +2571,43 @@ body.resizing-col {
   padding: 2px 4px;
 }
 
+/* Release notes in the update prompt — plain text, scrollable, so a long release can't turn the
+   dialog into a wall. */
+.update-notes {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  max-height: 220px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* "No guide listings" hint in the preview, with the jump to Settings ▸ EPG sources. */
+.epg-no-listings {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: 11px;
+  text-decoration: underline;
+}
+
+.link-button:hover {
+  color: var(--accent-hover);
+}
+
 /* Provenance line under the preview's Watch button — which source feeds this channel. */
 .epg-guide-source {
   margin: 4px 0 0;

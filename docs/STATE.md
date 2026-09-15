@@ -1,18 +1,18 @@
 # Project state
 
-_A consolidated handover snapshot, written 2026-09-14 at v0.7.74. `ROADMAP.md` remains the
-authoritative, per-release history — this page is the "where are we and why" summary for whoever
-picks this up next (human or agent)._
+_A consolidated handover snapshot, first written 2026-09-14 at v0.7.74 and updated 2026-09-15 at
+v0.7.79. `ROADMAP.md` remains the authoritative, per-release history — this page is the "where are
+we and why" summary for whoever picks this up next (human or agent)._
 
 ## TL;DR
 
 AllisonIPTV is a working desktop IPTV client (Electron + React + TypeScript) in daily use against a
-real Xtream provider with a ~30k-channel catalog. Current release: **v0.7.74** (see ROADMAP for the
-full history). Test suite: **280 passing**. CI (typecheck/lint/test/build) and the three-platform
+real Xtream provider with a ~30k-channel catalog. Current release: **v0.7.79** (see ROADMAP for the
+full history). Test suite: **~297 passing**. CI (typecheck/lint/test/build) and the three-platform
 Release workflow are both green on every tagged release.
 
-The last two days of work (0.7.65 → 0.7.74) were almost entirely about the **EPG system** and the
-**release pipeline**; both are now in a genuinely complete state for the provider in use.
+0.7.65 → 0.7.79 were almost entirely about the **EPG system**, **user-made categories**, and the
+**release pipeline**; all three are now in a genuinely complete state for the provider in use.
 
 ## The EPG system, end to end
 
@@ -37,20 +37,30 @@ This is the part with the most moving pieces, so it's worth understanding as a w
    suggest "BBC Two").
 5. **Consumption** — the pool prefills each channel's short-EPG cache; the provider's own
    per-channel `get_short_epg` merges over it (provider entries win their slots, pool data fills
-   later days).
+   later days). The winning source per channel is recorded (`epgSourceByStream`) and shown in the
+   channel preview as `Guide: <source>`.
+6. **Bulk resolution** — the editor's "Apply suggestions at _% or better" turns the residue into
+   ordinary manual mappings in one action (never overwriting an existing mapping, one per channel,
+   threshold 60-100%), and the ⬆⬇ arrows on each source row set the priority order that decides
+   which source wins an overlapping channel.
 
 ## Other features worth knowing about
 
-- **My Categories** (`CustomCategoriesModal.tsx`, `lib/customCategories.ts`) — user-made Live TV
-  groupings pinned at the top of the sidebar, filled by search, reordered by drag-and-drop or the
-  ⬆⬇ buttons, persisted in `settings.customCategories`. Stream ids are provider-scoped: unresolved
-  ids are skipped for display but retained in the stored order.
+- **My Categories** (`CustomCategoriesModal.tsx`, `lib/customCategories.ts`) — user-made groupings
+  pinned at the top of the sidebar, for **Live TV, Movies and Series** (`kind` on the model; an
+  absent kind means live, so pre-0.7.78 categories still load). Filled by search, the categories
+  themselves and the items inside them both reorder by drag-and-drop or ⬆⬇, and everything
+  persists in `settings.customCategories`. Ids are provider-scoped: unresolved ones are skipped for
+  display but retained in the stored order, so a category comes back intact on reconnecting that
+  provider.
 - **Playback fallbacks** — `transcodeService.ts` remuxes unsupported audio (EC-3/AC-3) to AAC via
   the bundled ffmpeg, mapping one text-based subtitle stream as a WebVTT rendition with a
   hand-written master playlist, a grace fallback, and a bitmap-codec auto-retry.
 - **VPN** — OpenVPN profiles (requires OpenVPN installed), split-tunnel to the provider only,
   orphaned-session recovery on launch.
-- **Auto-update** — electron-updater against GitHub Releases, with an in-app prompt.
+- **Auto-update** — electron-updater against GitHub Releases, with an in-app prompt that now shows
+  the release's own notes (generated from ROADMAP.md into the update feed at build time — see
+  `scripts/extract-release-notes.mjs` and `lib/releaseNotes.ts`).
 
 ## Release & CI/CD
 
@@ -91,6 +101,10 @@ This is the part with the most moving pieces, so it's worth understanding as a w
 
 ## Known rough edges
 
-- Unresolved/unmapped EPG channels are visible (the report names them) but not fixable in bulk
-  beyond the suggestion chips — there is no "auto-apply suggestions above N%" button.
-- `docs/` is new as of this file.
+- **No UI interaction in this project has been runtime-verified by a human**: the EPG mapping
+  editor, My Categories (drag-and-drop included), the bulk-apply button, the preview's guide-source
+  line and the update prompt's notes are covered by unit tests and the build, but nobody has
+  clicked them in a running window yet. Worth a real pass.
+- Bulk-applying suggestions works per source; there is no cross-source "do all sources at once"
+  action (each source's mappings are deliberately separate).
+- `docs/` dates from 2026-09-14.

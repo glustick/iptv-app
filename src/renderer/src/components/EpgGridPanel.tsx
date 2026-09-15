@@ -37,6 +37,7 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
   const setShowHiddenLiveChannels = useAppStore((s) => s.setShowHiddenLiveChannels)
   const openChannelPreview = useAppStore((s) => s.openChannelPreview)
   const epgSourceByStream = useAppStore((s) => s.epgSourceByStream)
+  const openSettings = useAppStore((s) => s.openSettings)
   const findChannelByNumber = useAppStore((s) => s.findChannelByNumber)
   const compact = epgRowDensity === 'compact'
 
@@ -184,6 +185,19 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
                 Guide: {epgSourceByStream[previewChannel.stream_id]}
               </p>
             )}
+            {/* Only once the fetch has actually settled with nothing (an entry exists and is
+                empty) — showing this while it's still loading would flash a "no data" claim at
+                every channel click. This is the one place the user is looking at a channel with
+                a known-empty guide, so it's where pointing at the fix belongs. */}
+            {shortEpgByStream[previewChannel.stream_id] !== undefined &&
+              (shortEpgByStream[previewChannel.stream_id]?.length ?? 0) === 0 && (
+                <p className="epg-no-listings">
+                  No guide listings for this channel.{' '}
+                  <button className="link-button" onClick={openSettings}>
+                    Set up guide sources
+                  </button>
+                </p>
+              )}
           </div>
         </div>
 

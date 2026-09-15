@@ -1086,7 +1086,14 @@ app.whenReady().then(async () => {
   // and only spend the user's bandwidth once they've said yes.
   autoUpdater.autoDownload = false
   autoUpdater.on('update-available', (info) => {
-    mainWindowRef?.webContents.send('update:available', { version: info.version })
+    mainWindowRef?.webContents.send('update:available', {
+      version: info.version,
+      // This release's notes (generated from ROADMAP.md at build time — see
+      // scripts/extract-release-notes.mjs, which electron-builder embeds in the update feed).
+      // electron-updater hands a YAML feed's notes over as a string; richer providers can return
+      // an array, which this deliberately ignores rather than half-rendering.
+      releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : null
+    })
   })
   autoUpdater.on('download-progress', (progress) => {
     mainWindowRef?.webContents.send('update:progress', { percent: progress.percent })

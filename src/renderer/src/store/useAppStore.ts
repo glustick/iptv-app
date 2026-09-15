@@ -279,7 +279,7 @@ interface AppState {
   // src/main/index.ts) — version alone until it's actually finished downloading, at which point
   // updateDownloaded flips true and this same field's version is what's offered to install.
   // null whenever there's nothing to prompt about.
-  updateInfo: { version: string } | null
+  updateInfo: { version: string; releaseNotes: string | null } | null
   // Non-null only while a user-initiated download (see downloadUpdate) is actually in flight —
   // there's no "downloading" state otherwise, since autoDownload is off (see main/index.ts).
   updateDownloadPercent: number | null
@@ -591,7 +591,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       // on, dismissing THIS prompt (see UpdatePrompt.tsx's plain "Later" button) behaves like a
       // real toggle again — there's no further step this needs to defer to.
       window.api?.updater?.onDownloaded((payload) => {
-        set({ updateInfo: payload, updateDownloaded: true, updateDownloadPercent: null, updateDismissed: false })
+        // The downloaded event carries only the version — keep the notes the "available" event
+        // already brought in, or the prompt would lose its "what's new" between the two states.
+        set({
+          updateInfo: { version: payload.version, releaseNotes: get().updateInfo?.releaseNotes ?? null },
+          updateDownloaded: true,
+          updateDownloadPercent: null,
+          updateDismissed: false
+        })
       })
       // Only ever shown if it happens while the user is actively waiting on a download they
       // asked for (see downloadUpdate) — a background/launch-time check failing is common and

@@ -80,7 +80,7 @@ interface UpdaterAPI {
   check: () => Promise<void>
   download: () => Promise<void>
   install: () => Promise<void>
-  onAvailable: (callback: (payload: { version: string }) => void) => () => void
+  onAvailable: (callback: (payload: { version: string; releaseNotes: string | null }) => void) => () => void
   onProgress: (callback: (payload: { percent: number }) => void) => () => void
   onDownloaded: (callback: (payload: { version: string }) => void) => () => void
   onError: (callback: (payload: { message: string }) => void) => () => void
