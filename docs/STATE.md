@@ -89,7 +89,9 @@ This is the part with the most moving pieces, so it's worth understanding as a w
   `// @vitest-environment jsdom` docblock) — **required setup**: vitest here runs on the
   oxc/rolldown flavour of Vite, where JSX is not transformed unless `oxc: { jsx: 'automatic' }` is
   set in `vitest.config.mts` (the React plugin does not cover it). Without that, any component
-  import fails at transform time.
+  import fails at transform time. Also: **keep jsdom's Node engine range compatible with CI's Node 20**
+  — jsdom 30 requires Node >= 22.22 and broke a CI run while passing locally on Node 24 (pinned to
+  jsdom 25 for exactly this reason).
 - Overlay/Escape behaviour is decided by the pure `resolveEscapeAction` in `lib/overlays.ts`, with
   the priority order pinned by tests — add new overlays to that chain, not to App.tsx.
 - Destructive or irreversible actions ask first (`window.confirm`), and are called out in code
