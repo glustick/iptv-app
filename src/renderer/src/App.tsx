@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useAppStore } from './store/useAppStore'
+import { resolveEscapeAction } from './lib/overlays'
 import { LoginScreen } from './components/LoginScreen'
 import { TopBar } from './components/TopBar'
 import { Sidebar } from './components/Sidebar'
@@ -81,21 +82,41 @@ function App(): JSX.Element {
         return
       }
       const state = useAppStore.getState()
-      // The update prompt is the outermost overlay (it can even sit over the login screen), so it
-      // answers Escape first. Its own "Later" button is exactly what this does — the prompt is a
-      // question, not a confirmation, and a dismissed one resurfaces on the next check.
-      if (state.updateInfo && !state.updateDismissed) state.dismissUpdatePrompt()
-      else if (state.aboutOpen) state.closeAbout()
-      else if (state.settingsOpen) state.closeSettings()
-      // The My Categories manager is a top-level modal like Settings. Without its own branch here
-      // Escape did nothing to it AND fell through to whichever surface was open behind it — so
-      // pressing Escape in the manager closed the channel preview (or stopped playback) instead.
-      else if (state.customCategoriesOpen) state.closeCustomCategories()
-      else if (state.pinPromptCategoryId) state.cancelPinPrompt()
-      else if (state.openSeries) state.closeSeriesDetail()
-      else if (state.channelBarOpen) state.setChannelBarOpen(false)
-      else if (state.nowPlaying) state.stop()
-      else if (state.previewChannel) state.closeChannelPreview()
+      // Which overlay Escape closes is decided by a pure function in lib/overlays.ts, where the
+      // priority order is pinned by tests — "add an overlay, forget the chain" is exactly how the
+      // update prompt and My Categories both ended up invisible to Escape (and fell through to
+      // closing whatever was behind them). This switch only maps the decision to the store action.
+      switch (resolveEscapeAction(state)) {
+        case 'dismissUpdate':
+          state.dismissUpdatePrompt()
+          break
+        case 'closeAbout':
+          state.closeAbout()
+          break
+        case 'closeSettings':
+          state.closeSettings()
+          break
+        case 'closeCustomCategories':
+          state.closeCustomCategories()
+          break
+        case 'cancelPinPrompt':
+          state.cancelPinPrompt()
+          break
+        case 'closeSeries':
+          state.closeSeriesDetail()
+          break
+        case 'closeChannelBar':
+          state.setChannelBarOpen(false)
+          break
+        case 'stopPlayback':
+          state.stop()
+          break
+        case 'closePreview':
+          state.closeChannelPreview()
+          break
+        case null:
+          break
+      }
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)

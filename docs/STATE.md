@@ -83,8 +83,15 @@ This is the part with the most moving pieces, so it's worth understanding as a w
 
 - Every release gets a detailed `ROADMAP.md` entry — including honest corrections when an earlier
   entry was wrong, and explicit "not verified" notes.
-- Tests are vitest, logic-level (no component rendering). The store's own control flow is covered
-  via prototype-level spies on the client classes; `window.api` is stubbed per-test.
+- Tests are vitest. Mostly logic-level: the store's own control flow is covered via
+  prototype-level spies on the client classes, and `window.api` is stubbed per-test. A few
+  **component-rendering tests** also exist (`.test.tsx`, jsdom via a per-file
+  `// @vitest-environment jsdom` docblock) — **required setup**: vitest here runs on the
+  oxc/rolldown flavour of Vite, where JSX is not transformed unless `oxc: { jsx: 'automatic' }` is
+  set in `vitest.config.mts` (the React plugin does not cover it). Without that, any component
+  import fails at transform time.
+- Overlay/Escape behaviour is decided by the pure `resolveEscapeAction` in `lib/overlays.ts`, with
+  the priority order pinned by tests — add new overlays to that chain, not to App.tsx.
 - Destructive or irreversible actions ask first (`window.confirm`), and are called out in code
   comments with the reasoning.
 
@@ -103,10 +110,11 @@ This is the part with the most moving pieces, so it's worth understanding as a w
 
 ## Known rough edges
 
-- **No UI interaction in this project has been runtime-verified by a human**: the EPG mapping
-  editor, My Categories (drag-and-drop included), the bulk-apply button, the preview's guide-source
-  line and the update prompt's notes are covered by unit tests and the build, but nobody has
-  clicked them in a running window yet. Worth a real pass.
+- **No UI interaction has been runtime-verified by a human yet**: overlays and components now have
+  rendering tests (0.7.82) and the logic is well covered, but nobody has clicked through the EPG
+  mapping editor, My Categories (drag-and-drop especially), the bulk-apply button, the preview's
+  guide-source line or the update prompt's notes in a running window. A real pass is still the
+  highest-value thing outstanding.
 - Bulk-applying suggestions works per source; there is no cross-source "do all sources at once"
   action (each source's mappings are deliberately separate).
 - `docs/` dates from 2026-09-14.
