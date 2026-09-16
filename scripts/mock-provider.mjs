@@ -8,6 +8,7 @@
 //   node scripts/mock-provider.mjs [port]        (default 8123)
 import { build } from 'esbuild'
 import { mkdtempSync } from 'fs'
+import { createRequire } from 'module'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -25,9 +26,14 @@ await build({
 })
 
 const { startMockXtreamServer } = await import(out)
-const server = await startMockXtreamServer({ port })
+// Resolved here (not inside the fixture) because the fixture is bundled by esbuild, and
+// ffmpeg-static locates its binary relative to its own module directory.
+const require = createRequire(import.meta.url)
+const ffmpegPath = require('ffmpeg-static')
+const server = await startMockXtreamServer({ port, ffmpegPath })
 console.log(`[mock-provider] serving a synthetic Xtream provider at ${server.url}`)
 console.log(`[mock-provider] ids: ${JSON.stringify(server.ids)}`)
+console.log('[mock-provider] live playback fixtures will be generated on first request')
 
 // Wrap every request so the log shows what the app fetched.
 const originalEmit = process.emit

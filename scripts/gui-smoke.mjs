@@ -236,6 +236,29 @@ async function main() {
   await pressEscape()
   await check('Escape then closes the manager', '!document.querySelector(".custom-cat-card")', 8000)
 
+  // Playback LAST: starting a stream mounts the player over the UI, so it must not sit in the
+  // middle of the overlay assertions above. This is the check that a Chromium/Electron upgrade can
+  // break while everything else still passes — it requires real decoding, not just a loaded URL.
+  await click('.watch-now-button')
+  await check('a video element appears for playback', '!!document.querySelector("video")', 20000)
+  // A page can hold more than one video element (the preview panel has its own), so this asks
+  // whether ANY of them is decoding and advancing rather than trusting the first one found.
+  const videoState = await evaluate(
+    cdp,
+    `JSON.stringify([...document.querySelectorAll('video')].map((v) => ({
+      cls: v.className, readyState: v.readyState, currentTime: Number(v.currentTime.toFixed(2)),
+      paused: v.paused, ended: v.ended, error: v.error ? v.error.code : null,
+      src: (v.currentSrc || '').split('/').slice(-1)[0]
+    })))`
+  )
+  console.log('video elements:', videoState)
+  await check(
+    'playback decodes and advances',
+    `[...document.querySelectorAll('video')].some((v) => v.readyState >= 2 && v.currentTime > 0.5)`,
+    30000
+  )
+  await check('no playback error is surfaced', '!document.body.innerText.includes("Playback error")', 5000)
+
   const finalText = await text()
   if (process.env.SMOKE_VERBOSE) console.log('--- final UI text ---\n' + finalText)
 

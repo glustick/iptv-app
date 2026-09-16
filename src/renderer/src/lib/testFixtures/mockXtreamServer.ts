@@ -9,8 +9,12 @@
 //
 // Deliberately dependency-free (node:http) and entirely local: it binds 127.0.0.1 on an ephemeral
 // port and is closed by the tests that start it.
+import { execFile } from 'child_process'
+import { mkdtempSync, readFileSync } from 'fs'
 import { createServer } from 'http'
 import type { AddressInfo } from 'net'
+import { tmpdir } from 'os'
+import { join } from 'path'
 
 export interface MockXtreamServer {
   /** Base URL to hand to XtreamClient / the store's proxyBase. */
@@ -108,6 +112,19 @@ export interface MockXtreamServerOptions {
   /** Fixed port for running the fixture as a standalone dev server (tests use the default 0 =
    * ephemeral, so parallel test files can't collide). */
   port?: number
+  /**
+   * Absolute path to an ffmpeg binary. When supplied, the fixture generates a small playable HLS
+   * stream (test pattern + tone) lazily on first request and serves it at the Xtream stream path
+   * `/live/<user>/<pass>/<id>.m3u8` — which is what makes an END-TO-END playback assertion
+   * possible: an Electron/Chromium upgrade can break decoding while every other check still
+   * passes. Left out, stream URLs 404, so tests that don't play anything never pay for media
+   * generation (and never depend on ffmpeg being present).
+   *
+   * The path is passed in rather than imported here because this file gets bundled by esbuild for
+   * the standalone runner, and ffmpeg-static resolves its binary relative to its own module
+   * directory — bundling would break that resolution.
+   */
+  ffmpegPath?: string
 }
 
 export async function startMockXtreamServer(options: MockXtreamServerOptions = {}): Promise<MockXtreamServer> {
@@ -120,6 +137,36 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
     const text = (body: string, type = 'application/xml'): void => {
       res.writeHead(200, { 'content-type': type })
       res.end(body)
+    }
+
+    // Xtream stream paths — the app plays live TV as /live/<user>/<pass>/<id>.m3u8 through its own
+    // proxy, so serving the same shape here lets real playback run against the fixture.
+    if (url.pathname.startsWith('/live/')) {
+      const name = url.pathname.split('/').pop() ?? ''
+      if (!mediaDir) {
+        res.writeHead(404)
+        res.end('playback fixtures not configured')
+        return
+      }
+      void ensureMedia()
+        .then(() => {
+          if (name.endsWith('.m3u8')) {
+            text(readFileSync(join(mediaDir, 'playlist.m3u8'), 'utf8'), 'application/vnd.apple.mpegurl')
+            return
+          }
+          if (name.endsWith('.ts')) {
+            res.writeHead(200, { 'content-type': 'video/mp2t' })
+            res.end(readFileSync(join(mediaDir, name)))
+            return
+          }
+          res.writeHead(404)
+          res.end('not found')
+        })
+        .catch(() => {
+          res.writeHead(500)
+          res.end('media generation failed')
+        })
+      return
     }
 
     if (url.pathname === '/xmltv.php') {
@@ -249,6 +296,32 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
         json([])
     }
   })
+
+  // Lazily generated playable media (see the ffmpegPath option).
+  const mediaDir = options.ffmpegPath ? mkdtempSync(join(tmpdir(), 'mock-hls-')) : null
+  let mediaReady: Promise<void> | null = null
+  const ensureMedia = (): Promise<void> => {
+    if (!mediaReady && options.ffmpegPath && mediaDir) {
+      mediaReady = new Promise<void>((resolve, reject) => {
+        execFile(
+          options.ffmpegPath!,
+          [
+            '-hide_banner', '-loglevel', 'error',
+            '-f', 'lavfi', '-i', 'testsrc=size=640x360:rate=25',
+            '-f', 'lavfi', '-i', 'sine=frequency=440',
+            '-t', '6',
+            '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-g', '25',
+            '-c:a', 'aac',
+            '-hls_time', '2', '-hls_list_size', '0',
+            '-hls_segment_filename', join(mediaDir, 'seg%d.ts'),
+            join(mediaDir, 'playlist.m3u8')
+          ],
+          (err) => (err ? reject(err) : resolve())
+        )
+      })
+    }
+    return mediaReady ?? Promise.resolve()
+  }
 
   await new Promise<void>((resolve) => server.listen(options.port ?? 0, '127.0.0.1', resolve))
   const { port } = server.address() as AddressInfo
