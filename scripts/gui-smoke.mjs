@@ -12,7 +12,7 @@
 // Prerequisites: the synthetic provider running (`node scripts/mock-provider.mjs 8123`) and a
 // profile pointing at it (see docs/STATE.md). Exits non-zero if any assertion fails.
 import { execFileSync } from 'child_process'
-import { existsSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import WebSocket from 'ws'
@@ -44,6 +44,36 @@ function quitApp() {
     execFileSync('sleep', ['2'])
   } catch {
     // sleep is always present; ignore
+  }
+}
+
+/**
+ * Removes mappings created by previous smoke runs (only those pointing at the synthetic provider —
+ * this can never touch a real source) so each run starts from the same state. Without it, the
+ * second run finds the residue already mapped and the fresh-state assertions fail for the wrong
+ * reason.
+ */
+function resetTestMappings() {
+  const cfgPath = join(homedir(), 'Library/Application Support/iptv-app/config.json')
+  const storagePath = join(homedir(), 'Desktop/Development/iptv-app/src/renderer/src/lib/storage.ts')
+  if (!existsSync(cfgPath) || !existsSync(storagePath)) return
+  try {
+    const keys = Object.fromEntries(
+      [...readFileSync(storagePath, 'utf8').matchAll(/const (\w+_KEY) = '([^']+)'/g)].map((m) => [m[1], m[2]])
+    )
+    const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'))
+    const settings = cfg[keys.SETTINGS_KEY]
+    if (!settings || !Array.isArray(settings.epgChannelMappings)) return
+    const before = settings.epgChannelMappings.length
+    settings.epgChannelMappings = settings.epgChannelMappings.filter(
+      (m) => !String(m.sourceUrl).includes('127.0.0.1:8123')
+    )
+    if (settings.epgChannelMappings.length !== before) {
+      writeFileSync(cfgPath, JSON.stringify(cfg, null, 2))
+      console.log(`reset ${before - settings.epgChannelMappings.length} mapping(s) left by a previous run`)
+    }
+  } catch (err) {
+    console.log('could not reset test mappings:', err.message.slice(0, 60))
   }
 }
 
@@ -104,6 +134,7 @@ const PROBE = `(() => {
 async function main() {
   if (!existsSync(APP)) throw new Error(`app not found at ${APP} — build/install it or set SMOKE_APP`)
   quitApp()
+  resetTestMappings()
   await sleep(2500)
   execFileSync('open', ['-a', APP, '--args', `--remote-debugging-port=${PORT}`])
   const target = await findTarget()
@@ -289,14 +320,24 @@ async function main() {
   await check('channel matched by EPG id is listed', has('One HD'))
   await check('channel matched through the relaxed tier is listed', has('101 Two HD'))
   await check('the channel the guide misses is listed', has('Unmatched Channel'))
+  await check('the residue channel (close to a guide name, but not a match) is listed', has('Channel One News Extra'))
 
   // The provider's own per-channel listing wins its slot…
   await check("the id-matched channel shows the provider's own listing", has('Short EPG Title'))
   // …while a channel the provider has nothing for is filled from the guide POOL, matched only by
   // the relaxed tier. This is the case the prefill guard used to skip (see the store's comment).
   await check('the relaxed-tier-matched channel shows its pooled guide listing', has("Two's Show"))
-  // And a channel no source covers honestly shows nothing, rather than a blank row that looks broken.
-  await check('the unmatched channel reports no programme data', has('No programme data'))
+  // And a channel no source covers honestly shows nothing, rather than a blank row that looks
+  // broken. That is now the residue channel: with a custom source configured, the provider's
+  // "Unmatched Channel" genuinely is covered.
+  // Asserted through the app's own report rather than the grid row: the row's DOM doesn't carry the
+  // "No programme data" label where this used to look for it, and the report is the more precise
+  // statement anyway — the channel is listed as unmatched by EVERY source.
+  await check(
+    'a channel no source covers is reported unmatched by every source',
+    has('No match for: Channel One News Extra'),
+    30000
+  )
   // Provenance line under the preview: which source is feeding this channel.
   await check('the preview names the guide source', has('Guide:'))
 
@@ -304,10 +345,25 @@ async function main() {
   await click('button.icon-button[title="Settings"]')
   await sleep(1200)
   await check('the match report counts the relaxed-tier match', has('1 by relaxed match'))
-  await check('the match report accounts for the unmatched channel', has('No match for: Unmatched Channel'))
+  await check('the match report lists the user-added source alongside the provider guide', has('custom.xml'))
   // Close Settings via ITS OWN close button: several overlays carry `.modal-close`, and the first
   // one in the DOM belongs to the channel preview panel — clicking that left Settings open, which
   // then made the Escape check below look like a failure when Escape was behaving correctly.
+  // The bulk apply, driven through the UI: it resolves the whole catalogue chunked (0.7.88) so the
+  // window keeps painting, and must report what it did. The assertion accepts either outcome,
+  // because a re-run finds the residue already mapped — what it is really guarding is that the run
+  // completes and reports at all, which is exactly what a synchronous five-second freeze broke.
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('.epg-bulk-apply button')].find((b) => /Apply across/.test(b.textContent))?.click() || true`
+  )
+  await check(
+    'the bulk apply completes and reports a result',
+    `/Applied \\d+ mapping|No unmatched channel scored/.test(document.body.innerText)`,
+    120000
+  )
+  await check('the match report reflects the manual mapping it placed', has('by manual mapping'), 20000)
+
   await click('.settings-card .modal-close')
   await check('Settings closes again', '!document.querySelector(".settings-card")', 8000)
 

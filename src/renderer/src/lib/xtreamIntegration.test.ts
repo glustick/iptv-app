@@ -51,12 +51,13 @@ describe('Xtream client + EPG pipeline against a synthetic provider', () => {
     expect(categories.map((c) => c.category_name)).toEqual(['Live News'])
 
     const streams = await client.getLiveStreams()
-    expect(streams).toHaveLength(3)
+    // Three guide-covered channels plus the deliberately-unplaceable residue one.
+    expect(streams).toHaveLength(4)
     expect(streams.map((s) => s.stream_id)).toContain(mock.ids.channelMatchedById)
 
     // …and the same via a category filter, which is how the store loads a browsed category.
     const filtered = await client.getLiveStreams(mock.ids.categoryLive)
-    expect(filtered).toHaveLength(3)
+    expect(filtered).toHaveLength(4)
   })
 
   it('decodes per-channel short EPG', async () => {
@@ -71,7 +72,7 @@ describe('Xtream client + EPG pipeline against a synthetic provider', () => {
   it('parses the full guide and matches it tier by tier', async () => {
     const xml = await client.getFullEpgXml()
     const guide = parseXmltv(xml)
-    expect(guide.channels.size).toBe(2)
+    expect(guide.channels.size).toBe(3)
 
     const streams = await client.getLiveStreams()
     const matches = matchXmltvChannels(streams, guide)
@@ -80,8 +81,10 @@ describe('Xtream client + EPG pipeline against a synthetic provider', () => {
     expect(matches.get(mock.ids.channelMatchedById)).toMatchObject({ channelId: 'one.hd', method: 'id' })
     // …matched only through the relaxed tier ("101 Two HD" → "Two")…
     expect(matches.get(mock.ids.channelMatchedByFuzzyName)).toMatchObject({ channelId: 'two.uk', method: 'fuzzy' })
-    // …and honestly unmatched, which is the number the settings report exists to show.
+    // …and honestly unmatched, which is the number the settings report exists to show. The residue
+    // channel is unmatched too: its name is close to a guide entry but not close enough to join.
     expect(matches.has(mock.ids.channelUnmatchedByProviderGuide)).toBe(false)
+    expect(matches.has(mock.ids.channelResidue)).toBe(false)
   })
 
   it('loads both the provider guide and a custom source through the real store, then prefills the grid', async () => {
@@ -107,7 +110,7 @@ describe('Xtream client + EPG pipeline against a synthetic provider', () => {
     expect(state.epgSourceMatchStats[0]).toMatchObject({
       source: 'Provider guide (xmltv.php)',
       available: true,
-      loadedChannels: 3,
+      loadedChannels: 4,
       matched: 2,
       byId: 1,
       byFuzzy: 1

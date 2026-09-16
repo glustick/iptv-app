@@ -1076,6 +1076,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   applySuggestedMappings: async (sourceUrl, threshold) => {
+    // The full catalogue is fetched lazily (the mapping editor and My Categories both trigger it),
+    // so a bulk apply can be the first thing a user asks for — in which case it used to find no
+    // catalogue, plan nothing, and report the misleading "no channel scored X%" rather than doing
+    // the work. Load it here instead of depending on which screen was visited first.
+    if (!get().numericChannelCatalog) await get().ensureChannelCatalog()
     const { epgSources, epgSourceLabels, numericChannelCatalog, settings } = get()
     const sourceIndex = epgSourceLabels.indexOf(sourceUrl)
     const guide = sourceIndex >= 0 ? epgSources[sourceIndex] : undefined
@@ -1112,6 +1117,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   applySuggestedMappingsAcrossSources: async (threshold) => {
+    // Same lazy-catalogue trap as the per-source action above.
+    if (!get().numericChannelCatalog) await get().ensureChannelCatalog()
     const { epgSources, epgSourceLabels, numericChannelCatalog, settings } = get()
     const catalog = numericChannelCatalog ?? []
     const perSource: Array<{ source: string; applied: number }> = []

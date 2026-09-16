@@ -26,6 +26,7 @@ export interface MockXtreamServer {
     channelMatchedByFuzzyName: number
     channelUnmatchedByProviderGuide: number
     channelOnlyInCustomSource: string
+    channelResidue: number
     movieId: number
     seriesId: number
   }
@@ -60,9 +61,11 @@ const PROVIDER_GUIDE = `<?xml version="1.0" encoding="UTF-8"?>
 <tv>
   <channel id="one.hd"><display-name>One HD</display-name></channel>
   <channel id="two.uk"><display-name>Two</display-name></channel>
+  <channel id="one.news"><display-name>Channel One News</display-name></channel>
   <programme start="${xmltvTime(PROGRAMME_START)}" stop="${xmltvTime(PROGRAMME_END)}" channel="one.hd"><title>One's Show</title></programme>
   <programme start="${xmltvTime(NEXT_START)}" stop="${xmltvTime(NEXT_END)}" channel="one.hd"><title>One's Next</title></programme>
   <programme start="${xmltvTime(PROGRAMME_START)}" stop="${xmltvTime(PROGRAMME_END)}" channel="two.uk"><title>Two's Show</title></programme>
+  <programme start="${xmltvTime(PROGRAMME_START)}" stop="${xmltvTime(PROGRAMME_END)}" channel="one.news"><title>News at One</title></programme>
 </tv>`
 
 // A user-added third-party guide, reachable through the app's `/__fetch/` passthrough. It is the
@@ -71,6 +74,8 @@ const CUSTOM_GUIDE = `<?xml version="1.0" encoding="UTF-8"?>
 <tv>
   <channel id="custom.missing"><display-name>Unmatched Channel</display-name></channel>
   <programme start="${xmltvTime(PROGRAMME_START)}" stop="${xmltvTime(PROGRAMME_END)}" channel="custom.missing"><title>Found Only Here</title></programme>
+  <channel id="custom.news"><display-name>Channel One News</display-name></channel>
+  <programme start="${xmltvTime(PROGRAMME_START)}" stop="${xmltvTime(PROGRAMME_END)}" channel="custom.news"><title>News Elsewhere</title></programme>
 </tv>`
 
 const ids = {
@@ -79,12 +84,18 @@ const ids = {
   channelMatchedByFuzzyName: 102,
   channelUnmatchedByProviderGuide: 103,
   channelOnlyInCustomSource: 'custom.missing',
+  channelResidue: 105,
   movieId: 201,
   seriesId: 301
 }
 
 const LIVE_STREAMS = [
   live(ids.channelMatchedById, 'One HD', 'one.hd', '10'),
+  // Residue by construction: "Channel One News Extra" shares two of its three loose tokens with the
+  // guide's "Channel One News", so it is NOT an exact or relaxed match — but it scores 0.8, which is
+  // what the bulk-suggestion planner exists to place. Without a channel like this the bulk apply
+  // has nothing to do and any check of it would be vacuous.
+  live(ids.channelResidue, 'Channel One News Extra', null, '10'),
   // No epg_channel_id, and a name carrying a channel-list position and a quality tag: only the
   // relaxed tier can join this one to the guide's "Two" — which is exactly what it's here to prove.
   live(ids.channelMatchedByFuzzyName, '101 Two HD', null, '10'),
@@ -171,6 +182,14 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
           res.writeHead(500)
           res.end('media generation failed')
         })
+      return
+    }
+
+    // The user-added guide. The app fetches custom sources through its own proxy's /__fetch/
+    // passthrough, which means the fixture sees a request for the *registered* URL's path — so any
+    // path mentioning "custom" serves that guide, the same rule the /__fetch/ branch below uses.
+    if (url.pathname.includes('custom')) {
+      text(CUSTOM_GUIDE)
       return
     }
 
