@@ -98,7 +98,17 @@ This is the part with the most moving pieces, so it's worth understanding as a w
   `player_api.php`/`xmltv.php`/`__fetch` subset the app uses) and `lib/xtreamIntegration.test.ts`
   drives the real client and store against it over a real socket with nothing mocked — that is the
   place to verify EPG pipeline behaviour without the real provider. Still missing: driving the GUI
-  itself (needs the app launched + CDP), and playable stream fixtures for playback tests.
+  itself (needs the app launched + CDP) and playable stream fixtures for playback tests — and note
+- **The GUI cannot be launched on this development machine at all (measured 2026-09-16).** Any Electron
+  binary — even a freshly installed, correctly ad-hoc-signed one — is SIGKILLed immediately on launch
+  here, with no crash report and no Gatekeeper prompt, and it happens outside the tool sandbox too
+  (verified via the gateway host). Re-signing after clearing xattrs produced a valid signature and
+  changed nothing, so it is not a signature problem: it is the same endpoint-security behaviour this
+  project already records for the packaged app, now confirmed for the dev runtime. Consequences:
+  `npm run dev` has never worked on this machine, the app is built here but run elsewhere, and **no
+  GUI-automation plan can be validated locally** — a CDP harness would have to run where the app can
+  actually start. (Side effect found while measuring: `node_modules/electron/path.txt` was missing,
+  which stops `electron` resolving its binary at all; restoring it is needed on a fresh install here.)
 - Destructive or irreversible actions ask first (`window.confirm`), and are called out in code
   comments with the reasoning.
 
