@@ -132,7 +132,18 @@ This is the part with the most moving pieces, so it's worth understanding as a w
   pipeline already implements and which activates the moment the seven secrets exist. Until then the app
   runs only on a machine that tolerates unsigned builds (the Windows box), and any local GUI work
   (including a CDP harness) is blocked for the same reason. Do not attempt to allow-list or override
-  this — the correct fix is signing, not an exception.
+  this: macOS offers **no per-app exception** for a malware-class detection (XProtect is YARA-rule
+  based and non-overridable, and Gatekeeper's "Open Anyway" does not apply since the download carried
+  no quarantine flag). The realistic options are: (a) **run it where unsigned builds are tolerated**
+  (the Windows box) — free, and what happens today; (b) **sign + notarize** — the only route that
+  makes it run here *and* fixes it for every macOS user, at the cost of an Apple Developer account;
+  (c) **find the flagged file and replace it** — XProtect flags files, not apps, and this bundle
+  carries two classic false-positive magnets (the Electron 31.7.7 framework, and ffmpeg-static's
+  ffmpeg binary), so if the detection names one of those, upgrading/replacing that component is free
+  (and bumping Electron is good hygiene anyway) — needs the dialog's exact wording or
+  `sudo log show --last 2h --predicate 'eventMessage CONTAINS "Detected"'` to confirm; (d) **run the
+  published AppImage in a Linux VM**, which sidesteps macOS code-signing entirely without weakening
+  anything. Do not disable or weaken system protections for this.
 - Destructive or irreversible actions ask first (`window.confirm`), and are called out in code
   comments with the reasoning.
 
