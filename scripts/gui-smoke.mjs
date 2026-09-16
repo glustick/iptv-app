@@ -23,11 +23,27 @@ const probe = process.argv.includes('--probe')
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+/**
+ * Quits any running instance before launching a fresh one. The graceful path is tried first but
+ * BOUNDED — AppleScript's `quit` blocks forever if the app has a modal open (an update prompt, for
+ * instance), which hung a whole run once — and a forced kill follows regardless, since every run
+ * launches a new instance anyway.
+ */
 function quitApp() {
   try {
-    execFileSync('osascript', ['-e', 'quit app "AllisonIPTV"'], { stdio: 'ignore' })
+    execFileSync('osascript', ['-e', 'quit app "AllisonIPTV"'], { stdio: 'ignore', timeout: 8000 })
   } catch {
-    // not running — fine
+    // not running, unresponsive, or showing a modal — the force-quit below covers all three
+  }
+  try {
+    execFileSync('pkill', ['-x', 'AllisonIPTV'], { stdio: 'ignore', timeout: 5000 })
+  } catch {
+    // nothing to kill
+  }
+  try {
+    execFileSync('sleep', ['2'])
+  } catch {
+    // sleep is always present; ignore
   }
 }
 
@@ -345,6 +361,23 @@ async function main() {
     30000
   )
   await check('no playback error is surfaced', '!document.body.innerText.includes("Playback error")', 5000)
+
+  // The E-AC-3 ("Dolby") channel: the app should detect the unsupported audio and engage its ffmpeg
+  // audio-fix fallback, which then has to end in actual playback. That whole path is invisible to
+  // an AAC-only fixture, and it is the feature most exposed to a Chromium upgrade.
+  await pressEscape() // leave the player
+  await sleep(1200)
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('button.epg-row-channel')].find((b) => b.textContent.includes('Unmatched Channel'))?.click() || true`
+  )
+  await sleep(1500)
+  await click('.watch-now-button')
+  await check(
+    'the E-AC-3 channel still ends up playing (audio-fix fallback)',
+    `[...document.querySelectorAll('video')].some((v) => v.classList.contains('player-video') && v.readyState >= 2 && v.currentTime > 0.5)`,
+    90000
+  )
 
   const finalText = await text()
   if (process.env.SMOKE_VERBOSE) console.log('--- final UI text ---\n' + finalText)

@@ -99,7 +99,7 @@ This is the part with the most moving pieces, so it's worth understanding as a w
   screen capture is TCC-blocked here). Use `--probe`, `--probe-settings` or `--eval "<expr>"` to
   inspect the live UI. Requires the mock provider (`node scripts/mock-provider.mjs`). It found the
   prefill-ordering bug fixed in 0.7.86 — the argument for running it after any EPG/UI change — and
-  passes 18/18 against the released 0.7.86 build, covering: connect via the saved profile, the
+  passes 19/19 against the released build, covering: connect via the saved profile, the
   sidebar and grid rendering the mock's catalogue, the provider's per-channel listing winning its
   slot, a relaxed-tier-matched channel being filled from the guide pool, an unmatched channel
   honestly reporting "No programme data", the preview's provenance line, the EPG match report's
@@ -112,7 +112,10 @@ This is the part with the most moving pieces, so it's worth understanding as a w
   addressed by their own containers (`.settings-card .modal-close`, not `.modal-close`, which the
   preview panel also carries); and a page can hold more than one `<video>` (the preview panel has
   its own), so playback assertions ask whether ANY of them is decoding rather than trusting the
-  first one found.
+  first one found; and quit the app with a BOUNDED graceful attempt followed by a forced kill —
+  AppleScript's `quit` blocks forever when the app has a modal open (an update prompt did exactly
+  that and hung a whole run). The fixture also produces an E-AC-3 ("Dolby") variant for one
+  channel, so the audio-fix fallback is covered too.
 - **A synthetic Xtream provider exists** (`lib/testFixtures/mockXtreamServer.ts`, serving the
   `player_api.php`/`xmltv.php`/`__fetch` subset the app uses) and `lib/xtreamIntegration.test.ts`
   drives the real client and store against it over a real socket with nothing mocked — that is the

@@ -148,10 +148,15 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
         res.end('playback fixtures not configured')
         return
       }
-      void ensureMedia()
+      const variant = name.endsWith('.m3u8')
+        ? variantForStreamId(name.replace(/\.m3u8$/, ''))
+        : name.startsWith('dolby')
+          ? 'dolby'
+          : 'aac'
+      void ensureMedia(variant)
         .then(() => {
           if (name.endsWith('.m3u8')) {
-            text(readFileSync(join(mediaDir, 'playlist.m3u8'), 'utf8'), 'application/vnd.apple.mpegurl')
+            text(readFileSync(join(mediaDir, `${variant}.m3u8`), 'utf8'), 'application/vnd.apple.mpegurl')
             return
           }
           if (name.endsWith('.ts')) {
@@ -297,12 +302,17 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
     }
   })
 
-  // Lazily generated playable media (see the ffmpegPath option).
+  // Lazily generated playable media (see the ffmpegPath option): two streams, because the app has
+  // two playback paths worth exercising — AAC (normal) and E-AC-3, the "Dolby" audio the app's
+  // ffmpeg audio-fix fallback exists for. Segment names are prefixed per variant so both live in
+  // one directory and can be served by name.
   const mediaDir = options.ffmpegPath ? mkdtempSync(join(tmpdir(), 'mock-hls-')) : null
-  let mediaReady: Promise<void> | null = null
-  const ensureMedia = (): Promise<void> => {
-    if (!mediaReady && options.ffmpegPath && mediaDir) {
-      mediaReady = new Promise<void>((resolve, reject) => {
+  const mediaReady = new Map<string, Promise<void>>()
+  const ensureMedia = (variant: 'aac' | 'dolby'): Promise<void> => {
+    if (!options.ffmpegPath || !mediaDir) return Promise.resolve()
+    let pending = mediaReady.get(variant)
+    if (!pending) {
+      pending = new Promise<void>((resolve, reject) => {
         execFile(
           options.ffmpegPath!,
           [
@@ -311,17 +321,24 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
             '-f', 'lavfi', '-i', 'sine=frequency=440',
             '-t', '6',
             '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-g', '25',
-            '-c:a', 'aac',
+            '-c:a', variant === 'dolby' ? 'eac3' : 'aac',
+            ...(variant === 'dolby' ? ['-b:a', '192k'] : []),
             '-hls_time', '2', '-hls_list_size', '0',
-            '-hls_segment_filename', join(mediaDir, 'seg%d.ts'),
-            join(mediaDir, 'playlist.m3u8')
+            '-hls_segment_filename', join(mediaDir, `${variant}%d.ts`),
+            join(mediaDir, `${variant}.m3u8`)
           ],
           (err) => (err ? reject(err) : resolve())
         )
       })
+      mediaReady.set(variant, pending)
     }
-    return mediaReady ?? Promise.resolve()
+    return pending
   }
+
+  /** Which variant a stream id plays — the unmatched-channel id carries the Dolby audio, so the
+   * audio-fix fallback can be exercised without disturbing the channels the other checks use. */
+  const variantForStreamId = (streamId: string): 'aac' | 'dolby' =>
+    streamId === String(ids.channelUnmatchedByProviderGuide) ? 'dolby' : 'aac' 
 
   await new Promise<void>((resolve) => server.listen(options.port ?? 0, '127.0.0.1', resolve))
   const { port } = server.address() as AddressInfo

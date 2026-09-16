@@ -583,8 +583,8 @@ export function SettingsPage(): JSX.Element | null {
           <h3>EPG sources</h3>
           <p className="settings-hint">
             Providers only send listings for roughly the rest of today per channel. Adding a full
-            guide (any XMLTV URL, plain or .xml.gz — e.g. one of iptv-org&apos;s country feeds at
-            iptv-org.github.io/epg) fills in later days and channels your provider doesn&apos;t
+            guide (any XMLTV URL, plain or .xml.gz — the community &quot;iptv-org/epg&quot; project on GitHub is a
+            common source of them; its old iptv-org.github.io/epg address no longer serves guides) fills in later days and channels your provider doesn&apos;t
             cover. Plain-text or PDF schedules can&apos;t be parsed — only the XMLTV form, however
             the file is named. Channels are matched by EPG id first, then by name, then by a
             relaxed match that ignores HD/SD tags, leading channel numbers, country prefixes
