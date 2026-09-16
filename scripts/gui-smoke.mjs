@@ -333,11 +333,6 @@ async function main() {
   // Asserted through the app's own report rather than the grid row: the row's DOM doesn't carry the
   // "No programme data" label where this used to look for it, and the report is the more precise
   // statement anyway — the channel is listed as unmatched by EVERY source.
-  await check(
-    'a channel no source covers is reported unmatched by every source',
-    has('No match for: Channel One News Extra'),
-    30000
-  )
   // Provenance line under the preview: which source is feeding this channel.
   await check('the preview names the guide source', has('Guide:'))
 
@@ -345,6 +340,14 @@ async function main() {
   await click('button.icon-button[title="Settings"]')
   await sleep(1200)
   await check('the match report counts the relaxed-tier match', has('1 by relaxed match'))
+  // The report lists unmatched channels per source; the residue channel must appear in one of them
+  // (position-independent: the row and the ordering both vary). This lives here, inside Settings,
+  // because that is where the report is rendered — asserting it earlier looked at the grid instead.
+  await check(
+    'a channel no source covers is reported unmatched by at least one source',
+    '/No match for:[^|]*Channel One News Extra/.test(document.body.innerText)',
+    30000
+  )
   await check('the match report lists the user-added source alongside the provider guide', has('custom.xml'))
   // Close Settings via ITS OWN close button: several overlays carry `.modal-close`, and the first
   // one in the DOM belongs to the channel preview panel — clicking that left Settings open, which
