@@ -114,7 +114,13 @@ This is the part with the most moving pieces, so it's worth understanding as a w
   **Do not "fix" a vendored Electron by re-signing it** — an earlier attempt at exactly that is the most
   likely trigger for the malware dialog, and modifying a third-party binary inside `node_modules` is the
   wrong move regardless (the pristine copy and the manifests were restored; the repo itself was never
-  changed by it).
+  changed by it). Resolution in place (2026-09-16): the `electron` *package* stays installed (its
+  `electron.d.ts` is what `src/main` and `src/preload` typecheck against — removing the package
+  breaks `npm run typecheck`), but its **`dist/` bundle is deliberately absent**, so there is no
+  Electron binary on disk and nothing for the AV to act on. `npm run dev` fails accordingly (it never
+  worked here); tests, typecheck, lint and `electron-vite build` are unaffected. A plain
+  `npm install` on this machine will re-download the binary and may trip the same dialog — if that
+  happens, delete `node_modules/electron/dist` again rather than touching any security setting.
 - Destructive or irreversible actions ask first (`window.confirm`), and are called out in code
   comments with the reasoning.
 
