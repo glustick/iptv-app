@@ -11,14 +11,19 @@
 //
 // Prerequisites: the synthetic provider running (`node scripts/mock-provider.mjs 8123`) and a
 // profile pointing at it (see docs/STATE.md). Exits non-zero if any assertion fails.
-import { execFileSync } from 'child_process'
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { execFileSync, spawn } from 'child_process'
+import { existsSync, openSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
+import { homedir, tmpdir } from 'os'
 import WebSocket from 'ws'
 
 const PORT = 9222
 const APP = process.env.SMOKE_APP ?? join(homedir(), 'Applications/AllisonIPTV.app')
+// The app's own stdout/stderr, captured from the launch below. This is the only place the main
+// process's ffmpeg commands and their stderr appear — `open` discards both — and it is what makes a
+// silent transcode failure (ffmpeg refusing a subtitle mapping, say, which the app then retries
+// without subtitles) diagnosable instead of invisible.
+const APP_LOG = process.env.SMOKE_APP_LOG ?? join(tmpdir(), 'allisoniptv-smoke-app.log')
 const probe = process.argv.includes('--probe')
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -136,7 +141,13 @@ async function main() {
   quitApp()
   resetTestMappings()
   await sleep(2500)
-  execFileSync('open', ['-a', APP, '--args', `--remote-debugging-port=${PORT}`])
+  // Launched as the bundled binary directly rather than through `open`, so stdout/stderr can be
+  // captured (see APP_LOG). Same executable `open` would run, same arguments.
+  const appLog = openSync(APP_LOG, 'w')
+  spawn(join(APP, 'Contents/MacOS/AllisonIPTV'), [`--remote-debugging-port=${PORT}`], {
+    detached: true,
+    stdio: ['ignore', appLog, appLog]
+  }).unref()
   const target = await findTarget()
   const cdp = connect(target.webSocketDebuggerUrl)
   await cdp.ready
@@ -398,6 +409,106 @@ async function main() {
   await pressEscape()
   await check('Escape then closes the manager', '!document.querySelector(".custom-cat-card")', 8000)
 
+  // --- VOD (before any live playback on purpose) ---------------------------------------------
+  // Sequenced ahead of the live sections below because switching to Movies after a live channel has
+  // been through the audio-fix fallback left the VOD catalogue fetch hanging on this harness's
+  // mock provider — a fresh, un-transcoded session fetches it in seconds. A fixture artefact or a
+  // real single-connection symptom, this ordering keeps the check honest either way.
+  // --- VOD: the file's own track probe, the picker, and the subtitle transcode rendition --------
+  // The fixture movie carries a real mov_text subtitle track (with a language tag, which is what
+  // the picker displays). VOD plays as a plain video.src assignment, so none of this is visible to
+  // hls.js: the app probes the file's own streams with ffmpeg on load, offers what it finds, and —
+  // only once one is chosen — restarts playback from an ffmpeg remux that carries the subtitle as a
+  // WebVTT rendition. Previously nothing in this fixture had a subtitle track at all, so the probe,
+  // the picker and that rendition were entirely unexercised by machine. All three steps asserted.
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('button.tab')].find((b) => b.textContent.trim() === 'Movies')?.click() || true`
+  )
+  // Switching tabs kicks off a VOD category + catalogue fetch, so the grid is genuinely empty for
+  // a few seconds — clicking immediately (as an earlier version did) hits nothing and every later
+  // assertion fails for that one reason. Poll for the card instead.
+  await check(
+    'the Movies tab lists the fixture movie',
+    `[...document.querySelectorAll('.channel-item--grid')].some((b) => b.textContent.includes('A Movie'))`,
+    45000
+  )
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('.channel-item--grid')].find((b) => b.textContent.includes('A Movie'))?.click() || true`
+  )
+  // Diagnostic (kept: it prints one line and is the only way to tell an empty catalogue from a
+  // failed tab switch when this section ever regresses).
+  console.log(
+    'movie section state:',
+    await evaluate(
+      cdp,
+      `JSON.stringify({
+        tab: document.querySelector('button.tab.active')?.textContent,
+        cards: document.querySelectorAll('.channel-item--grid').length,
+        empty: document.querySelector('.empty-state')?.textContent ?? null,
+        error: document.querySelector('.banner-error, .error-message, [role=alert]')?.textContent?.slice(0, 90) ?? null,
+        text: document.body.innerText.replace(/\\n+/g, ' | ').slice(0, 180)
+      })`
+    )
+  )
+  await check('the VOD player opens for a movie', `!!document.querySelector('video.player-video')`, 20000)
+
+  await check(
+    "the subtitle probe finds the file's own track and offers it",
+    `(() => {
+      // Two dropdowns can carry this exact label and class: hls.js's rendition picker (present once
+      // the *current* source advertises renditions) and VOD's ffmpeg-level picker (which restarts
+      // the transcode to change language). They render in that order, so take the last one.
+      const all = [...document.querySelectorAll('label[title="Subtitles"] select')]
+      const s = all[all.length - 1]
+      return !!s && [...s.options].some((o) => /eng/i.test(o.textContent) && !o.disabled)
+    })()`,
+    60000
+  )
+
+  // Pick it through the real control (React's own change handling, not a store call).
+  const picked = await evaluate(
+    cdp,
+    `(() => {
+      const all = [...document.querySelectorAll('label[title="Subtitles"] select')]
+      const s = all[all.length - 1]
+      const o = s && [...s.options].find((x) => !x.disabled && x.value !== '-1')
+      if (!o) return 'none'
+      s.value = o.value
+      s.dispatchEvent(new Event('change', { bubbles: true }))
+      return o.textContent
+    })()`
+  )
+  if (process.env.SMOKE_VERBOSE) console.log('subtitle option chosen:', picked)
+
+  await check(
+    'choosing a subtitle ends in a real subtitle rendition on the playing element',
+    `(() => { const v = document.querySelector('video.player-video'); return !!v && v.textTracks.length > 0 })()`,
+    150000
+  )
+  await check(
+    'playback still decodes with the subtitle track selected',
+    `(() => { const v = document.querySelector('video.player-video'); return !!v && v.readyState >= 2 && v.currentTime > 0.5 })()`,
+    90000
+  )
+  await check(
+    'no playback error is surfaced after the subtitle switch',
+    '!document.body.innerText.includes("Playback error")',
+    5000
+  )
+
+  // Leave VOD before the live checks: starting a second stream on top of an active transcode is
+  // exactly the contention the app's own comments warn about, and this run isn't testing that.
+  await pressEscape()
+  await sleep(1500)
+  // ...and go back to Live TV, which every check below assumes.
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('button.tab')].find((b) => b.textContent.trim() === 'Live TV')?.click() || true`
+  )
+  await sleep(4000)
+
   // Playback LAST: starting a stream mounts the player over the UI, so it must not sit in the
   // middle of the overlay assertions above. This is the check that a Chromium/Electron upgrade can
   // break while everything else still passes — it requires real decoding, not just a loaded URL.
@@ -437,6 +548,7 @@ async function main() {
     `[...document.querySelectorAll('video')].some((v) => v.classList.contains('player-video') && v.readyState >= 2 && v.currentTime > 0.5)`,
     90000
   )
+
 
   const finalText = await text()
   if (process.env.SMOKE_VERBOSE) console.log('--- final UI text ---\n' + finalText)

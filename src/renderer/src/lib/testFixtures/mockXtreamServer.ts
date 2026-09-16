@@ -10,7 +10,7 @@
 // Deliberately dependency-free (node:http) and entirely local: it binds 127.0.0.1 on an ephemeral
 // port and is closed by the tests that start it.
 import { execFile } from 'child_process'
-import { mkdtempSync, readFileSync } from 'fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'fs'
 import { createServer } from 'http'
 import type { AddressInfo } from 'net'
 import { tmpdir } from 'os'
@@ -185,6 +185,51 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
       return
     }
 
+    // VOD (movie) media at the Xtream VOD path. The app plays VOD as a plain video.src assignment
+    // and probes the file's own streams with ffmpeg before offering audio/subtitle pickers, so an
+    // MP4 that actually carries a subtitle track is what makes that half of the path verifiable —
+    // nothing here previously had one, which left the subtitle probe, the picker and the
+    // transcode-with-subtitles rendition entirely unexercised by machine.
+    if (url.pathname.startsWith('/movie/') || url.pathname.startsWith('/series/')) {
+      if (!mediaDir) {
+        res.writeHead(404)
+        res.end('playback fixtures not configured')
+        return
+      }
+      void ensureMovie()
+        .then(() => {
+          const file = readFileSync(join(mediaDir, 'movie.mp4'))
+          // Chromium asks for byte ranges on a progressive MP4 (and for seeking); answering 206
+          // with the requested slice keeps duration/seek behaving like a real origin. A plain 200
+          // body also plays, but then the element can't seek at all.
+          const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? '')
+          if (range) {
+            const start = range[1] ? Number(range[1]) : 0
+            const end = range[2] ? Number(range[2]) : file.length - 1
+            const slice = file.subarray(start, Math.min(end, file.length - 1) + 1)
+            res.writeHead(206, {
+              'content-type': 'video/mp4',
+              'content-range': `bytes ${start}-${start + slice.length - 1}/${file.length}`,
+              'content-length': String(slice.length),
+              'accept-ranges': 'bytes'
+            })
+            res.end(slice)
+            return
+          }
+          res.writeHead(200, {
+            'content-type': 'video/mp4',
+            'content-length': String(file.length),
+            'accept-ranges': 'bytes'
+          })
+          res.end(file)
+        })
+        .catch(() => {
+          res.writeHead(500)
+          res.end('media generation failed')
+        })
+      return
+    }
+
     // The user-added guide. The app fetches custom sources through its own proxy's /__fetch/
     // passthrough, which means the fixture sees a request for the *registered* URL's path — so any
     // path mentioning "custom" serves that guide, the same rule the /__fetch/ branch below uses.
@@ -327,6 +372,7 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
   // one directory and can be served by name.
   const mediaDir = options.ffmpegPath ? mkdtempSync(join(tmpdir(), 'mock-hls-')) : null
   const mediaReady = new Map<string, Promise<void>>()
+  let movieReady: Promise<void> | null = null
   const ensureMedia = (variant: 'aac' | 'dolby'): Promise<void> => {
     if (!options.ffmpegPath || !mediaDir) return Promise.resolve()
     let pending = mediaReady.get(variant)
@@ -350,6 +396,42 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
         )
       })
       mediaReady.set(variant, pending)
+    }
+    return pending
+  }
+
+  // VOD media: one MP4 carrying video, AAC audio and a single text (mov_text) subtitle track with
+  // an English language tag — the language is what the app's picker actually displays, so tagging
+  // it makes the rendered option assertable. mov_text is deliberately a member of the app's own
+  // TEXT_SUBTITLE_CODECS: a bitmap track (PGS/VobSub) can't be converted to WebVTT at all and
+  // crashes the whole transcode, which is a different, separately-handled code path.
+  const ensureMovie = (): Promise<void> => {
+    if (!options.ffmpegPath || !mediaDir) return Promise.resolve()
+    let pending = movieReady
+    if (!pending) {
+      const srtPath = join(mediaDir, 'movie.srt')
+      writeFileSync(srtPath, '1\n00:00:00,500 --> 00:00:05,500\nSubtitle fixture line.\n')
+      pending = new Promise<void>((resolve, reject) => {
+        execFile(
+          options.ffmpegPath!,
+          [
+            '-hide_banner', '-loglevel', 'error',
+            '-y',
+            '-f', 'lavfi', '-i', 'testsrc=size=640x360:rate=25',
+            '-f', 'lavfi', '-i', 'sine=frequency=440',
+            '-i', srtPath,
+            '-t', '6',
+            '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+            '-c:a', 'aac',
+            '-c:s', 'mov_text',
+            '-metadata:s:s:0', 'language=eng',
+            '-movflags', '+faststart',
+            join(mediaDir, 'movie.mp4')
+          ],
+          (err) => (err ? reject(err) : resolve())
+        )
+      })
+      movieReady = pending
     }
     return pending
   }

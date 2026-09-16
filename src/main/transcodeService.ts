@@ -462,6 +462,32 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
         if (subtitleStreamIndex >= 0 && SUBTITLE_CODEC_INCOMPATIBLE_PATTERN.test(session.stderrTail.join('\n'))) {
           return startTranscode(sourceUrl, isVod, sessionId, -1, audioStreamIndex)
         }
+        // A fast-enough transcode can also finish before this loop has *observed* the playlist at
+        // all, which leaves videoReadyAt null even though ffmpeg wrote everything it was asked for
+        // and exited cleanly. Confirmed with a short fixture title (6 seconds, remuxed at ~80x
+        // realtime): ffmpeg produced playlist.m3u8, produced the subtitle rendition, and printed its
+        // normal summary — and the app still reported "ffmpeg exited before producing output". A
+        // user picking a subtitle on a short title therefore got the original stream back with no
+        // subtitles and a failure message. Re-checking the disk here, rather than only trusting the
+        // in-loop flag, is what actually answers the question being asked; everything below is the
+        // same success path the loop's own observations take.
+        if (existsSync(subtitlePlaylistFile)) {
+          await writeFile(
+            masterPlaylistFile,
+            [
+              '#EXTM3U',
+              '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="Subtitles",DEFAULT=YES,AUTOSELECT=YES,URI="playlist_vtt.m3u8"',
+              '#EXT-X-STREAM-INF:BANDWIDTH=5000000,SUBTITLES="subs"',
+              'playlist.m3u8',
+              ''
+            ].join('\n'),
+            'utf8'
+          )
+          return { sessionId, playlistPath: masterPlaylistFile, subtitleTracks: session.subtitleTracks }
+        }
+        if (existsSync(playlistFile)) {
+          return { sessionId, playlistPath: playlistFile, subtitleTracks: session.subtitleTracks }
+        }
         throw new Error(`ffmpeg exited before producing output: ${session.stderrTail.slice(-10).join('\n')}`)
       }
       await sleep(pollIntervalMs)
