@@ -204,3 +204,23 @@ This is the part with the most moving pieces, so it's worth understanding as a w
 - Bulk-applying suggestions works per source; there is no cross-source "do all sources at once"
   action (each source's mappings are deliberately separate).
 - `docs/` dates from 2026-09-14.
+
+## Open: VOD subtitle rendition is produced but never reaches playback
+
+Found 2026-09-16 by the new GUI smoke harness (fixture movie + subtitle checks, added in 0.7.90).
+
+**Established:** the fixture movie carries a real `mov_text` (eng) track; the app's probe finds it and
+offers it in the picker; choosing it starts a transcode whose ffmpeg **does** map the subtitle —
+`Subtitle: webvtt (default)` in its output summary and `playlist_vtt.m3u8.tmp` written — yet playback
+ends with `video.textTracks.length === 0` on the original stream, and the app logs
+`ffmpeg exited before producing output` for that transcode.
+
+**Not established:** why the app concludes failure. The 0.7.90 fix (re-check the disk when ffmpeg has
+already exited) did not change the outcome, so both playlist files are truly absent at the throw —
+which is consistent with the session directory having already been removed by a stop, not with a
+transcode that never produced output. Confirming it needs one line of logging at the throw.
+
+**Also noted:** in this scenario the player renders two controls labelled "Subtitles" (hls.js renditions
+vs the ffmpeg-level language picker); the harness had to be taught to take the last one. And the
+E-AC-3 playback assertion passes even when the fallback fails, because the original stream still
+decodes video.
