@@ -150,8 +150,19 @@ async function main() {
   }
 
   const expectations = []
-  const check = async (label, expression) => {
-    const value = await evaluate(cdp, expression)
+  /**
+   * Assertions poll rather than fire once: several of these surfaces fill in asynchronously — the
+   * guide pool in particular arrives only after a multi-megabyte download completes, well after
+   * the window first renders — so a single-shot check reports flakiness, not behaviour.
+   */
+  const check = async (label, expression, timeoutMs = 20000) => {
+    const deadline = Date.now() + timeoutMs
+    let value = false
+    while (Date.now() < deadline) {
+      value = await evaluate(cdp, expression)
+      if (value) break
+      await sleep(500)
+    }
     expectations.push({ label, ok: !!value })
     console.log(`${value ? 'PASS' : 'FAIL'}  ${label}`)
   }
@@ -191,8 +202,11 @@ async function main() {
   await sleep(1200)
   await check('the match report counts the relaxed-tier match', has('1 by relaxed match'))
   await check('the match report accounts for the unmatched channel', has('No match for: Unmatched Channel'))
-  await sleep(200)
-  await click('.modal-close')
+  // Close Settings via ITS OWN close button: several overlays carry `.modal-close`, and the first
+  // one in the DOM belongs to the channel preview panel — clicking that left Settings open, which
+  // then made the Escape check below look like a failure when Escape was behaving correctly.
+  await click('.settings-card .modal-close')
+  await check('Settings closes again', '!document.querySelector(".settings-card")', 8000)
 
   // The My Categories manager, and — since both were real bugs once — that Escape closes it and
   // that it opens on the tab for the section it was launched from.
@@ -200,9 +214,27 @@ async function main() {
   await sleep(800)
   await check('the My Categories manager opens', has('My Categories'))
   await check('the manager offers a tab per catalogue kind', has('Live TV') && has('Movies') && has('Series'))
+  // Escape closes ONE layer, outermost first — the update prompt outranks the manager, and when
+  // this run installs a build older than the latest release (which happens whenever a release has
+  // just shipped) that prompt is legitimately open. Assert the whole ordering rather than assuming
+  // the manager is the top layer.
+  const openLayers = await evaluate(
+    cdp,
+    'JSON.stringify({ settings: !!document.querySelector(".settings-card"), manager: !!document.querySelector(".custom-cat-card"), prompt: document.body.innerText.includes("is available") })'
+  )
+  console.log('overlays open before Escape:', openLayers)
+  const promptOpen = await evaluate(cdp, 'document.body.innerText.includes("is available")')
+  if (promptOpen) {
+    console.log('(an update prompt is open — it is the outermost overlay)')
+    await pressEscape()
+    await check(
+      'Escape dismisses the update prompt before anything beneath it',
+      '!document.body.innerText.includes("is available")',
+      8000
+    )
+  }
   await pressEscape()
-  await sleep(600)
-  await check('Escape closes the manager', '!document.body.innerText.includes("My Categories")')
+  await check('Escape then closes the manager', '!document.querySelector(".custom-cat-card")', 8000)
 
   const finalText = await text()
   if (process.env.SMOKE_VERBOSE) console.log('--- final UI text ---\n' + finalText)

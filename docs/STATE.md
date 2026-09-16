@@ -97,8 +97,17 @@ This is the part with the most moving pieces, so it's worth understanding as a w
 - **A GUI smoke harness exists** (`npm run smoke:gui` → `scripts/gui-smoke.mjs`): it launches the app
   over CDP, connects with the saved profile, and asserts against the DOM (permission-free, since
   screen capture is TCC-blocked here). Use `--probe`, `--probe-settings` or `--eval "<expr>"` to
-  inspect the live UI. It found the prefill-ordering bug fixed in 0.7.86, which is the argument for
-  running it after any EPG/UI change. Requires the mock provider (`node scripts/mock-provider.mjs`).
+  inspect the live UI. Requires the mock provider (`node scripts/mock-provider.mjs`). It found the
+  prefill-ordering bug fixed in 0.7.86 — the argument for running it after any EPG/UI change — and
+  passes 15/15 against the released 0.7.86 build, covering: connect via the saved profile, the
+  sidebar and grid rendering the mock's catalogue, the provider's per-channel listing winning its
+  slot, a relaxed-tier-matched channel being filled from the guide pool, an unmatched channel
+  honestly reporting "No programme data", the preview's provenance line, the EPG match report's
+  per-tier counts, and the overlay chain (Settings closes, the manager opens, Escape closes the
+  outermost layer). Two lessons baked into it: assertions must POLL (the guide pool arrives only
+  after a multi-megabyte download, so single-shot checks report flakiness), and overlays must be
+  addressed by their own containers (`.settings-card .modal-close`, not `.modal-close`, which the
+  preview panel also carries).
 - **A synthetic Xtream provider exists** (`lib/testFixtures/mockXtreamServer.ts`, serving the
   `player_api.php`/`xmltv.php`/`__fetch` subset the app uses) and `lib/xtreamIntegration.test.ts`
   drives the real client and store against it over a real socket with nothing mocked — that is the
