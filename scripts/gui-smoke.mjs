@@ -114,6 +114,75 @@ async function main() {
     }
   }
 
+  // --live [profileNameFragment]: switch to a real provider profile and REPORT what the app does
+  // against it. Unlike the synthetic run this asserts nothing — the catalogue, the guide data and
+  // the streams are whatever the provider has — it gathers evidence at real scale (category and
+  // channel counts, the EPG match report, and whether a real live channel decodes) so findings can
+  // be discussed rather than guessed at.
+  if (process.argv.includes('--live')) {
+    const want = process.argv[process.argv.indexOf('--live') + 1]
+    const switchable = await evaluate(cdp, '!!document.querySelector("button.disconnect")')
+    if (switchable) {
+      await click('button.disconnect') // → the profile chooser
+      await sleep(1200)
+    }
+    const profiles = await evaluate(
+      cdp,
+      'JSON.stringify([...document.querySelectorAll("button.profile-connect")].map((b, i) => ({ i, text: (b.textContent || "").slice(0, 60) })))'
+    )
+    console.log('profiles on offer:', profiles)
+    const list = JSON.parse(profiles)
+    const chosen = want
+      ? list.find((p) => p.text.toLowerCase().includes(want.toLowerCase()))
+      : list.find((p) => !/synthetic/i.test(p.text))
+    if (!chosen) throw new Error('no matching provider profile found — add it in the app first')
+    console.log('connecting with:', chosen.text)
+    await evaluate(
+      cdp,
+      `document.querySelectorAll("button.profile-connect")[${chosen.i}].click()`
+    )
+    // Real providers take longer than the fixture: give the catalogue time to land.
+    let loaded = false
+    for (let i = 0; i < 90; i++) {
+      loaded = await evaluate(cdp, 'document.querySelectorAll("button.epg-row-channel").length > 0')
+      if (loaded) break
+      await sleep(1000)
+    }
+    const report = {
+      sidebarCategories: await evaluate(cdp, 'document.querySelectorAll("button.category").length'),
+      channelRows: await evaluate(cdp, 'document.querySelectorAll("button.epg-row-channel").length'),
+      rowsWithListings: await evaluate(
+        cdp,
+        '[...document.querySelectorAll("button.epg-row-channel")].filter((r) => !/No programme data/.test(r.parentElement?.innerText || "")).length'
+      ),
+      errorVisible: await evaluate(cdp, 'document.body.innerText.includes("Playback error")')
+    }
+    console.log('catalogue:', JSON.stringify(report))
+
+    // The EPG match report: the app's own account of matching at this provider's real scale.
+    await click('button.icon-button[title="Settings"]')
+    await sleep(3000)
+    const epgReport = await evaluate(
+      cdp,
+      'document.querySelector(".epg-match-report")?.innerText ?? "(no report)"'
+    )
+    console.log('=== EPG match report at real scale ===\n' + epgReport)
+    await click('.settings-card .modal-close')
+    await sleep(800)
+
+    // One real live channel: does it decode? (Short by design — the account has connection limits.)
+    await click('.watch-now-button')
+    await sleep(12000)
+    const videos = await evaluate(
+      cdp,
+      `JSON.stringify([...document.querySelectorAll('video')].map((v) => ({ cls: v.className, readyState: v.readyState, t: Number(v.currentTime.toFixed(2)), paused: v.paused, error: v.error ? v.error.code : null })))`
+    )
+    console.log('video state after 12s:', videos)
+    console.log('playback error text:', await evaluate(cdp, 'document.body.innerText.includes("Playback error")'))
+    cdp.close()
+    process.exit(0)
+  }
+
   // --eval "<expression>": run one expression against the connected app and print the JSON result.
   // Handy for ad-hoc investigation without editing this script.
   if (process.argv[2] === '--eval') {
