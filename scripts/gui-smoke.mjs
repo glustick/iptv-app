@@ -175,14 +175,30 @@ async function main() {
     }
     console.log('catalogue:', JSON.stringify(report))
 
-    // The EPG match report: the app's own account of matching at this provider's real scale.
+    // The EPG match report: the app's own account of matching at this provider's real scale. A real
+    // provider's guide is megabytes, so this waits for the report rather than assuming it's ready.
     await click('button.icon-button[title="Settings"]')
-    await sleep(3000)
-    const epgReport = await evaluate(
+    let epgReport = null
+    for (let i = 0; i < 60; i++) {
+      const settingsOpen = await evaluate(cdp, '!!document.querySelector(".settings-card")')
+      if (!settingsOpen) {
+        await click('button.icon-button[title="Settings"]')
+      }
+      epgReport = await evaluate(cdp, 'document.querySelector(".epg-match-report")?.innerText ?? null')
+      if (epgReport) break
+      await sleep(1000)
+    }
+    console.log('=== EPG match report at real scale ===\n' + (epgReport ?? '(no report block yet)'))
+    const issues = await evaluate(
       cdp,
-      'document.querySelector(".epg-match-report")?.innerText ?? "(no report)"'
+      'JSON.stringify([...document.querySelectorAll(".epg-source-issue")].map((e) => e.innerText.slice(0, 90)))'
     )
-    console.log('=== EPG match report at real scale ===\n' + epgReport)
+    console.log('source issues:', issues)
+    const sources = await evaluate(
+      cdp,
+      'JSON.stringify([...document.querySelectorAll(".epg-source-url")].map((e) => e.innerText.slice(0, 60)))'
+    )
+    console.log('sources listed:', sources)
     await click('.settings-card .modal-close')
     await sleep(800)
 
