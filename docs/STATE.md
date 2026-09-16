@@ -121,7 +121,15 @@ This is the part with the most moving pieces, so it's worth understanding as a w
   worked here); tests, typecheck, lint and `electron-vite build` are unaffected. A plain
   `npm install` on this machine will re-download the binary and may trip the same dialog — if that
   happens, delete `node_modules/electron/dist` again rather than touching any security setting.
-- **The *packaged* app cannot run on this machine either — measured, 2026-09-16.** Downloaded the
+- **RESOLVED in 0.7.85 (measured 2026-09-16): the app RUNS on this Mac.** The Electron 44.4.1 build
+  (v0.7.85) was downloaded and opened normally — main process, GPU and network-service helpers all up,
+  bundle intact, `~/Library/Application Support/iptv-app` created. The earlier blocks were therefore
+  tied to the old Electron (31.7.7), not to "unsigned code" as such: that framework's binary is what
+  macOS objected to (XProtect flags files, not apps), both for the dev runtime and inside the packaged
+  0.7.84 build. Signing + notarization is still required for *distribution* (Gatekeeper warnings for
+  other users, working macOS auto-update, and browser-downloaded copies which carry a quarantine flag)
+  — but it is no longer needed merely to run the app locally.
+- **Historical record — the pre-0.7.85 block (2026-09-16 morning).** Downloaded the
   released `AllisonIPTV-0.7.84-arm64-mac.zip` from GitHub and opened it: a complete 312 MB bundle,
   **no quarantine attribute**, but `codesign` shows ad-hoc/linker-signed with `TeamIdentifier not set`
   (unsigned and, of course, unnotarized). `spctl` refuses it, the process never appears, and macOS's
