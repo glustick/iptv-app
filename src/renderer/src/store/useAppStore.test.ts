@@ -1774,7 +1774,7 @@ describe('bulk-applying EPG suggestions', () => {
     }
   }
 
-  it('maps unresolved channels from their best suggestion, leaves the rest, and is idempotent', () => {
+  it('maps unresolved channels from their best suggestion, leaves the rest, and is idempotent', async () => {
     const catalog = [stream(1, 'Channel One'), stream(2, 'Channel One Extra'), stream(3, 'Totally Different')]
     useAppStore.setState({
       numericChannelCatalog: catalog,
@@ -1784,7 +1784,7 @@ describe('bulk-applying EPG suggestions', () => {
       settings: { ...DEFAULT_SETTINGS, customEpgUrls: [SOURCE] }
     })
 
-    const first = useAppStore.getState().applySuggestedMappings(SOURCE, 0.8)
+    const first = await await useAppStore.getState().applySuggestedMappings(SOURCE, 0.8)
     expect(first).toEqual({ applied: 1, stillUnmatched: 1 })
 
     const mappings = useAppStore.getState().settings.epgChannelMappings
@@ -1800,11 +1800,11 @@ describe('bulk-applying EPG suggestions', () => {
     expect(useAppStore.getState().epgSourceMatchStats[0]).toMatchObject({ byManual: 1 })
 
     // A second run finds nothing to do — already-mapped channels are never re-planned.
-    expect(useAppStore.getState().applySuggestedMappings(SOURCE, 0.8).applied).toBe(0)
+    expect((await useAppStore.getState().applySuggestedMappings(SOURCE, 0.8)).applied).toBe(0)
     expect(useAppStore.getState().settings.epgChannelMappings).toHaveLength(1)
   })
 
-  it('leaves the mappings of other sources untouched', () => {
+  it('leaves the mappings of other sources untouched', async () => {
     const other = { sourceUrl: 'http://other.example.com/g.xml', guideChannelId: 'x1', streamId: 9 }
     useAppStore.setState({
       numericChannelCatalog: [stream(2, 'Channel One Extra')],
@@ -1814,14 +1814,14 @@ describe('bulk-applying EPG suggestions', () => {
       settings: { ...DEFAULT_SETTINGS, customEpgUrls: [SOURCE], epgChannelMappings: [other] }
     })
 
-    useAppStore.getState().applySuggestedMappings(SOURCE, 0.8)
+    await useAppStore.getState().applySuggestedMappings(SOURCE, 0.8)
 
     const mappings = useAppStore.getState().settings.epgChannelMappings
     expect(mappings).toHaveLength(2)
     expect(mappings).toContainEqual(other)
   })
 
-  it('applies across every source at once, giving each channel to the highest-priority source that can place it', () => {
+  it('applies across every source at once, giving each channel to the highest-priority source that can place it', async () => {
     const XML_SECOND = `<?xml version="1.0"?>
 <tv>
   <channel id="s1"><display-name>Second Channel</display-name></channel>
@@ -1840,7 +1840,7 @@ describe('bulk-applying EPG suggestions', () => {
       settings: { ...DEFAULT_SETTINGS, customEpgUrls: [SOURCE, SECOND] }
     })
 
-    const result = useAppStore.getState().applySuggestedMappingsAcrossSources(0.8)
+    const result = await useAppStore.getState().applySuggestedMappingsAcrossSources(0.8)
 
     // One mapping per channel, both sources contributing, and the shared channel goes to whichever
     // source is listed first (SOURCE here) rather than being mapped twice.
@@ -1858,7 +1858,7 @@ describe('bulk-applying EPG suggestions', () => {
     expect(stats.reduce((sum, s) => sum + s.byManual, 0)).toBe(2)
   })
 
-  it('never plans for the provider\'s own guide and keeps existing mappings', () => {
+  it('never plans for the provider\'s own guide and keeps existing mappings', async () => {
     const EXISTING = { sourceUrl: SOURCE, guideChannelId: 'other', streamId: 9 }
     useAppStore.setState({
       numericChannelCatalog: [stream(2, 'Channel One Extra')],
@@ -1870,14 +1870,14 @@ describe('bulk-applying EPG suggestions', () => {
       settings: { ...DEFAULT_SETTINGS, customEpgUrls: [SOURCE], epgChannelMappings: [EXISTING] }
     })
 
-    const result = useAppStore.getState().applySuggestedMappingsAcrossSources(0.8)
+    const result = await useAppStore.getState().applySuggestedMappingsAcrossSources(0.8)
 
     expect(result.applied).toBe(1)
     expect(useAppStore.getState().settings.epgChannelMappings).toContainEqual(EXISTING)
   })
 
-  it('does nothing when the source is not loaded or the catalog has not been fetched', () => {
+  it('does nothing when the source is not loaded or the catalog has not been fetched', async () => {
     useAppStore.setState({ numericChannelCatalog: null, epgSources: [], epgSourceLabels: [], settings: DEFAULT_SETTINGS })
-    expect(useAppStore.getState().applySuggestedMappings(SOURCE, 0.8)).toEqual({ applied: 0, stillUnmatched: 0 })
+    expect(await useAppStore.getState().applySuggestedMappings(SOURCE, 0.8)).toEqual({ applied: 0, stillUnmatched: 0 })
   })
 })

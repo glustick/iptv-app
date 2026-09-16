@@ -81,6 +81,9 @@ export function SettingsPage(): JSX.Element | null {
   // The section-level "all sources at once" run reports separately from the per-source one inside
   // the mapping editor — different scopes, so sharing one message would be confusing.
   const [bulkAllResult, setBulkAllResult] = useState<string | null>(null)
+  // The bulk run resolves the whole catalogue, chunked so the window keeps painting — this drives
+  // the "working" state on the buttons so the run never looks like nothing happened.
+  const [bulkBusy, setBulkBusy] = useState(false)
 
   if (!settingsOpen) return null
 
@@ -144,9 +147,11 @@ export function SettingsPage(): JSX.Element | null {
 
   // The section-level version: every user-added source, highest priority first, each only picking
   // up what nothing else has resolved or already claimed in this run.
-  function handleBulkApplyAll(): void {
+  async function handleBulkApplyAll(): Promise<void> {
     const percent = Math.round(bulkThreshold * 100)
-    const result = applySuggestedMappingsAcrossSources(bulkThreshold)
+    setBulkBusy(true)
+    const result = await applySuggestedMappingsAcrossSources(bulkThreshold)
+    setBulkBusy(false)
     setBulkAllResult(
       result.applied > 0
         ? `Applied ${result.applied} mapping${result.applied === 1 ? '' : 's'} across ${
@@ -159,9 +164,11 @@ export function SettingsPage(): JSX.Element | null {
   // Applies the good suggestions for the whole source in one go, then reports exactly what it did
   // — including how many channels still need a human eye. If the "only unmatched" filter is on,
   // its set is recomputed so the list immediately reflects what's left.
-  function handleBulkApply(sourceUrl: string): void {
+  async function handleBulkApply(sourceUrl: string): Promise<void> {
     const percent = Math.round(bulkThreshold * 100)
-    const result = applySuggestedMappings(sourceUrl, bulkThreshold)
+    setBulkBusy(true)
+    const result = await applySuggestedMappings(sourceUrl, bulkThreshold)
+    setBulkBusy(false)
     const remaining = `${result.stillUnmatched} channel${result.stillUnmatched === 1 ? '' : 's'} still need${
       result.stillUnmatched === 1 ? 's' : ''
     } attention`
@@ -313,8 +320,8 @@ export function SettingsPage(): JSX.Element | null {
                         </select>
                         or better
                       </label>
-                      <button className="secondary-button" onClick={() => handleBulkApply(url)}>
-                        Apply to all unmatched
+                      <button className="secondary-button" disabled={bulkBusy} onClick={() => void handleBulkApply(url)}>
+                        {bulkBusy ? 'Applying…' : 'Apply to all unmatched'}
                       </button>
                     </div>
                     {bulkResult && <p className="epg-bulk-result">{bulkResult}</p>}
@@ -684,8 +691,8 @@ export function SettingsPage(): JSX.Element | null {
                   </select>
                   or better
                 </label>
-                <button className="secondary-button" onClick={handleBulkApplyAll}>
-                  Apply across all sources
+                <button className="secondary-button" disabled={bulkBusy} onClick={() => void handleBulkApplyAll()}>
+                  {bulkBusy ? 'Applying…' : 'Apply across all sources'}
                 </button>
               </div>
               {bulkAllResult && <p className="epg-bulk-result">{bulkAllResult}</p>}

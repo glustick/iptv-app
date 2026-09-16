@@ -91,6 +91,35 @@ const shortEpgQueue: Array<() => void | Promise<void>> = []
 // results — letting a stale run finish would RESURRECT sources the user just removed (they'd
 // stay active in the guide and match report while unlisted and undeletable in Settings).
 let epgSourcesLoadSeq = 0
+
+/**
+ * Runs the bulk-suggestion planner in chunks, yielding to the event loop between them, and merges
+ * the per-chunk results. The planner is pure and per-channel independent, so chunking changes
+ * nothing about the outcome — it changes whether the window survives it. Measured on a catalogue
+ * the size of the real provider's (27.8k channels against a 5k-channel guide) the single-pass
+ * version takes ~5 seconds, which is a visibly frozen window; chunked, the same work runs while
+ * the UI keeps painting. The chunk size is a compromise between yielding often enough to stay
+ * responsive and rarely enough that the yields aren't the cost.
+ */
+async function planBulkSuggestionApplyChunked(
+  catalog: LiveStream[],
+  index: ReturnType<typeof buildGuideIndex>,
+  manual: Map<number, string>,
+  threshold: number
+): Promise<ReturnType<typeof planBulkSuggestionApply>> {
+  const CHUNK = 2000
+  const total = { applied: [] as ReturnType<typeof planBulkSuggestionApply>['applied'], considered: 0, alreadyMapped: 0, belowThreshold: 0 }
+  for (let offset = 0; offset < catalog.length; offset += CHUNK) {
+    const part = planBulkSuggestionApply(catalog.slice(offset, offset + CHUNK), index, manual, threshold)
+    total.applied.push(...part.applied)
+    total.considered += part.considered
+    total.alreadyMapped += part.alreadyMapped
+    total.belowThreshold += part.belowThreshold
+    // Hand the frame back so the window keeps painting and the button can show progress.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+  return total
+}
 const shortEpgInFlight = new Set<number>()
 const shortEpgFailedAt = new Map<number, number>()
 
@@ -341,15 +370,15 @@ interface AppState {
   // Bulk-applies high-confidence suggestions for one source's unmatched channels (Settings ▸ EPG
   // sources ▸ Map channels) — creates ordinary manual mappings, so every one stays individually
   // reviewable and removable afterwards. Returns what it did for the editor to report.
-  applySuggestedMappings: (sourceUrl: string, threshold: number) => { applied: number; stillUnmatched: number }
+  applySuggestedMappings: (sourceUrl: string, threshold: number) => Promise<{ applied: number; stillUnmatched: number }>
   // The same bulk apply, run across every user-added source in priority order: per source, only
   // channels nothing has resolved yet (and nothing has been mapped for by an earlier source in
   // this same run). Returns what each source contributed, since "which source did that" is the
   // only useful thing to report for a cross-source action.
-  applySuggestedMappingsAcrossSources: (threshold: number) => {
+  applySuggestedMappingsAcrossSources: (threshold: number) => Promise<{
     applied: number
     perSource: Array<{ source: string; applied: number }>
-  }
+  }>
   addCustomEpgUrl: (url: string) => void
   removeCustomEpgUrl: (url: string) => void
   // Reorders the user's EPG sources — their sequence in settings IS their priority: the provider's
@@ -1046,7 +1075,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (changed) set({ shortEpgByStream: nextShort })
   },
 
-  applySuggestedMappings: (sourceUrl, threshold) => {
+  applySuggestedMappings: async (sourceUrl, threshold) => {
     const { epgSources, epgSourceLabels, numericChannelCatalog, settings } = get()
     const sourceIndex = epgSourceLabels.indexOf(sourceUrl)
     const guide = sourceIndex >= 0 ? epgSources[sourceIndex] : undefined
@@ -1057,7 +1086,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const manual = new Map(
       settings.epgChannelMappings.filter((m) => m.sourceUrl === sourceUrl).map((m) => [m.streamId, m.guideChannelId])
     )
-    const plan = planBulkSuggestionApply(catalog, index, manual, threshold)
+    const plan = await planBulkSuggestionApplyChunked(catalog, index, manual, threshold)
     if (plan.applied.length > 0) {
       const nameByStreamId = new Map(catalog.map((s) => [s.stream_id, s.name]))
       const appliedStreamIds = new Set(plan.applied.map((a) => a.streamId))
@@ -1082,7 +1111,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     return { applied: plan.applied.length, stillUnmatched: plan.belowThreshold }
   },
 
-  applySuggestedMappingsAcrossSources: (threshold) => {
+  applySuggestedMappingsAcrossSources: async (threshold) => {
     const { epgSources, epgSourceLabels, numericChannelCatalog, settings } = get()
     const catalog = numericChannelCatalog ?? []
     const perSource: Array<{ source: string; applied: number }> = []
@@ -1096,12 +1125,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     const plannedHere = new Map<number, string>()
     const newMappings: EpgChannelMapping[] = []
 
-    epgSourceLabels.forEach((label, index) => {
+    for (const [index, label] of epgSourceLabels.entries()) {
       // The provider's own guide isn't manually mappable at all (see EpgChannelMapping) — its ids
       // are what epg_channel_id already refers to, so there is nothing to plan for it.
-      if (label === PROVIDER_GUIDE_LABEL) return
+      if (label === PROVIDER_GUIDE_LABEL) continue
       const guide = epgSources[index]
-      if (!guide) return
+      if (!guide) continue
 
       const guideIndex = buildGuideIndex(guide)
       const manual = new Map(
@@ -1109,8 +1138,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       )
       for (const [streamId, channelId] of plannedHere) manual.set(streamId, channelId)
 
-      const plan = planBulkSuggestionApply(catalog, guideIndex, manual, threshold)
-      if (plan.applied.length === 0) return
+      const plan = await planBulkSuggestionApplyChunked(catalog, guideIndex, manual, threshold)
+      if (plan.applied.length === 0) continue
       for (const { streamId, channelId } of plan.applied) plannedHere.set(streamId, channelId)
       newMappings.push(
         ...plan.applied.map(({ streamId, channelId }) => ({
@@ -1122,7 +1151,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         }))
       )
       perSource.push({ source: label, applied: plan.applied.length })
-    })
+    }
 
     if (newMappings.length > 0) {
       const appliedIds = new Set(newMappings.map((m) => m.streamId))

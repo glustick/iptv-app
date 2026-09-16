@@ -94,6 +94,10 @@ This is the part with the most moving pieces, so it's worth understanding as a w
   jsdom 25 for exactly this reason).
 - Overlay/Escape behaviour is decided by the pure `resolveEscapeAction` in `lib/overlays.ts`, with
   the priority order pinned by tests — add new overlays to that chain, not to App.tsx.
+- **A scale guard exists** (`lib/epgScale.test.ts`): the real matching code over a synthetic
+  27.8k-channel catalogue against a 5k-channel guide, with timing budgets. It immediately found that
+  the bulk-suggestion planner took ~5–6s at that size and ran synchronously from the UI (fixed in
+  0.7.88 by chunking the run and yielding between chunks) — the argument for keeping it.
 - **A GUI smoke harness exists** (`npm run smoke:gui` → `scripts/gui-smoke.mjs`): it launches the app
   over CDP, connects with the saved profile, and asserts against the DOM (permission-free, since
   screen capture is TCC-blocked here). Use `--probe`, `--probe-settings` or `--eval "<expr>"` to
