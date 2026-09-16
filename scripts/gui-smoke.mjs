@@ -114,6 +114,22 @@ async function main() {
     }
   }
 
+  // Shared helpers — defined before the mode blocks below, which use them.
+  const text = () => evaluate(cdp, 'document.body.innerText')
+  const has = (needle) => `document.body.innerText.includes(${JSON.stringify(needle)})`
+  const click = (selector) => evaluate(cdp, `!!document.querySelector(${JSON.stringify(selector)})?.click() || true`)
+  const pressEscape = async () => {
+    for (const type of ['keyDown', 'keyUp']) {
+      await cdp.send('Input.dispatchKeyEvent', {
+        type,
+        key: 'Escape',
+        code: 'Escape',
+        windowsVirtualKeyCode: 27,
+        nativeVirtualKeyCode: 27
+      })
+    }
+  }
+
   // --live [profileNameFragment]: switch to a real provider profile and REPORT what the app does
   // against it. Unlike the synthetic run this asserts nothing — the catalogue, the guide data and
   // the streams are whatever the provider has — it gathers evidence at real scale (category and
@@ -234,20 +250,6 @@ async function main() {
     }
     expectations.push({ label, ok: !!value })
     console.log(`${value ? 'PASS' : 'FAIL'}  ${label}`)
-  }
-  const text = () => evaluate(cdp, 'document.body.innerText')
-  const has = (needle) => `document.body.innerText.includes(${JSON.stringify(needle)})`
-  const click = (selector) => evaluate(cdp, `!!document.querySelector(${JSON.stringify(selector)})?.click() || true`)
-  const pressEscape = async () => {
-    for (const type of ['keyDown', 'keyUp']) {
-      await cdp.send('Input.dispatchKeyEvent', {
-        type,
-        key: 'Escape',
-        code: 'Escape',
-        windowsVirtualKeyCode: 27,
-        nativeVirtualKeyCode: 27
-      })
-    }
   }
 
   await check('the window renders content', 'document.body.innerText.trim().length > 20')
