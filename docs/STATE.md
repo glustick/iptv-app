@@ -94,6 +94,11 @@ This is the part with the most moving pieces, so it's worth understanding as a w
   jsdom 25 for exactly this reason).
 - Overlay/Escape behaviour is decided by the pure `resolveEscapeAction` in `lib/overlays.ts`, with
   the priority order pinned by tests — add new overlays to that chain, not to App.tsx.
+- **A GUI smoke harness exists** (`npm run smoke:gui` → `scripts/gui-smoke.mjs`): it launches the app
+  over CDP, connects with the saved profile, and asserts against the DOM (permission-free, since
+  screen capture is TCC-blocked here). Use `--probe`, `--probe-settings` or `--eval "<expr>"` to
+  inspect the live UI. It found the prefill-ordering bug fixed in 0.7.86, which is the argument for
+  running it after any EPG/UI change. Requires the mock provider (`node scripts/mock-provider.mjs`).
 - **A synthetic Xtream provider exists** (`lib/testFixtures/mockXtreamServer.ts`, serving the
   `player_api.php`/`xmltv.php`/`__fetch` subset the app uses) and `lib/xtreamIntegration.test.ts`
   drives the real client and store against it over a real socket with nothing mocked — that is the

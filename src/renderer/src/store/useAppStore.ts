@@ -1021,12 +1021,25 @@ export const useAppStore = create<AppState>((set, get) => ({
     const nextShort = { ...shortEpgByStream }
     let changed = false
     for (const [streamId, programmes] of pool) {
-      // Never overwrite provider-fetched data (fetchedAt set) — the pool only PREFILLS: channels
-      // with nothing yet, or channels whose only data so far is an older prefill from this same
-      // pool (fetchedAt unset). loadShortEpg will still fetch the provider's fresher per-channel
-      // data for these when their row loads, then merge over the prefill.
-      if (shortEpgFetchedAt[streamId]) continue
-      if (nextShort[streamId] === programmes) continue
+      // The pool only PREFILLS: it yields to any non-empty cached list (the provider's own
+      // listings, or an earlier prefill) and loadShortEpg merges provider entries over it later.
+      //
+      // Guarding on `shortEpgFetchedAt` instead — "a fetch has happened, so leave this channel
+      // alone" — was a real bug, found by driving the packaged app against the synthetic provider.
+      // The grid fetches per-channel listings as soon as a row renders, which is normally BEFORE a
+      // multi-megabyte guide finishes downloading, and for precisely the channels the pool exists
+      // for the provider returns nothing, so that fetch caches an EMPTY array. The guide then
+      // matched the channel, saw a completed fetch, and skipped it: the match report counted the
+      // channel as matched while its row showed "No programme data" indefinitely.
+      const existing = nextShort[streamId]
+      if (existing === programmes) continue
+      // Provider data — a fetch happened AND actually returned listings — is never overwritten.
+      // Note the two halves: an empty cached list is NOT provider data, it's the "the provider has
+      // nothing for this channel" case the pool exists for, and it must still be filled. And a
+      // list with no fetchedAt stamp is a previous pool prefill, which a reprioritisation is
+      // allowed to replace (a fetch that returned nothing leaves the pool's own data stamped, so a
+      // reprioritisation settles on the next connect instead of churning what's on screen).
+      if (shortEpgFetchedAt[streamId] && existing && existing.length > 0) continue
       nextShort[streamId] = programmes
       changed = true
     }

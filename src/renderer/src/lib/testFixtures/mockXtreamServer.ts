@@ -28,15 +28,37 @@ export interface MockXtreamServer {
   close: () => Promise<void>
 }
 
+// Programme times are generated RELATIVE to now, not hard-coded. A fixed future date (2030, say)
+// parses and matches perfectly but renders as an empty grid — the app's timeline shows the current
+// window — which makes the fixture useless for anything UI-facing. Relative times mean the grid,
+// the preview's now/next and the EPG mapping editor all show real blocks.
+function xmltvTime(epochSeconds: number): string {
+  const d = new Date(epochSeconds * 1000)
+  const p = (n: number): string => String(n).padStart(2, '0')
+  return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())} +0000`
+}
+
+function isoLocal(epochSeconds: number): string {
+  const d = new Date(epochSeconds * 1000)
+  const p = (n: number): string => String(n).padStart(2, '0')
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`
+}
+
+const NOW = Math.floor(Date.now() / 1000)
+const PROGRAMME_START = NOW - 1800 // started half an hour ago
+const PROGRAMME_END = NOW + 1800 // …and runs for another half hour
+const NEXT_START = PROGRAMME_END
+const NEXT_END = PROGRAMME_END + 3600
+
 // The provider's own guide: covers two of the three channels (one by matching epg_channel_id, one
 // by the relaxed name tier), and deliberately says nothing about a third.
 const PROVIDER_GUIDE = `<?xml version="1.0" encoding="UTF-8"?>
 <tv>
   <channel id="one.hd"><display-name>One HD</display-name></channel>
   <channel id="two.uk"><display-name>Two</display-name></channel>
-  <programme start="20300101120000 +0000" stop="20300101130000 +0000" channel="one.hd"><title>One's Show</title></programme>
-  <programme start="20300101130000 +0000" stop="20300101140000 +0000" channel="one.hd"><title>One's Next</title></programme>
-  <programme start="20300101120000 +0000" stop="20300101130000 +0000" channel="two.uk"><title>Two's Show</title></programme>
+  <programme start="${xmltvTime(PROGRAMME_START)}" stop="${xmltvTime(PROGRAMME_END)}" channel="one.hd"><title>One's Show</title></programme>
+  <programme start="${xmltvTime(NEXT_START)}" stop="${xmltvTime(NEXT_END)}" channel="one.hd"><title>One's Next</title></programme>
+  <programme start="${xmltvTime(PROGRAMME_START)}" stop="${xmltvTime(PROGRAMME_END)}" channel="two.uk"><title>Two's Show</title></programme>
 </tv>`
 
 // A user-added third-party guide, reachable through the app's `/__fetch/` passthrough. It is the
@@ -44,7 +66,7 @@ const PROVIDER_GUIDE = `<?xml version="1.0" encoding="UTF-8"?>
 const CUSTOM_GUIDE = `<?xml version="1.0" encoding="UTF-8"?>
 <tv>
   <channel id="custom.missing"><display-name>Unmatched Channel</display-name></channel>
-  <programme start="20300101120000 +0000" stop="20300101130000 +0000" channel="custom.missing"><title>Found Only Here</title></programme>
+  <programme start="${xmltvTime(PROGRAMME_START)}" stop="${xmltvTime(PROGRAMME_END)}" channel="custom.missing"><title>Found Only Here</title></programme>
 </tv>`
 
 const ids = {
@@ -211,12 +233,12 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
                     epg_id: 'one.hd',
                     title: Buffer.from('Short EPG Title').toString('base64'),
                     lang: '',
-                    start: '2030-01-01 12:00:00',
-                    end: '2030-01-01 13:00:00',
+                    start: isoLocal(PROGRAMME_START),
+                    end: isoLocal(PROGRAMME_END),
                     description: Buffer.from('Desc').toString('base64'),
                     channel_id: 'one.hd',
-                    start_timestamp: '1893456000',
-                    stop_timestamp: '1893459600'
+                    start_timestamp: String(PROGRAMME_START),
+                    stop_timestamp: String(PROGRAMME_END)
                   }
                 ]
               : []

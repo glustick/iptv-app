@@ -475,6 +475,56 @@ describe('EPG source loading (loadEpgSources)', () => {
     expect(useAppStore.getState().epgSources).toHaveLength(1)
   })
 
+  it('fills a channel whose per-channel fetch already came back empty (the real-world ordering)', async () => {
+    // Reproduces what the packaged app does: the grid renders rows and fetches per-channel
+    // listings immediately, the provider has nothing for this channel, so an EMPTY array is
+    // cached with a fetchedAt stamp — and only afterwards does the (slower) guide download
+    // finish and match it. The pool must still fill it; guarding on fetchedAt skipped it, and
+    // a channel the report counted as matched stayed "No programme data" forever.
+    mockFetchBody(() => ({ ok: true, body: GOOD_XML }))
+    useAppStore.setState({
+      client: makeClient(),
+      proxyBase: 'http://proxy',
+      settings: { ...DEFAULT_SETTINGS, customEpgUrls: ['http://guides.example.com/g.xml'] },
+      liveStreams: [{ ...makeLiveStream(31, 'Channel One'), epg_channel_id: null }],
+      shortEpgByStream: { 31: [] },
+      shortEpgFetchedAt: { 31: Date.now() }
+    })
+
+    await useAppStore.getState().loadEpgSources()
+
+    expect(useAppStore.getState().shortEpgByStream[31]?.[0]?.title).toBe('Show')
+    expect(useAppStore.getState().epgSourceByStream[31]).toBe('http://guides.example.com/g.xml')
+  })
+
+  it('still refuses to overwrite listings the provider actually returned', async () => {
+    mockFetchBody(() => ({ ok: true, body: GOOD_XML }))
+    const providerProgramme = {
+      id: 'p1',
+      epg_id: 'one.hd',
+      title: 'From the provider',
+      description: '',
+      lang: 'en',
+      start: '2030-01-01 12:00:00',
+      end: '2030-01-01 13:00:00',
+      channel_id: 'one.hd',
+      start_timestamp: '1893456000',
+      stop_timestamp: '1893459600'
+    }
+    useAppStore.setState({
+      client: makeClient(),
+      proxyBase: 'http://proxy',
+      settings: { ...DEFAULT_SETTINGS, customEpgUrls: ['http://guides.example.com/g.xml'] },
+      liveStreams: [{ ...makeLiveStream(31, 'Channel One'), epg_channel_id: null }],
+      shortEpgByStream: { 31: [providerProgramme] },
+      shortEpgFetchedAt: { 31: Date.now() }
+    })
+
+    await useAppStore.getState().loadEpgSources()
+
+    expect(useAppStore.getState().shortEpgByStream[31]?.[0]?.title).toBe('From the provider')
+  })
+
   it('records which guide source supplied each channel, for the preview to show', async () => {
     mockFetchBody(() => ({ ok: true, body: GOOD_XML }))
     useAppStore.setState({
