@@ -121,6 +121,18 @@ This is the part with the most moving pieces, so it's worth understanding as a w
   worked here); tests, typecheck, lint and `electron-vite build` are unaffected. A plain
   `npm install` on this machine will re-download the binary and may trip the same dialog — if that
   happens, delete `node_modules/electron/dist` again rather than touching any security setting.
+- **The *packaged* app cannot run on this machine either — measured, 2026-09-16.** Downloaded the
+  released `AllisonIPTV-0.7.84-arm64-mac.zip` from GitHub and opened it: a complete 312 MB bundle,
+  **no quarantine attribute**, but `codesign` shows ad-hoc/linker-signed with `TeamIdentifier not set`
+  (unsigned and, of course, unnotarized). `spctl` refuses it, the process never appears, and macOS's
+  malware remediation **moved `AllisonIPTV.app` to the Trash** while showing the same "malware blocked"
+  dialog as for the dev Electron — same class of block, same cause: untrusted unsigned code. No MDM or
+  EDR is involved (this Mac is not enrolled; the Defender shim present in /Applications is not running).
+  So: **running this app locally is gated on code signing + notarization**, which the 0.7.72/0.7.73
+  pipeline already implements and which activates the moment the seven secrets exist. Until then the app
+  runs only on a machine that tolerates unsigned builds (the Windows box), and any local GUI work
+  (including a CDP harness) is blocked for the same reason. Do not attempt to allow-list or override
+  this — the correct fix is signing, not an exception.
 - Destructive or irreversible actions ask first (`window.confirm`), and are called out in code
   comments with the reasoning.
 
