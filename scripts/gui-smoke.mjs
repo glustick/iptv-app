@@ -421,6 +421,19 @@ async function main() {
   // only once one is chosen — restarts playback from an ffmpeg remux that carries the subtitle as a
   // WebVTT rendition. Previously nothing in this fixture had a subtitle track at all, so the probe,
   // the picker and that rendition were entirely unexercised by machine. All three steps asserted.
+  // Bring the window forward first. The VOD grid is virtualised and only renders once its container
+  // has a measured size, and an occluded window can defer that layout — which showed up as a flaky
+  // "the Movies tab lists the fixture movie" failure (empty grid, no error, listing itself correct)
+  // that had nothing to do with the app: the exact same build passed it on the next run.
+  try {
+    execFileSync('osascript', ['-e', 'tell application "AllisonIPTV" to activate'], {
+      stdio: 'ignore',
+      timeout: 5000
+    })
+  } catch {
+    // best-effort; the poll below still decides
+  }
+  await sleep(800)
   await evaluate(
     cdp,
     `[...document.querySelectorAll('button.tab')].find((b) => b.textContent.trim() === 'Movies')?.click() || true`
@@ -446,6 +459,12 @@ async function main() {
       `JSON.stringify({
         tab: document.querySelector('button.tab.active')?.textContent,
         cards: document.querySelectorAll('.channel-item--grid').length,
+        gridBox: (() => {
+          const g = document.querySelector('.media-grid-wrap')
+          if (!g) return null
+          const box = g.getBoundingClientRect()
+          return Math.round(box.width) + 'x' + Math.round(box.height)
+        })(),
         empty: document.querySelector('.empty-state')?.textContent ?? null,
         error: document.querySelector('.banner-error, .error-message, [role=alert]')?.textContent?.slice(0, 90) ?? null,
         text: document.body.innerText.replace(/\\n+/g, ' | ').slice(0, 180)
