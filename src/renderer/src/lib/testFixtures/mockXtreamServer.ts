@@ -82,7 +82,13 @@ function live(streamId: number, name: string, epgChannelId: string | null, categ
   }
 }
 
-export async function startMockXtreamServer(): Promise<MockXtreamServer> {
+export interface MockXtreamServerOptions {
+  /** Fixed port for running the fixture as a standalone dev server (tests use the default 0 =
+   * ephemeral, so parallel test files can't collide). */
+  port?: number
+}
+
+export async function startMockXtreamServer(options: MockXtreamServerOptions = {}): Promise<MockXtreamServer> {
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     const json = (body: unknown): void => {
@@ -222,7 +228,7 @@ export async function startMockXtreamServer(): Promise<MockXtreamServer> {
     }
   })
 
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  await new Promise<void>((resolve) => server.listen(options.port ?? 0, '127.0.0.1', resolve))
   const { port } = server.address() as AddressInfo
   return {
     url: `http://127.0.0.1:${port}`,
