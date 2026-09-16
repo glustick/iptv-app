@@ -376,6 +376,23 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
       if (code !== 0 && code !== null) {
         console.error(`[transcode] ffmpeg exited with code ${code}:`, session.stderrTail.join('\n'))
       }
+      // ffmpeg exiting does not mean this session is done with. For VOD/series it is the *normal*
+      // end of a successful transcode — the finished file is the deliverable, and playback carries
+      // on reading it from here — and for a Live fallback it means the source ended, where the
+      // player is still better off finishing what it has been handed than 404ing on the next
+      // segment. Tearing the session down here (as this did, unconditionally) therefore destroyed
+      // output that was still being served, and — because the readiness loop *below* polls
+      // concurrently — could destroy it before that loop had ever observed the playlist at all.
+      // Confirmed with a 6-second fixture title: ffmpeg remuxed the whole thing at ~80x realtime,
+      // wrote playlist.m3u8 and the subtitle rendition, and exited; the session was then removed
+      // underneath the loop, which reported "ffmpeg exited before producing output" for a
+      // transcode that had produced exactly what it was asked for, so choosing a subtitle on a
+      // short title silently returned the original stream. Retiring a session is a decision for
+      // the callers that actually know playback has moved on (stopTranscode/stopAll: a stream
+      // switch, a close, or app quit) — all of which already remove the directory.
+      if (existsSync(join(dir, 'playlist.m3u8'))) return
+      // Nothing was ever produced: that is a genuine failure to start, and the session really is
+      // finished with, so clean it up as before.
       transcodeSessions.delete(sessionId)
       rm(dir, { recursive: true, force: true }).catch(() => {})
       void signal

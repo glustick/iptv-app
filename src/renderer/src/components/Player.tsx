@@ -1407,9 +1407,15 @@ export function Player(): JSX.Element | null {
             // transcode with and restarts the whole transcode to do it, this is just
             // `hls.subtitleTrack = id`, already loaded in the current source's own playlist.
             hlsSubtitleTracks.length > 0 && (
-              <label className="player-track-select" title="Subtitles">
+              // Deliberately NOT titled/labelled "Subtitles" like the VOD picker below: this one
+              // chooses among renditions the *current* source already advertises (instant, no
+              // restart), while that one picks a language to transcode with, which restarts the
+              // whole transcode. Two identically-labelled dropdowns doing visibly different things
+              // — one of which can appear alongside the other whenever a transcoded VOD source
+              // carries subtitles — was the confusion this name exists to remove.
+              <label className="player-track-select" title="Subtitle track">
                 <span aria-hidden="true">💬</span>
-                <span className="control-label">Subtitles</span>
+                <span className="control-label">Subtitle track</span>
                 <select
                   value={activeHlsSubtitleTrack}
                   onChange={(e) => {

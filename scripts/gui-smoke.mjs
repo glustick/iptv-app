@@ -457,11 +457,10 @@ async function main() {
   await check(
     "the subtitle probe finds the file's own track and offers it",
     `(() => {
-      // Two dropdowns can carry this exact label and class: hls.js's rendition picker (present once
-      // the *current* source advertises renditions) and VOD's ffmpeg-level picker (which restarts
-      // the transcode to change language). They render in that order, so take the last one.
-      const all = [...document.querySelectorAll('label[title="Subtitles"] select')]
-      const s = all[all.length - 1]
+      // "Subtitles" now belongs to VOD's ffmpeg-level picker alone — hls.js's rendition picker is
+      // labelled "Subtitle track" — because the two used to be indistinguishable, which is both a
+      // user-facing confusion and what made this assertion pass against the wrong control.
+      const s = document.querySelector('label[title="Subtitles"] select')
       return !!s && [...s.options].some((o) => /eng/i.test(o.textContent) && !o.disabled)
     })()`,
     60000
@@ -471,8 +470,7 @@ async function main() {
   const picked = await evaluate(
     cdp,
     `(() => {
-      const all = [...document.querySelectorAll('label[title="Subtitles"] select')]
-      const s = all[all.length - 1]
+      const s = document.querySelector('label[title="Subtitles"] select')
       const o = s && [...s.options].find((x) => !x.disabled && x.value !== '-1')
       if (!o) return 'none'
       s.value = o.value
@@ -547,6 +545,15 @@ async function main() {
     'the E-AC-3 channel still ends up playing (audio-fix fallback)',
     `[...document.querySelectorAll('video')].some((v) => v.classList.contains('player-video') && v.readyState >= 2 && v.currentTime > 0.5)`,
     90000
+  )
+  // ...and that the transcoded stream is what is actually being played. Video decoding alone does
+  // NOT prove the fallback worked: the original Dolby stream decodes video perfectly well, it just
+  // produces no audio, so the assertion above passes even when the fallback never engages. Asking
+  // the resource timeline whether the player fetched from the local transcode route does prove it.
+  await check(
+    'the audio-fix transcode is actually what is being played',
+    `[...performance.getEntriesByType('resource')].some((e) => e.name.includes('/__transcode/'))`,
+    20000
   )
 
 
