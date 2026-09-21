@@ -49,7 +49,9 @@ beforeEach(() => {
     favorites: [],
     favoriteGroups: [],
     numericChannelCatalog: null,
-    showHiddenLiveChannels: false
+    showHiddenLiveChannels: false,
+    guideOpen: false,
+    epgMatchTarget: null
   })
 })
 
@@ -66,6 +68,36 @@ describe('hidden Live TV channels', () => {
     useAppStore.getState().setShowHiddenLiveChannels(true)
     expect(useAppStore.getState().showHiddenLiveChannels).toBe(true)
     expect(useAppStore.getState().settings.hiddenLiveStreamIds).toEqual([])
+  })
+})
+
+describe('opening the guide aimed at a channel (the row context menu\'s "EPG match…")', () => {
+  it('opens the guide, closes Settings and records the channel to match', () => {
+    useAppStore.setState({ guideOpen: false, settingsOpen: true, epgMatchTarget: null })
+
+    useAppStore.getState().openEpgMatch(42, 'BBC One HD')
+
+    expect(useAppStore.getState().guideOpen).toBe(true)
+    expect(useAppStore.getState().settingsOpen).toBe(false)
+    expect(useAppStore.getState().epgMatchTarget).toEqual({ streamId: 42, streamName: 'BBC One HD' })
+  })
+
+  it('drops a stale target when the guide is opened normally instead', () => {
+    useAppStore.getState().openEpgMatch(42, 'BBC One HD')
+    useAppStore.getState().closeGuide()
+    useAppStore.getState().openGuide()
+
+    expect(useAppStore.getState().guideOpen).toBe(true)
+    expect(useAppStore.getState().epgMatchTarget).toBeNull()
+  })
+
+  it('clears the target once the guide has consumed it', () => {
+    useAppStore.getState().openEpgMatch(42, 'BBC One HD')
+
+    useAppStore.getState().clearEpgMatchTarget()
+
+    expect(useAppStore.getState().epgMatchTarget).toBeNull()
+    expect(useAppStore.getState().guideOpen).toBe(true)
   })
 })
 

@@ -1743,21 +1743,59 @@ body.resizing-col {
   white-space: nowrap;
 }
 
-.epg-hide-button {
-  flex: 0 0 24px;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--text-dim);
-  font-size: 12px;
-  line-height: 1;
-  cursor: pointer;
+/* The channel row's right-click menu (hide / EPG match). Fixed-positioned at the cursor and
+   clamped into the viewport by EpgGrid, which owns the one instance — rows are virtualized, so a
+   per-row menu would be recycled out from under the user. */
+.epg-context-menu {
+  position: fixed;
+  z-index: 70;
+  min-width: 190px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.5);
 }
 
-.epg-hide-button:hover {
+.epg-context-menu-title {
+  padding: 4px 8px 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 2px;
+}
+
+.epg-context-menu button {
+  background: none;
+  border: none;
+  border-radius: 6px;
+  text-align: left;
+  padding: 7px 9px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.epg-context-menu button:hover,
+.epg-context-menu button:focus-visible {
+  background: var(--bg-hover);
   color: var(--accent);
+}
+
+/* "EPG match…" banner inside the mapping editor, naming the channel the guide was opened for. */
+.epg-match-banner {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-hover);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 6px 6px 0;
 }
 
 .epg-row-timeline {

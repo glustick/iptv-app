@@ -398,6 +398,63 @@ async function main() {
   await click('.guide-card .modal-close')
   await check('the guide surface closes again', '!document.querySelector(".guide-card")', 8000)
 
+  // --- channel rows: right-click menu instead of the inline hide icon (0.7.93) ----------------
+  // The row used to carry a ⊘/👁 button next to every channel name; hiding and the EPG-match jump
+  // now live on a right-click menu. Covered here rather than by unit tests because jsdom renders
+  // no virtualized rows (react-window measures its container, which is always 0 in jsdom).
+  await check('the inline hide icon is gone', '!document.querySelector(".epg-hide-button")')
+  const firstChannelName = await evaluate(
+    cdp,
+    'document.querySelector(".epg-row .epg-row-channel-name")?.innerText ?? null'
+  )
+  console.log('first channel row:', firstChannelName)
+  // Right-click = a bubbling 'contextmenu' event on the row, which is what React listens for.
+  const rightClickRow = (name) => `(() => {
+    const row = [...document.querySelectorAll('.epg-row')].find((r) => r.innerText.includes(${JSON.stringify(name)}))
+    if (!row) return false
+    const rect = row.getBoundingClientRect()
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: Math.round(rect.left + 40), clientY: Math.round(rect.top + 12) }))
+    return true
+  })()`
+  const clickMenuItem = (pattern) =>
+    `[...document.querySelectorAll('.epg-context-menu button')].find((b) => ${pattern}.test(b.textContent))?.click() || true`
+
+  await evaluate(cdp, rightClickRow(firstChannelName))
+  await check('right-click opens the channel context menu', '!!document.querySelector(".epg-context-menu")')
+  await check(
+    'the menu names the channel it was opened on',
+    `document.querySelector('.epg-context-menu-title')?.innerText === ${JSON.stringify(firstChannelName)}`
+  )
+
+  // Hide it through the menu, then confirm the "Show hidden" affordance appears…
+  await evaluate(cdp, clickMenuItem('/Hide channel/'))
+  await check('hiding from the menu drops the row and offers Show hidden', has('Show hidden (1)'))
+  // …and that the hidden channel can be brought back the same way (the menu's label flips).
+  await evaluate(cdp, `[...document.querySelectorAll('.epg-density-toggle')].find((b) => /Show hidden/.test(b.textContent))?.click()`)
+  await check('hidden channels can be shown again', has('Hide hidden'))
+  await evaluate(cdp, rightClickRow(firstChannelName))
+  await check(
+    'a hidden channel\'s menu offers to show it again',
+    `[...document.querySelectorAll('.epg-context-menu button')].some((b) => /Show channel/.test(b.textContent))`
+  )
+  await evaluate(cdp, clickMenuItem('/Show channel/'))
+  await check(
+    'restoring from the menu leaves no hidden channels behind',
+    '![...document.querySelectorAll(".epg-density-toggle")].some((b) => /hidden/.test(b.textContent))'
+  )
+
+  // The other menu item: jump straight to fixing this channel's guide listing.
+  await evaluate(cdp, rightClickRow(firstChannelName))
+  await evaluate(cdp, clickMenuItem('/EPG match/'))
+  await check('EPG match opens the guide surface', '!!document.querySelector(".guide-card")', 8000)
+  await check(
+    'the guide says which channel it was opened for',
+    `document.body.innerText.includes(${JSON.stringify('Matching ' + firstChannelName)})`
+  )
+  await check('the aimed channel opens with its mapping editor', '!!document.querySelector(".epg-mapping-editor")')
+  await click('.guide-card .modal-close')
+  await check('the guide closes after the EPG-match jump', '!document.querySelector(".guide-card")', 8000)
+
   // The My Categories manager, and — since both were real bugs once — that Escape closes it and
   // that it opens on the tab for the section it was launched from.
   await click('.my-categories-manage')

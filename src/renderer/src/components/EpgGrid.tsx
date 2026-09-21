@@ -32,6 +32,13 @@ function formatTime(epochSeconds: string, clockFormat: ClockFormat): string {
   })
 }
 
+/** An open channel context menu: which channel, and where on screen it was opened. */
+interface ChannelMenuState {
+  channel: LiveStream
+  x: number
+  y: number
+}
+
 interface RowProps {
   channels: LiveStream[]
   windowStart: number
@@ -43,6 +50,10 @@ interface RowProps {
   onSelectChannel: (channel: LiveStream) => void
   onWatchFullscreen: (channel: LiveStream) => void
   onWatchTimeshift: (channel: LiveStream, program: ShortEpgProgram) => void
+  // Right-click (or Ctrl+click / the keyboard Menu key) on a row — the row reports the event up
+  // so the menu itself can live at the grid level, where it doesn't get recycled by
+  // virtualization and doesn't need a copy per row.
+  onChannelContextMenu: (e: React.MouseEvent, channel: LiveStream) => void
 }
 
 function EpgRow({
@@ -57,15 +68,14 @@ function EpgRow({
   clockFormat,
   onSelectChannel,
   onWatchFullscreen,
-  onWatchTimeshift
+  onWatchTimeshift,
+  onChannelContextMenu
 }: { index: number; style: CSSProperties } & RowProps): JSX.Element {
   const channel = channels[index]
   const shortEpgByStream = useAppStore((s) => s.shortEpgByStream)
   const loadShortEpg = useAppStore((s) => s.loadShortEpg)
   const toggleEpgReminder = useAppStore((s) => s.toggleEpgReminder)
   const isEpgReminderSet = useAppStore((s) => s.isEpgReminderSet)
-  const toggleHiddenLiveChannel = useAppStore((s) => s.toggleHiddenLiveChannel)
-  const hiddenLiveStreamIds = useAppStore((s) => s.settings.hiddenLiveStreamIds)
 
   // Rows are virtualized, so this only fires for channels actually scrolled into view —
   // fine even against a 24k-channel catalog. This is also the workaround for providers
@@ -94,7 +104,8 @@ function EpgRow({
       style={style}
       className={`epg-row${isActive ? ' active' : ''}${isFocused ? ' epg-row--focused' : ''}`}
       onDoubleClick={() => onWatchFullscreen(channel)}
-      title={`${channel.name} (double-click for fullscreen)`}
+      onContextMenu={(e) => onChannelContextMenu(e, channel)}
+      title={`${channel.name} (double-click for fullscreen · right-click for options)`}
     >
       <div className="epg-row-channel-wrap">
         <button className="epg-row-channel" onClick={() => onSelectChannel(channel)}>
@@ -104,17 +115,6 @@ function EpgRow({
             <span className="epg-row-channel-icon placeholder" />
           )}
           <span className="epg-row-channel-name">{channel.name}</span>
-        </button>
-        <button
-          className="epg-hide-button"
-          title={hiddenLiveStreamIds.includes(channel.stream_id) ? 'Show channel' : 'Hide channel'}
-          aria-label={hiddenLiveStreamIds.includes(channel.stream_id) ? `Show ${channel.name}` : `Hide ${channel.name}`}
-          onClick={(e) => {
-            e.stopPropagation()
-            toggleHiddenLiveChannel(channel.stream_id)
-          }}
-        >
-          {hiddenLiveStreamIds.includes(channel.stream_id) ? '👁' : '⊘'}
         </button>
       </div>
       <div className="epg-row-timeline">
@@ -216,12 +216,20 @@ export function EpgGrid({
   const listRef = useListRef(null)
   const rootRef = useRef<HTMLDivElement>(null)
   const appliedInitialScroll = useRef(false)
+  // One menu at the grid level, not one per row: rows are recycled by the virtualizer, so a
+  // menu living inside a row would be torn down (or reused for a different channel) the moment
+  // it scrolled out of view.
+  const [contextMenu, setContextMenu] = useState<ChannelMenuState | null>(null)
+  const contextMenuRef = useRef<HTMLDivElement>(null)
 
   // Shared by the main docked guide and the fullscreen channel-swap overlay (both render this
   // same component) — persisted so a name that was clipped once stays legible everywhere this
   // grid shows up, not just in whichever context it was resized from.
   const epgChannelColumnWidth = useAppStore((s) => s.settings.epgChannelColumnWidth)
   const updateSettings = useAppStore((s) => s.updateSettings)
+  const toggleHiddenLiveChannel = useAppStore((s) => s.toggleHiddenLiveChannel)
+  const hiddenLiveStreamIds = useAppStore((s) => s.settings.hiddenLiveStreamIds)
+  const openEpgMatch = useAppStore((s) => s.openEpgMatch)
   const { width: channelColumnWidth, startDrag: startChannelColumnDrag } = useResizableWidth(
     epgChannelColumnWidth,
     1,
@@ -245,6 +253,48 @@ export function EpgGrid({
   useEffect(() => {
     if (autoFocus) rootRef.current?.focus()
   }, [])
+
+  // Closes the menu when the user clicks anywhere else. Deliberately a plain document listener
+  // owned by this effect (added only while a menu is open) rather than an entry in App.tsx's
+  // central overlay chain: that chain exists to order the app's *modals*, and this is a
+  // transient popup that lives and dies with its own grid.
+  useEffect(() => {
+    if (!contextMenu) return
+    // Focused so Escape is handled by the menu's own onKeyDown below — without this the key would
+    // travel to App.tsx's document-level handler, which knows nothing about this menu and would
+    // fall through to closing the preview or stopping playback behind it.
+    contextMenuRef.current?.focus()
+    function onDocMouseDown(e: MouseEvent): void {
+      if ((e.target as HTMLElement | null)?.closest('.epg-context-menu')) return
+      setContextMenu(null)
+    }
+    document.addEventListener('mousedown', onDocMouseDown)
+    return () => document.removeEventListener('mousedown', onDocMouseDown)
+  }, [contextMenu])
+
+  // The menu is 190px wide and two items tall (plus its title row) — clamped against the viewport
+  // so a right-click near an edge still opens it fully on screen rather than half off it.
+  function openChannelMenu(x: number, y: number, channel: LiveStream): void {
+    const MENU_WIDTH = 200
+    const MENU_HEIGHT = 110
+    setContextMenu({
+      channel,
+      x: Math.max(8, Math.min(x, window.innerWidth - MENU_WIDTH - 8)),
+      y: Math.max(8, Math.min(y, window.innerHeight - MENU_HEIGHT - 8))
+    })
+  }
+
+  function handleRowContextMenu(e: React.MouseEvent, channel: LiveStream): void {
+    e.preventDefault()
+    openChannelMenu(e.clientX, e.clientY, channel)
+  }
+
+  function closeChannelMenu(refocusGrid = true): void {
+    setContextMenu(null)
+    // Focus returns to the grid so the arrow-key row navigation it already owns keeps working
+    // after the menu closes (the menu itself took focus while it was open).
+    if (refocusGrid) rootRef.current?.focus()
+  }
 
   // Keeps the focused row in range as the channel list itself changes (a search filter
   // shrinking it, a different category loading in) rather than pointing past the end.
@@ -293,6 +343,10 @@ export function EpgGrid({
   for (let t = firstTick; t <= windowEnd; t += HOUR_MS) hourTicks.push(t)
 
   function handleWheel(e: React.WheelEvent): void {
+    // The menu is anchored to a screen position, but the row it belongs to scrolls with the
+    // grid — so any scroll over the grid (but not over the menu itself) closes it, which is the
+    // behaviour every native context menu has.
+    if (contextMenu && !(e.target as HTMLElement).closest('.epg-context-menu')) setContextMenu(null)
     // Horizontal trackpad swipe (deltaX) or a plain mouse wheel while holding Shift
     // (browsers report that as deltaX too) shifts the visible time window; a normal
     // vertical scroll is left alone so it can scroll the channel rows as usual.
@@ -315,6 +369,9 @@ export function EpgGrid({
     // doesn't stopPropagation — without this check, grabbing it would also start a time-pan
     // drag at the same time, fighting over the same mousemove/mouseup listeners.
     if ((e.target as HTMLElement).closest('.resize-handle')) return
+    // The context menu floats over the timeline, so a click on one of its items would otherwise
+    // also start (and immediately finish) a time-pan drag underneath it.
+    if ((e.target as HTMLElement).closest('.epg-context-menu')) return
     const container = rootRef.current
     if (!container) return
     const rect = container.getBoundingClientRect()
@@ -388,6 +445,14 @@ export function EpgGrid({
       e.preventDefault()
       const channel = channels[focusedIndex]
       if (channel) onSelectChannel(channel)
+    } else if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
+      // Keyboard equivalent of right-click, anchored to the focused row rather than a cursor.
+      e.preventDefault()
+      const channel = channels[focusedIndex]
+      if (!channel) return
+      const rowChannel = rootRef.current?.querySelector('.epg-row--focused .epg-row-channel')
+      const rect = rowChannel?.getBoundingClientRect()
+      openChannelMenu(rect ? rect.left + 32 : 32, rect ? rect.bottom : 64, channel)
     }
   }
 
@@ -451,13 +516,61 @@ export function EpgGrid({
               clockFormat,
               onSelectChannel,
               onWatchFullscreen,
-              onWatchTimeshift
+              onWatchTimeshift,
+              onChannelContextMenu: handleRowContextMenu
             }}
             rowComponent={EpgRow}
             style={{ height: '100%', width: '100%' }}
           />
         )}
       </div>
+      {contextMenu && (
+        <div
+          ref={contextMenuRef}
+          className="epg-context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          role="menu"
+          tabIndex={-1}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              // Handled here, and stopped from reaching App.tsx's document-level chain, because
+              // this menu isn't part of that chain — see the outside-click effect above.
+              e.stopPropagation()
+              closeChannelMenu()
+            }
+          }}
+        >
+          <span className="epg-context-menu-title" title={contextMenu.channel.name}>
+            {contextMenu.channel.name}
+          </span>
+          <button
+            role="menuitem"
+            onClick={() => {
+              toggleHiddenLiveChannel(contextMenu.channel.stream_id)
+              closeChannelMenu()
+            }}
+          >
+            {hiddenLiveStreamIds.includes(contextMenu.channel.stream_id) ? 'Show channel' : 'Hide channel'}
+          </button>
+          <button
+            role="menuitem"
+            onClick={() => {
+              const channel = contextMenu.channel
+              // No refocus: the guide's own modal takes over from here.
+              closeChannelMenu(false)
+              void (async () => {
+                // True OS fullscreen paints only the fullscreened element and its descendants
+                // (see App.tsx's onOpenAbout), so opening this from the fullscreen channel bar
+                // means leaving fullscreen first or the modal would render invisibly behind it.
+                if (document.fullscreenElement) await document.exitFullscreen().catch(() => {})
+                openEpgMatch(channel.stream_id, channel.name)
+              })()
+            }}
+          >
+            EPG match…
+          </button>
+        </div>
+      )}
     </div>
   )
 }

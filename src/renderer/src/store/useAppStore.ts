@@ -290,6 +290,10 @@ interface AppState {
   // than a section id on Settings keeps the two surfaces independent, so each can be opened,
   // closed and Escape-handled on its own (see lib/overlays.ts for the priority chain).
   guideOpen: boolean
+  // Set by a channel row's context menu ("EPG match…") to aim the Guide & EPG surface at one
+  // channel: GuideSettingsPage consumes it on open and opens that channel's mapping editor with
+  // the channel preselected (see openEpgMatch). null when nothing is being matched.
+  epgMatchTarget: { streamId: number; streamName: string } | null
   aboutOpen: boolean
 
   vpnStatus: VpnStatus
@@ -466,6 +470,10 @@ interface AppState {
   // always exactly one Escape target between them.
   openGuide: () => void
   closeGuide: () => void
+  // Opens the guide aimed at one channel — see epgMatchTarget. Clears the target if the guide
+  // is merely opened normally instead.
+  openEpgMatch: (streamId: number, streamName: string) => void
+  clearEpgMatchTarget: () => void
   // Resolves rather than throws either way (ok: false carries the error message) — Settings
   // renders these results directly rather than needing its own try/catch around every call.
   exportBackup: () => Promise<{ ok: boolean; path?: string; error?: string }>
@@ -551,6 +559,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   pinPromptError: null,
   settingsOpen: false,
   guideOpen: false,
+  epgMatchTarget: null,
   aboutOpen: false,
 
   vpnStatus: 'disconnected',
@@ -1784,8 +1793,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   openSettings: () => set({ settingsOpen: true, guideOpen: false }),
   closeSettings: () => set({ settingsOpen: false }),
 
-  openGuide: () => set({ guideOpen: true, settingsOpen: false }),
+  openGuide: () => set({ guideOpen: true, settingsOpen: false, epgMatchTarget: null }),
   closeGuide: () => set({ guideOpen: false }),
+
+  openEpgMatch: (streamId, streamName) =>
+    set({ epgMatchTarget: { streamId, streamName }, guideOpen: true, settingsOpen: false }),
+
+  clearEpgMatchTarget: () => set({ epgMatchTarget: null }),
 
   exportBackup: async () => {
     try {

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAppStore, PROVIDER_GUIDE_LABEL } from '../store/useAppStore'
 import { buildGuideIndex, suggestGuideChannels, resolveStreamToGuide, unionEpgSourceUrls, type GuideIndex } from '../lib/epg'
 
@@ -48,6 +48,11 @@ export function GuideSettingsPage(): JSX.Element | null {
   const ensureChannelCatalog = useAppStore((s) => s.ensureChannelCatalog)
   const applySuggestedMappings = useAppStore((s) => s.applySuggestedMappings)
   const applySuggestedMappingsAcrossSources = useAppStore((s) => s.applySuggestedMappingsAcrossSources)
+  // Set by a channel row's "EPG match…" (see the store's openEpgMatch) — consumed by the effect
+  // below, which opens the right source's editor with that channel already picked.
+  const epgMatchTarget = useAppStore((s) => s.epgMatchTarget)
+  const clearEpgMatchTarget = useAppStore((s) => s.clearEpgMatchTarget)
+  const epgSourceByStream = useAppStore((s) => s.epgSourceByStream)
 
   const [epgUrlDraft, setEpgUrlDraft] = useState('')
   // Manual channel-mapping editor state — one source's editor open at a time (keyed by the
@@ -73,6 +78,38 @@ export function GuideSettingsPage(): JSX.Element | null {
   // The bulk run resolves the whole catalogue, chunked so the window keeps painting — this drives
   // the "working" state on the buttons so the run never looks like nothing happened.
   const [bulkBusy, setBulkBusy] = useState(false)
+  // The channel an "EPG match…" click aimed at, once this page has resolved it to a source —
+  // drives the banner inside the editor and clears as soon as the mapping is added or another
+  // editor is opened.
+  const [matchFor, setMatchFor] = useState<{ sourceUrl: string; streamId: number; streamName: string } | null>(null)
+
+  // An "EPG match…" click hands over a channel to fix. Which source's editor should open? The
+  // one already supplying this channel, when that's one of the user's own sources — otherwise
+  // the first user source. The provider's own guide is never mappable by hand (its channel ids
+  // are what epg_channel_id already refers to; see EpgChannelMapping), so it's never a target.
+  // The target is consumed immediately so re-opening the guide normally starts clean.
+  useEffect(() => {
+    if (!guideOpen) {
+      setMatchFor(null)
+      return
+    }
+    if (!epgMatchTarget) return
+    const supplying = epgSourceByStream[epgMatchTarget.streamId]
+    const targetUrl =
+      supplying && supplying !== PROVIDER_GUIDE_LABEL && settings.customEpgUrls.includes(supplying)
+        ? supplying
+        : (settings.customEpgUrls[0] ?? null)
+    const target = epgMatchTarget
+    clearEpgMatchTarget()
+    if (!targetUrl) {
+      // Nothing to map into yet (no user source configured) — the page still opens on its
+      // sources section, which is where a source gets added.
+      setMatchFor(null)
+      return
+    }
+    toggleMappingEditor(targetUrl, { streamId: target.streamId })
+    setMatchFor({ sourceUrl: targetUrl, streamId: target.streamId, streamName: target.streamName })
+  }, [guideOpen, epgMatchTarget])
 
   if (!guideOpen) return null
 
@@ -91,16 +128,20 @@ export function GuideSettingsPage(): JSX.Element | null {
         ? { cls: 'guide-chip guide-chip--warn', text: 'Blocked or disabled by this provider' }
         : { cls: 'guide-chip guide-chip--muted', text: epgSourcesStatus === 'loading' ? 'Checking…' : 'Not checked' }
 
-  function toggleMappingEditor(url: string): void {
-    if (mappingOpenFor === url) {
+  function toggleMappingEditor(url: string, preset?: { streamId: number }): void {
+    if (mappingOpenFor === url && !preset) {
       setMappingOpenFor(null)
+      setMatchFor(null)
       return
     }
     setMappingOpenFor(url)
     setGuideSearch('')
     setStreamSearch('')
     setSelectedGuideChannelId(null)
-    setSelectedStreamId(null)
+    // Preselected when the editor was opened from a channel's "EPG match…"; null for a plain
+    // "Map channels" click, which resets whatever was selected before.
+    setSelectedStreamId(preset ? preset.streamId : null)
+    setMatchFor(null)
     setOnlyUnmatched(false)
     setUnmatchedIds(null)
     setBulkResult(null)
@@ -117,6 +158,7 @@ export function GuideSettingsPage(): JSX.Element | null {
 
   function removeSource(url: string): void {
     removeCustomEpgUrl(url)
+    if (matchFor?.sourceUrl === url) setMatchFor(null)
     // A removed source can't keep its editor open — leaving it would show the picker for a guide
     // that is no longer in the pool.
     if (mappingOpenFor === url) setMappingOpenFor(null)
@@ -286,10 +328,17 @@ export function GuideSettingsPage(): JSX.Element | null {
       setSelectedStreamId(null)
       setGuideSearch('')
       setStreamSearch('')
+      setMatchFor(null)
     }
 
     return (
       <div className="epg-mapping-editor">
+        {matchFor?.sourceUrl === url && (
+          <p className="epg-match-banner">
+            Matching <strong>{matchFor.streamName}</strong> — it&apos;s already picked on the right,
+            with its closest guide channels suggested below. Choose the right one, then Add mapping.
+          </p>
+        )}
         {mappings.length > 0 ? (
           <ul className="epg-mapping-list">
             {mappings.map((m) => (
