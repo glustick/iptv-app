@@ -19,6 +19,7 @@ export function TopBar(): JSX.Element {
   const connect = useAppStore((s) => s.connect)
   const disconnect = useAppStore((s) => s.disconnect)
   const openSettings = useAppStore((s) => s.openSettings)
+  const openGuide = useAppStore((s) => s.openGuide)
   const isOnline = useAppStore((s) => s.isOnline)
   const vpnHasProfiles = useAppStore((s) => s.settings.vpnProfiles.length > 0)
   const vpnStatus = useAppStore((s) => s.vpnStatus)
@@ -100,6 +101,11 @@ export function TopBar(): JSX.Element {
         ) : (
           <span className="profile-name">{activeProfile?.name}</span>
         )}
+        {/* The guide is the app's own reason to exist, so it gets its own top-bar button rather than
+            only being reachable one level down inside Settings. */}
+        <button className="icon-button" onClick={openGuide} title="Guide &amp; EPG">
+          🗓
+        </button>
         <button className="icon-button" onClick={openSettings} title="Settings">
           ⚙
         </button>

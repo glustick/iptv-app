@@ -233,20 +233,21 @@ async function main() {
     }
     console.log('catalogue:', JSON.stringify(report))
 
-    // The EPG match report: the app's own account of matching at this provider's real scale. A real
-    // provider's guide is megabytes, so this waits for the report rather than assuming it's ready.
-    await click('button.icon-button[title="Settings"]')
+    // The source cards (provider guide + each user source, with their match summaries) live on the
+    // Guide & EPG surface now — its own modal, opened from the top bar (0.7.92). A real provider's
+    // guide is megabytes, so this waits for the cards to fill in rather than assuming they're ready.
+    await click('button.icon-button[title="Guide & EPG"]')
     let epgReport = null
     for (let i = 0; i < 60; i++) {
-      const settingsOpen = await evaluate(cdp, '!!document.querySelector(".settings-card")')
-      if (!settingsOpen) {
-        await click('button.icon-button[title="Settings"]')
+      const guideOpen = await evaluate(cdp, '!!document.querySelector(".guide-card")')
+      if (!guideOpen) {
+        await click('button.icon-button[title="Guide & EPG"]')
       }
-      epgReport = await evaluate(cdp, 'document.querySelector(".epg-match-report")?.innerText ?? null')
+      epgReport = await evaluate(cdp, 'document.querySelector(".guide-card .guide-section")?.innerText ?? null')
       if (epgReport) break
       await sleep(1000)
     }
-    console.log('=== EPG match report at real scale ===\n' + (epgReport ?? '(no report block yet)'))
+    console.log('=== EPG sources + matching at real scale ===\n' + (epgReport ?? '(no guide content yet)'))
     const issues = await evaluate(
       cdp,
       'JSON.stringify([...document.querySelectorAll(".epg-source-issue")].map((e) => e.innerText.slice(0, 90)))'
@@ -254,10 +255,10 @@ async function main() {
     console.log('source issues:', issues)
     const sources = await evaluate(
       cdp,
-      'JSON.stringify([...document.querySelectorAll(".epg-source-url")].map((e) => e.innerText.slice(0, 60)))'
+      'JSON.stringify([...document.querySelectorAll(".guide-source-title")].map((e) => e.innerText.slice(0, 60)))'
     )
     console.log('sources listed:', sources)
-    await click('.settings-card .modal-close')
+    await click('.guide-card .modal-close')
     await sleep(800)
 
     // One real live channel: does it decode? (Short by design — the account has connection limits.)
@@ -283,17 +284,17 @@ async function main() {
     process.exit(0)
   }
 
-  // --probe-settings: open Settings and dump it, which is where the EPG match report lives.
-  if (process.argv.includes('--probe-settings')) {
-    await evaluate(cdp, 'document.querySelector("button.icon-button[title=\'Settings\']")?.click()')
+  // --probe-guide: open the Guide & EPG surface and dump its source cards and match summaries.
+  if (process.argv.includes('--probe-guide')) {
+    await evaluate(cdp, 'document.querySelector("button.icon-button[title=\'Guide & EPG\']")?.click()')
     await sleep(1500)
-    const report = await evaluate(
+    const sources = await evaluate(
       cdp,
-      'document.querySelector(".epg-match-report")?.innerText ?? "(no match report block)"'
+      '[...document.querySelectorAll(".guide-source-card")].map((c) => c.innerText).join("\n---\n") || "(no source cards)"'
     )
-    const sources = await evaluate(cdp, 'document.querySelector(".lock-list")?.innerText ?? "(no sources list)"')
-    console.log('=== EPG sources list ===\n' + sources)
-    console.log('=== EPG match report ===\n' + report)
+    const stats = await evaluate(cdp, 'document.querySelector(".guide-stats")?.innerText ?? "(no stats row)"')
+    console.log('=== Guide stats ===\n' + stats)
+    console.log('=== Guide source cards ===\n' + sources)
     cdp.close()
     process.exit(0)
   }
@@ -347,22 +348,38 @@ async function main() {
   // Provenance line under the preview: which source is feeding this channel.
   await check('the preview names the guide source', has('Guide:'))
 
-  // Settings → the EPG match report, which is the app's own account of what it matched.
+  // Settings is decluttered: it now links to the guide rather than carrying all of it (0.7.92) —
+  // so first confirm the link is there and the old, sprawling EPG section is gone from Settings.
   await click('button.icon-button[title="Settings"]')
+  await sleep(1000)
+  await check('Settings links to the guide surface', has('Open guide settings'))
+  await check(
+    'Settings no longer carries the EPG panel itself',
+    '![...document.querySelectorAll(".settings-card h3")].some((h) => h.textContent === "EPG sources")'
+  )
+  await click('.settings-card .modal-close')
+  await check('Settings closes again', '!document.querySelector(".settings-card")', 8000)
+
+  // The Guide & EPG surface — its own modal — holds the source cards and the match report.
+  await click('button.icon-button[title="Guide & EPG"]')
   await sleep(1200)
+  await check('the guide surface opens', '!!document.querySelector(".guide-card")')
+  await check('the provider guide is shown as a source card', has('Provider guide (xmltv.php)'))
   await check('the match report counts the relaxed-tier match', has('1 by relaxed match'))
+  await check('the guide lists the user-added source alongside the provider guide', has('custom.xml'))
   // The report lists unmatched channels per source; the residue channel must appear in one of them
-  // (position-independent: the row and the ordering both vary). This lives here, inside Settings,
-  // because that is where the report is rendered — asserting it earlier looked at the grid instead.
+  // (position-independent: the row and the ordering both vary). The unmatched names are behind a
+  // collapsed disclosure now, so open it first — innerText skips hidden content.
+  await evaluate(cdp, '[...document.querySelectorAll("details.guide-unmatched")].forEach((d) => (d.open = true))')
   await check(
     'a channel no source covers is reported unmatched by at least one source',
     '/No match for:[^|]*Channel One News Extra/.test(document.body.innerText)',
     30000
   )
-  await check('the match report lists the user-added source alongside the provider guide', has('custom.xml'))
-  // Close Settings via ITS OWN close button: several overlays carry `.modal-close`, and the first
-  // one in the DOM belongs to the channel preview panel — clicking that left Settings open, which
-  // then made the Escape check below look like a failure when Escape was behaving correctly.
+  // Close the guide via ITS OWN close button (not a bare `.modal-close`): several overlays carry
+  // that class, and the first one in the DOM belongs to the channel preview panel — clicking that
+  // left the guide open, which once made the Escape check below look like a failure when Escape
+  // was behaving correctly.
   // The bulk apply, driven through the UI: it resolves the whole catalogue chunked (0.7.88) so the
   // window keeps painting, and must report what it did. The assertion accepts either outcome,
   // because a re-run finds the residue already mapped — what it is really guarding is that the run
@@ -378,8 +395,8 @@ async function main() {
   )
   await check('the match report reflects the manual mapping it placed', has('by manual mapping'), 20000)
 
-  await click('.settings-card .modal-close')
-  await check('Settings closes again', '!document.querySelector(".settings-card")', 8000)
+  await click('.guide-card .modal-close')
+  await check('the guide surface closes again', '!document.querySelector(".guide-card")', 8000)
 
   // The My Categories manager, and — since both were real bugs once — that Escape closes it and
   // that it opens on the tab for the section it was launched from.

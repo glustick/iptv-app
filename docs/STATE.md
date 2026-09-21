@@ -19,7 +19,7 @@ Release workflow are both green on every tagged release.
 This is the part with the most moving pieces, so it's worth understanding as a whole:
 
 1. **Sources** — the provider's own `xmltv.php` guide (when not blocked, which most resellers do) plus
-   any number of user-added third-party XMLTV URLs (Settings ▸ EPG sources). `loadEpgSources`
+   any number of user-added third-party XMLTV URLs (Guide & EPG, its own surface since 0.7.92 — formerly rolled into Settings). `loadEpgSources`
    fetches them through the local proxy, transparently handling gzip (`.xml.gz`) bodies. A monotonic
    run token means only the newest load may commit, so adding/removing a source mid-download can't
    resurrect stale state. Every configured source is accounted for in the report — loaded sources

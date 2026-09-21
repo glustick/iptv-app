@@ -193,8 +193,8 @@ export interface VpnProfile {
   password: string | null
 }
 
-// One manual "this guide channel feeds this app channel" link, created in Settings ▸ EPG
-// sources ▸ Map channels. sourceUrl keys the mapping to one user-added XMLTV source (the
+// One manual "this guide channel feeds this app channel" link, created on the Guide & EPG
+// surface ▸ Map channels. sourceUrl keys the mapping to one user-added XMLTV source (the
 // provider's own guide is deliberately not mappable — its channel ids are what epg_channel_id
 // already refers to, so the automatic join covers it); guideChannelId is that guide's own
 // <channel id>; streamId is the app channel the guide's programmes should fill. The two name

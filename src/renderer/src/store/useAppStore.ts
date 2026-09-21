@@ -284,6 +284,12 @@ interface AppState {
   pinPromptCategoryId: string | null
   pinPromptError: string | null
   settingsOpen: boolean
+  // The dedicated "Guide & EPG" surface (0.7.92) — the EPG configuration used to live inside
+  // the Settings modal, which had grown a single long scroll where the guide pool, the mapping
+  // editor and the match report sat between the PIN and the VPN profiles. A separate flag rather
+  // than a section id on Settings keeps the two surfaces independent, so each can be opened,
+  // closed and Escape-handled on its own (see lib/overlays.ts for the priority chain).
+  guideOpen: boolean
   aboutOpen: boolean
 
   vpnStatus: VpnStatus
@@ -367,8 +373,8 @@ interface AppState {
   // yet have provider-fetched data — runs after a pool loads and after each category's
   // liveStreams arrive, since matching needs the channel list.
   applyEpgPool: () => void
-  // Bulk-applies high-confidence suggestions for one source's unmatched channels (Settings ▸ EPG
-  // sources ▸ Map channels) — creates ordinary manual mappings, so every one stays individually
+  // Bulk-applies high-confidence suggestions for one source's unmatched channels (Guide & EPG ▸
+  // Map channels) — creates ordinary manual mappings, so every one stays individually
   // reviewable and removable afterwards. Returns what it did for the editor to report.
   applySuggestedMappings: (sourceUrl: string, threshold: number) => Promise<{ applied: number; stillUnmatched: number }>
   // The same bulk apply, run across every user-added source in priority order: per source, only
@@ -385,7 +391,7 @@ interface AppState {
   // own guide is always tried first, then custom sources top to bottom, and the first source with
   // programmes for a channel wins it.
   reorderCustomEpgUrls: (fromIndex: number, toIndex: number) => void
-  // Manual guide-channel → app-channel links (Settings ▸ EPG sources ▸ Map channels) —
+  // Manual guide-channel → app-channel links (Guide & EPG ▸ Map channels) —
   // persisted in settings.epgChannelMappings and applied on the next applyEpgPool.
   addEpgChannelMapping: (mapping: EpgChannelMapping) => void
   removeEpgChannelMapping: (sourceUrl: string, streamId: number) => void
@@ -456,6 +462,10 @@ interface AppState {
   cancelPinPrompt: () => void
   openSettings: () => void
   closeSettings: () => void
+  // Opening either surface closes the other — they are siblings, never stacked, so there is
+  // always exactly one Escape target between them.
+  openGuide: () => void
+  closeGuide: () => void
   // Resolves rather than throws either way (ok: false carries the error message) — Settings
   // renders these results directly rather than needing its own try/catch around every call.
   exportBackup: () => Promise<{ ok: boolean; path?: string; error?: string }>
@@ -540,6 +550,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   pinPromptCategoryId: null,
   pinPromptError: null,
   settingsOpen: false,
+  guideOpen: false,
   aboutOpen: false,
 
   vpnStatus: 'disconnected',
@@ -1770,8 +1781,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   cancelPinPrompt: () => set({ pinPromptCategoryId: null, pinPromptError: null }),
 
-  openSettings: () => set({ settingsOpen: true }),
+  openSettings: () => set({ settingsOpen: true, guideOpen: false }),
   closeSettings: () => set({ settingsOpen: false }),
+
+  openGuide: () => set({ guideOpen: true, settingsOpen: false }),
+  closeGuide: () => set({ guideOpen: false }),
 
   exportBackup: async () => {
     try {

@@ -16,7 +16,8 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { UpdatePrompt } from './UpdatePrompt'
 import { Sidebar } from './Sidebar'
 import { CustomCategoriesModal } from './CustomCategoriesModal'
-import { useAppStore } from '../store/useAppStore'
+import { GuideSettingsPage } from './GuideSettingsPage'
+import { useAppStore, PROVIDER_GUIDE_LABEL } from '../store/useAppStore'
 import { DEFAULT_SETTINGS } from '../lib/types'
 import type { LiveStream } from '../lib/types'
 
@@ -45,11 +46,18 @@ beforeEach(() => {
     updateDownloadPercent: null,
     updateError: null,
     customCategoriesOpen: false,
+    guideOpen: false,
     settings: DEFAULT_SETTINGS,
     numericChannelCatalog: null,
     vodCatalog: null,
     seriesCatalog: null,
-    viewMode: 'live'
+    viewMode: 'live',
+    status: 'idle',
+    epgSources: [],
+    epgSourceLabels: [],
+    epgSourceIssues: {},
+    epgSourceMatchStats: [],
+    providerGuideAvailable: null
   })
 })
 
@@ -221,5 +229,106 @@ describe('Sidebar My Categories rows', () => {
 
     expect(screen.getByText('Movie One')).toBeTruthy()
     expect(screen.queryByText('Live One')).toBeNull()
+  })
+})
+
+describe('GuideSettingsPage', () => {
+  const SOURCE = 'https://example.com/guide.xml'
+
+  function withEpg(): void {
+    useAppStore.setState({
+      guideOpen: true,
+      status: 'ready',
+      providerGuideAvailable: false,
+      epgSourcesStatus: 'ready',
+      epgSourceLabels: [SOURCE],
+      // No parsed guide object needed for these assertions — the card's status chip falls back to
+      // "Not loaded" when there is none, which is exactly the state a failed/never-fetched source
+      // is in.
+      epgSources: [],
+      epgSourceIssues: {},
+      epgSourceMatchStats: [
+        {
+          source: PROVIDER_GUIDE_LABEL,
+          available: false,
+          reason: 'blocked or disabled by this provider',
+          loadedChannels: 10,
+          matched: 0,
+          byId: 0,
+          byName: 0,
+          byFuzzy: 0,
+          byManual: 0,
+          unmatchedNames: []
+        },
+        {
+          source: SOURCE,
+          available: true,
+          reason: null,
+          loadedChannels: 10,
+          matched: 8,
+          byId: 6,
+          byName: 1,
+          byFuzzy: 1,
+          byManual: 0,
+          unmatchedNames: ['Five HD']
+        }
+      ],
+      settings: { ...DEFAULT_SETTINGS, customEpgUrls: [SOURCE], epgChannelMappings: [] }
+    })
+  }
+
+  it('renders nothing while closed', () => {
+    useAppStore.setState({ guideOpen: false })
+    const { container } = render(<GuideSettingsPage />)
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('shows the provider guide and each custom source with its own match summary', () => {
+    withEpg()
+    render(<GuideSettingsPage />)
+
+    // The provider's own guide is a first-class card, not only a row in a separate report.
+    expect(screen.getByText(PROVIDER_GUIDE_LABEL)).toBeTruthy()
+    expect(screen.getByText('Blocked or disabled by this provider')).toBeTruthy()
+    expect(screen.getByText(SOURCE)).toBeTruthy()
+    // …and the custom source carries its own matched count and tiers.
+    expect(screen.getByText(/Matched 8 of 10 loaded channels/)).toBeTruthy()
+    expect(screen.getByText(/1 by relaxed match/)).toBeTruthy()
+    // The unmatched residue is available but tucked away behind the disclosure.
+    expect(screen.getByText('2 unmatched channels')).toBeTruthy()
+  })
+
+  it('adds a source through the store', () => {
+    withEpg()
+    render(<GuideSettingsPage />)
+
+    fireEvent.change(screen.getByPlaceholderText('https://example.com/epg.xml'), {
+      target: { value: 'https://another.test/e.xml' }
+    })
+    fireEvent.click(screen.getByText('Add source'))
+
+    expect(useAppStore.getState().settings.customEpgUrls).toContain('https://another.test/e.xml')
+  })
+
+  it('removes a source through the store', () => {
+    withEpg()
+    render(<GuideSettingsPage />)
+
+    fireEvent.click(screen.getByText('Remove'))
+
+    expect(useAppStore.getState().settings.customEpgUrls).toEqual([])
+  })
+
+  it('reprioritises sources with the arrow buttons', () => {
+    withEpg()
+    useAppStore.setState({
+      epgSourceMatchStats: [],
+      settings: { ...DEFAULT_SETTINGS, customEpgUrls: ['a.xml', 'b.xml'] }
+    })
+    render(<GuideSettingsPage />)
+
+    fireEvent.click(screen.getByLabelText('Move b.xml up in priority'))
+
+    expect(useAppStore.getState().settings.customEpgUrls).toEqual(['b.xml', 'a.xml'])
   })
 })

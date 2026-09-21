@@ -37,7 +37,7 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
   const setShowHiddenLiveChannels = useAppStore((s) => s.setShowHiddenLiveChannels)
   const openChannelPreview = useAppStore((s) => s.openChannelPreview)
   const epgSourceByStream = useAppStore((s) => s.epgSourceByStream)
-  const openSettings = useAppStore((s) => s.openSettings)
+  const openGuide = useAppStore((s) => s.openGuide)
   const findChannelByNumber = useAppStore((s) => s.findChannelByNumber)
   const compact = epgRowDensity === 'compact'
 
@@ -193,7 +193,7 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
               (shortEpgByStream[previewChannel.stream_id]?.length ?? 0) === 0 && (
                 <p className="epg-no-listings">
                   No guide listings for this channel.{' '}
-                  <button className="link-button" onClick={openSettings}>
+                  <button className="link-button" onClick={openGuide}>
                     Set up guide sources
                   </button>
                 </p>

@@ -2122,7 +2122,7 @@ body.resizing-col {
   overflow-wrap: anywhere;
 }
 
-/* Manual channel-mapping editor (Settings ▸ EPG sources ▸ Map channels): existing
+/* Manual channel-mapping editor (Guide & EPG ▸ Map channels): existing
    guide→channel links on top, then a two-pane searchable picker for new ones. Panels follow
    the VPN profile editor's expand-in-place pattern — one source's editor open at a time. */
 .epg-mapping-editor {
@@ -2239,7 +2239,7 @@ body.resizing-col {
   color: var(--text-dim);
 }
 
-/* "Only unmatched" filter + ranked suggestion chips (Settings ▸ EPG sources ▸ Map channels) —
+/* "Only unmatched" filter + ranked suggestion chips (Guide & EPG ▸ Map channels) —
    the tools for working through the residue of a 24k-30k channel catalog by hand. */
 .epg-mapping-filter {
   display: flex;
@@ -2633,7 +2633,7 @@ body.resizing-col {
   border-radius: 8px;
 }
 
-/* "No guide listings" hint in the preview, with the jump to Settings ▸ EPG sources. */
+/* "No guide listings" hint in the preview, with the jump to the Guide & EPG surface. */
 .epg-no-listings {
   margin: 6px 0 0;
   font-size: 11px;
@@ -2966,4 +2966,171 @@ body.resizing-col {
 
 .multiview-picker-search {
   flex: 1;
+}
+
+/* ---------------------------------------------------------------------------------------------
+   "Guide & EPG" — the EPG configuration's own modal, lifted out of Settings (0.7.92). Wider than
+   the standard card because the two-pane mapping editor needs the room, and laid out as source
+   cards so each source's status, match counts and actions sit together.
+   --------------------------------------------------------------------------------------------- */
+.guide-card {
+  max-width: 860px;
+  max-height: 86vh;
+}
+
+.guide-subtitle {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* At-a-glance health of the guide pool, before the source list. */
+.guide-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 4px 0 18px;
+}
+
+.guide-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  min-width: 0;
+}
+
+.guide-stat-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+}
+
+.guide-stat-value {
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.guide-section {
+  margin-bottom: 18px;
+}
+
+.guide-section h3 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  margin: 0 0 8px;
+}
+
+/* One card per source (the provider's own guide included): a header row with priority, the URL
+   and its status chip, then that source's match summary and — when open — its mapping editor. */
+.guide-source-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+
+.guide-source-card--provider {
+  background: var(--bg-elevated);
+}
+
+.guide-source-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.guide-source-priority {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.guide-source-title {
+  flex: 1;
+  min-width: 120px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.guide-source-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.guide-chip {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.guide-chip--ok {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 45%, transparent);
+}
+
+.guide-chip--warn {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
+.guide-chip--muted {
+  opacity: 0.85;
+}
+
+/* The per-source match summary, inside the card (was a separate report block). */
+.guide-source-card .epg-match-row {
+  margin-top: 6px;
+}
+
+.guide-unmatched {
+  margin-top: 4px;
+}
+
+.guide-unmatched summary {
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.guide-unmatched summary:hover {
+  color: var(--text);
+}
+
+/* The long "how matching works" prose, collapsed so it no longer pushes the controls off the
+   first screen. */
+.guide-help {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.guide-help summary {
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.guide-help summary:hover {
+  color: var(--text);
+}
+
+.guide-help .settings-hint {
+  margin-top: 8px;
 }

@@ -13,13 +13,15 @@
  * The order is outermost-first, which is what makes "the dialog you're looking at" win:
  *   1. the update prompt — can even sit over the login screen
  *   2. About — reachable at any time from the native menu, including mid-fullscreen
- *   3. Settings
- *   4. My Categories (a top-level modal like Settings)
- *   5. the parental PIN prompt
- *   6. the series detail modal
- *   7. the fullscreen channel-swap bar
- *   8. the player itself
- *   9. the docked channel preview
+ *   3. the Guide & EPG surface (a sibling of Settings, never stacked with it, but listed first
+ *      so the one that was opened most recently is the one Escape closes)
+ *   4. Settings
+ *   5. My Categories (a top-level modal like Settings)
+ *   6. the parental PIN prompt
+ *   7. the series detail modal
+ *   8. the fullscreen channel-swap bar
+ *   9. the player itself
+ *   10. the docked channel preview
  * Fullscreen-exit is handled before any of this (in App.tsx) because fullscreen is the outermost
  * visual layer when active, and it's a browser API call rather than a store action.
  */
@@ -27,6 +29,7 @@ export interface OverlayState {
   updateInfo: unknown | null
   updateDismissed: boolean
   aboutOpen: boolean
+  guideOpen: boolean
   settingsOpen: boolean
   customCategoriesOpen: boolean
   pinPromptCategoryId: string | null
@@ -39,6 +42,7 @@ export interface OverlayState {
 export type OverlayEscapeAction =
   | 'dismissUpdate'
   | 'closeAbout'
+  | 'closeGuide'
   | 'closeSettings'
   | 'closeCustomCategories'
   | 'cancelPinPrompt'
@@ -50,6 +54,7 @@ export type OverlayEscapeAction =
 export function resolveEscapeAction(state: OverlayState): OverlayEscapeAction | null {
   if (state.updateInfo && !state.updateDismissed) return 'dismissUpdate'
   if (state.aboutOpen) return 'closeAbout'
+  if (state.guideOpen) return 'closeGuide'
   if (state.settingsOpen) return 'closeSettings'
   if (state.customCategoriesOpen) return 'closeCustomCategories'
   if (state.pinPromptCategoryId) return 'cancelPinPrompt'

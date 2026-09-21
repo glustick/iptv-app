@@ -206,7 +206,7 @@ export async function decodeMaybeGzipBytes(buffer: ArrayBuffer): Promise<string>
 }
 
 /**
- * The Settings ▸ EPG sources list is the UNION of what's persisted and what's actually live in
+ * The Guide & EPG source list is the UNION of what's persisted and what's actually live in
  * the store's guide pool — those two can only disagree through a state round-trip bug, and the
  * failure mode when they do is exactly "a source the app is still fetching is invisible (and
  * undeletable) in Settings". Persisted URLs come first in their saved order; any live label
@@ -476,7 +476,7 @@ export interface XmltvChannelMatch {
  * Indexes this app's live channels against one XMLTV guide's own channel list — the join that
  * makes third-party guides usable at all, since their channel ids follow their own convention
  * (e.g. iptv-org's "BBCOne.uk"), not the provider's. Matching, first match wins:
- *   0. a manual mapping for this stream (Settings ▸ EPG sources ▸ Map channels) whose guide
+ *   0. a manual mapping for this stream (Guide & EPG ▸ Map channels) whose guide
  *      channel id actually exists in this guide — the user's explicit "this guide channel is
  *      this channel" always outranks any automatic guess. A mapping pointing at a channel the
  *      guide no longer contains (the source renumbered its ids) falls through to the automatic
