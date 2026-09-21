@@ -9,6 +9,7 @@ import { useTranscodeFallback } from '../lib/useTranscodeFallback'
 import { useNumericChannelEntry } from '../lib/useNumericChannelEntry'
 import { useToolbarOverflow } from '../lib/useToolbarOverflow'
 import { useHoverAutoHide } from '../lib/useHoverAutoHide'
+import { isBufferStallError, nextStallAction, playbackSignature } from '../lib/playbackWatchdog'
 import type { VideoScaleMode } from '../lib/types'
 
 const MAX_NETWORK_RETRIES = 4
@@ -24,6 +25,22 @@ const MAX_NETWORK_RETRIES = 4
 // would have cleared on its own.
 const NETWORK_RETRY_DELAY_MS = 2000
 const MAX_MEDIA_ERROR_RECOVERIES = 3
+// hls.js's own gap controller gives up (fatal bufferStalledError) well before this: its nudge
+// ladder is short and its watchdog runs every 2s. These are the app-level counterparts — for
+// the data-gap family specifically, so a stall never spends the decode-recovery budget above.
+const MAX_STALL_ERROR_RECOVERIES = 3
+// Playback watchdog: how long the picture may make no progress at all — no movement of
+// currentTime *and* no change in the buffer's readiness — before the app steps in. Generous on
+// purpose: this is the last line of defence, covering the failures hls.js never reports (a
+// loader that gave up silently, a dead frame after a finished playlist), so it must not race
+// the far more responsive recovery hls.js already does on its own.
+const STALL_RECOVERY_AFTER_MS = 10000
+const STALL_CHECK_INTERVAL_MS = 2000
+// A live channel whose playlist turns out to be *finished* (see the ended handler) is
+// restarted rather than left stopped. If a restart ends again almost immediately the "loop" is
+// a broken/empty stream rather than a repeating feed, so it stops being attempted.
+const LIVE_LOOP_FAST_FAIL_MS = 3000
+const MAX_LIVE_LOOP_FAST_FAILS = 3
 const ERROR_RESET_AFTER_MS = 15000
 const PROGRESS_SAVE_INTERVAL_MS = 5000
 const CHANNEL_BAR_AUTO_HIDE_MS = 6000
@@ -338,10 +355,14 @@ export function Player(): JSX.Element | null {
     beginTranscodeRun()
     let networkRetryCount = 0
     let mediaErrorRecoveryCount = 0
+    let stallErrorRecoveries = 0
+    let lastLoopRestartAt = 0
+    let liveLoopFastFails = 0
     let errorResetTimer: ReturnType<typeof setTimeout> | null = null
     let networkRetryTimer: ReturnType<typeof setTimeout> | null = null
     let progressInterval: ReturnType<typeof setInterval> | null = null
     let silentAudioCheckTimer: ReturnType<typeof setInterval> | null = null
+    let watchdogTimer: ReturnType<typeof setInterval> | null = null
 
     if (hlsRef.current) {
       hlsRef.current.destroy()
@@ -374,9 +395,93 @@ export function Player(): JSX.Element | null {
       }, ERROR_RESET_AFTER_MS)
     }
     const handleCanPlay = (): void => setBuffering(false)
+    // A channel the user picked as Live TV can come back as a *finished* playlist, and this app's
+    // own provider does exactly that on many channels — measured 2026-09-21: three unrelated
+    // channels (Sky News, BBC One HD, Sky Sports Main Event UHD) all answered with the same
+    // 12-segment / 120s playlist carrying #EXT-X-ENDLIST and a byte-identical first segment, i.e.
+    // one shared ~2-minute placeholder loop; other providers do the same for short clip feeds.
+    // hls.js reads ENDLIST as "this asset is complete" and plays it as VOD, so playback reaches
+    // the end and stops — the channel appears to die after two minutes with no error anywhere.
+    // Restarting it is what a set-top box does with such a feed. Nothing ever ends on a genuinely
+    // live channel, so this never runs there.
+    const handleEnded = (): void => {
+      if (nowPlaying.kind !== 'live') return
+      const now = Date.now()
+      if (now - lastLoopRestartAt < LIVE_LOOP_FAST_FAIL_MS) {
+        // A restart that ends again immediately means the "loop" is a broken or empty stream
+        // rather than a repeating feed — stop restarting it and say so.
+        liveLoopFastFails += 1
+        if (liveLoopFastFails > MAX_LIVE_LOOP_FAST_FAILS) {
+          setPlaybackError('This channel ended and could not be restarted.')
+          return
+        }
+      } else {
+        liveLoopFastFails = 0
+      }
+      lastLoopRestartAt = now
+      // Rewind and carry on rather than tearing the source down: the whole playlist is already in
+      // the buffer, so this is seamless and leaves the player's own state (volume, stats,
+      // keep-awake) alone. If the browser refuses (buffer evicted, not seekable yet), fall back to
+      // a fresh attach, which re-requests the channel.
+      try {
+        video.currentTime = 0
+      } catch {
+        // Covered by the reload below.
+      }
+      void video.play().catch(() => setReloadTick((t) => t + 1))
+    }
     video.addEventListener('waiting', handleWaiting)
     video.addEventListener('playing', handlePlaying)
     video.addEventListener('canplay', handleCanPlay)
+    video.addEventListener('ended', handleEnded)
+
+    // ---- playback watchdog -------------------------------------------------------------------
+    // hls.js reports most trouble (its own gap/stall ladder, loader errors), but not all of it: a
+    // loader that gives up without an event, or a "live" channel whose playlist was finished all
+    // along, both leave a picture that simply stops with nothing on the console. This is the only
+    // thing watching for that, and it is deliberately slow (see STALL_RECOVERY_AFTER_MS) so it
+    // can't race the recovery hls.js already does.
+    let lastSignature = playbackSignature(video.readyState, video.currentTime)
+    let lastProgressAt = Date.now()
+    let stallRecoveries = 0
+    watchdogTimer = setInterval(() => {
+      const now = Date.now()
+      // Anything that legitimately parks playback — a user pause, a seek in flight, the end of
+      // the media, or the audio-fix wait (which pauses the element on purpose) — resets the clock
+      // rather than counting as a stall.
+      if (video.paused || video.seeking || video.ended) {
+        lastSignature = playbackSignature(video.readyState, video.currentTime)
+        lastProgressAt = now
+        return
+      }
+      const signature = playbackSignature(video.readyState, video.currentTime)
+      if (signature !== lastSignature) {
+        // Real progress: whatever was wrong has cleared, so the ladder starts over.
+        lastSignature = signature
+        lastProgressAt = now
+        stallRecoveries = 0
+        return
+      }
+      if (now - lastProgressAt < STALL_RECOVERY_AFTER_MS) return
+      const action = nextStallAction(stallRecoveries)
+      stallRecoveries += 1
+      lastProgressAt = now
+      if (action === 'nudge') {
+        // Via the ref, not the local `hls`: this watchdog is registered for every source (a
+        // native VOD stream has no instance at all), and hlsRef.current is the live instance
+        // whenever there is one.
+        hlsRef.current?.startLoad()
+        try {
+          video.currentTime = video.currentTime + 0.1
+        } catch {
+          // Not seekable yet — startLoad() above alone still re-arms the loader.
+        }
+      } else if (action === 'reload') {
+        setReloadTick((t) => t + 1)
+      } else {
+        setPlaybackError('Playback stalled and could not be recovered.')
+      }
+    }, STALL_CHECK_INTERVAL_MS)
 
     // Resume series episodes where you left off.
     if (nowPlaying.kind === 'series') {
@@ -428,9 +533,52 @@ export function Player(): JSX.Element | null {
         // the non-live "effectively infinite" values below must differ, not just both be huge.
         liveSyncDurationCount: isLiveContent ? (smooth ? 5 : 3) : 1_000_000,
         liveMaxLatencyDurationCount: isLiveContent ? (smooth ? 10 : 6) : 2_000_000,
-        fragLoadingMaxRetry: 6,
-        levelLoadingMaxRetry: 6,
-        manifestLoadingMaxRetry: 6,
+        // These three load policies are what hls.js 1.7 actually reads — the flat
+        // fragLoadingMaxRetry/levelLoadingMaxRetry/manifestLoadingMaxRetry fields this used to
+        // set are @deprecated and silently ignored (checked directly against the installed
+        // 1.7.1 bundle: nothing reads them any more), so they were removed rather than left
+        // looking like tuning that did nothing. The effective defaults they were meant to
+        // override are a 10s time-to-first-byte on playlists and fragments, 2 playlist retries
+        // and 20s total for a playlist load — tight enough that a slow but perfectly healthy
+        // panel trips them, which is exactly the "buffering, then an error" churn this app's
+        // users see on a busy evening. Timeouts and retries are raised; nothing here changes
+        // quality, and nothing triggers a re-encode (see the standing rule below the config).
+        manifestLoadPolicy: {
+          default: {
+            maxTimeToFirstByteMs: 20000,
+            maxLoadTimeMs: 30000,
+            timeoutRetry: { maxNumRetry: 4, retryDelayMs: 1000, maxRetryDelayMs: 8000 },
+            errorRetry: { maxNumRetry: 4, retryDelayMs: 1000, maxRetryDelayMs: 8000 }
+          }
+        },
+        playlistLoadPolicy: {
+          default: {
+            maxTimeToFirstByteMs: 20000,
+            maxLoadTimeMs: 60000,
+            timeoutRetry: { maxNumRetry: 4, retryDelayMs: 1000, maxRetryDelayMs: 8000 },
+            errorRetry: { maxNumRetry: 4, retryDelayMs: 1000, maxRetryDelayMs: 8000 }
+          }
+        },
+        fragLoadPolicy: {
+          default: {
+            maxTimeToFirstByteMs: 20000,
+            maxLoadTimeMs: 120000,
+            timeoutRetry: { maxNumRetry: 4, retryDelayMs: 1000, maxRetryDelayMs: 8000 },
+            errorRetry: { maxNumRetry: 6, retryDelayMs: 1000, maxRetryDelayMs: 8000 }
+          }
+        },
+        // Tolerate small holes in the buffered range instead of treating them as a stall to
+        // recover from: playlists from this class of provider routinely leave sub-second gaps
+        // where the segment boundaries don't line up, and the stock 0.1s hole / 3-nudge budget
+        // escalates those to a fatal stall (which then spends a decode-recovery attempt on what
+        // is really just a 0.3s hole). Playback quality is untouched — this only decides whether
+        // a tiny gap is stepped over or treated as a failure.
+        maxBufferHole: 0.5,
+        nudgeOffset: 0.2,
+        nudgeMaxRetry: 10,
+        // No transcoding or downscaling is added here, deliberately. The standing rule for this
+        // project (learnt the hard way on the web sibling): never trade picture quality for
+        // smoothness without being asked. Recovery always plays the provider's own container.
         // Fixes a real, reported "levelParsingError, gave up after 4 tries" on a channel that
         // was confirmed live to actually be fine (playable elsewhere). Root-caused directly
         // against the real account/channel (Sky News, via this provider): the channel's live
@@ -544,6 +692,27 @@ export function Player(): JSX.Element | null {
             }
             break
           case Hls.ErrorTypes.MEDIA_ERROR:
+            // "No data at the playhead" is not a decode failure, and the two want opposite
+            // responses (see isBufferStallError): recoverMediaError() resets the SourceBuffer and
+            // re-seeks — a visible flicker — and spends one of only three decode-recovery
+            // attempts on a gap that resuming the loader fixes. hls.js only escalates these to
+            // fatal after its own nudge ladder is exhausted, so by this point a plain resume is
+            // usually still the right first move; repeated failures still end in a clear error.
+            if (isBufferStallError(data.details)) {
+              stallErrorRecoveries += 1
+              if (stallErrorRecoveries > MAX_STALL_ERROR_RECOVERIES) {
+                setPlaybackError(`Playback stalled and could not be recovered (${data.details}).`)
+                hls.destroy()
+              } else {
+                hls.startLoad()
+                try {
+                  video.currentTime = video.currentTime + 0.1
+                } catch {
+                  // Not seekable yet — startLoad() alone still re-arms the loader.
+                }
+              }
+              break
+            }
             // recoverMediaError() alone has no retry cap, so a persistent (non-transient)
             // media error — some channels hit one consistently, not just as a rare blip —
             // recovers, immediately re-fails, and recovers again in a tight loop: every
@@ -725,6 +894,8 @@ export function Player(): JSX.Element | null {
       video.removeEventListener('waiting', handleWaiting)
       video.removeEventListener('playing', handlePlaying)
       video.removeEventListener('canplay', handleCanPlay)
+      video.removeEventListener('ended', handleEnded)
+      if (watchdogTimer) clearInterval(watchdogTimer)
       if (errorResetTimer) clearTimeout(errorResetTimer)
       if (networkRetryTimer) clearTimeout(networkRetryTimer)
       if (progressInterval) clearInterval(progressInterval)
@@ -1625,7 +1796,7 @@ export function Player(): JSX.Element | null {
         // unless the cursor is actually near the bottom edge — see the mousemove effect above.
         nowPlaying.kind === 'live' && !showChannelBar && cursorNearBottom && <PlayerSeekBar videoRef={videoRef} />}
         {showChannelBar && <PlayerChannelBar />}
-        {statsVisible && <PlayerStatsOverlay videoRef={videoRef} hlsRef={hlsRef} />}
+        {statsVisible && <PlayerStatsOverlay videoRef={videoRef} hlsRef={hlsRef} isLive={nowPlaying.kind === 'live'} />}
       </div>
       {/* Rendered here too (App.tsx also mounts one) since .player-overlay is a fixed,
           full-viewport layer that covers everything else, fullscreen or not — without this,

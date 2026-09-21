@@ -24,6 +24,10 @@ interface Stats {
   audioKbps: number | null
   levelInfo: string | null
   bandwidthEstimateKbps: number | null
+  // Whether the live channel's own playlist is still advancing. Several providers serve a
+  // *finished* playlist on a live URL (this app's does, on many channels) — a fixed loop of
+  // whatever length it was cut at — and knowing that explains behaviour nothing else does.
+  playlistState: string | null
 }
 
 function formatTime(seconds: number): string {
@@ -46,10 +50,14 @@ function bufferedAhead(video: HTMLVideoElement): number {
 
 export function PlayerStatsOverlay({
   videoRef,
-  hlsRef
+  hlsRef,
+  isLive = false
 }: {
   videoRef: RefObject<HTMLVideoElement | null>
   hlsRef: RefObject<Hls | null>
+  // Only live content gets the "playlist" row below: a finished playlist is normal (and correct)
+  // for VOD and for the audio-fix transcode's own output, so reporting it there would be noise.
+  isLive?: boolean
 }): JSX.Element | null {
   const [stats, setStats] = useState<Stats | null>(null)
 
@@ -91,6 +99,12 @@ export function PlayerStatsOverlay({
         videoKbps,
         audioKbps,
         levelInfo: level ? `${level.width}×${level.height} · ${level.videoCodec ?? level.codecSet ?? ''} @ ${Math.round(level.bitrate / 1000)} kbps` : null,
+        playlistState:
+          isLive && level?.details
+            ? level.details.live
+              ? 'Live (advancing)'
+              : 'Fixed loop (finished playlist)'
+            : null,
         bandwidthEstimateKbps: hls ? Math.round(hls.bandwidthEstimate / 1000) : null
       })
     }, POLL_INTERVAL_MS)
@@ -132,6 +146,12 @@ export function PlayerStatsOverlay({
         <span>Audio bitrate</span>
         <span>{stats.audioKbps === null ? '—' : `${stats.audioKbps} kbps`}</span>
       </div>
+      {stats.playlistState && (
+        <div className="player-stats-row">
+          <span>Playlist</span>
+          <span>{stats.playlistState}</span>
+        </div>
+      )}
       {stats.levelInfo && (
         <div className="player-stats-row">
           <span>HLS level</span>

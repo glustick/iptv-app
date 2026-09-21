@@ -623,6 +623,24 @@ async function main() {
   )
   await check('no playback error is surfaced', '!document.body.innerText.includes("Playback error")', 5000)
 
+  // The fixture's own live channel is a FINISHED playlist (-t 6 with -hls_list_size 0, so the
+  // playlist carries #EXT-X-ENDLIST) — which is exactly the shape this app's real provider serves
+  // on many channels (measured 2026-09-21: several unrelated channels, byte-identical media, one
+  // shared ~2-minute loop). Before 0.7.94 the player simply stopped when that playlist ended; it
+  // now restarts it. Wait past the fixture's own end and confirm playback is still going rather
+  // than left sitting on an ended element — the check that fails on the old behaviour.
+  await sleep(9000)
+  const loopState = await evaluate(
+    cdp,
+    `(() => { const v = document.querySelector('video.player-video'); return v ? JSON.stringify({ t: Number(v.currentTime.toFixed(2)), ended: v.ended, paused: v.paused, readyState: v.readyState }) : null })()`
+  )
+  console.log('finished-playlist state, well past its own end:', loopState)
+  await check(
+    'a finished live playlist is restarted instead of left stopped',
+    `(() => { const v = document.querySelector('video.player-video'); return !!v && !v.ended && v.readyState >= 2 })()`,
+    20000
+  )
+
   // The E-AC-3 ("Dolby") channel: the app should detect the unsupported audio and engage its ffmpeg
   // audio-fix fallback, which then has to end in actual playback. That whole path is invisible to
   // an AAC-only fixture, and it is the feature most exposed to a Chromium upgrade.
