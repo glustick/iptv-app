@@ -377,7 +377,16 @@ const SUGGESTION_MIN_SCORE = 0.6
  * break on display name so the order is stable. Used by the mapping editor to turn the
  * residual unmatched channels into one-click fixes.
  */
-export function suggestGuideChannels(streamName: string, index: GuideIndex, limit = 3): GuideCandidate[] {
+export function suggestGuideChannels(
+  streamName: string,
+  index: GuideIndex,
+  limit = 3,
+  // The floor is a parameter for one caller only: the per-channel match panel, which deliberately
+  // offers *weaker* candidates than this function's default would, because it labels each one with
+  // its score and a human is choosing. Everywhere else keeps the calibrated default (see
+  // SUGGESTION_MIN_SCORE) — an automatic join must not act on a coin flip, a person may.
+  minScore = SUGGESTION_MIN_SCORE
+): GuideCandidate[] {
   const tokens = new Set(looseTokens(streamName))
   if (tokens.size === 0) return []
   // Only channels sharing at least one token can score above zero, so candidate gathering reads
@@ -399,7 +408,7 @@ export function suggestGuideChannels(streamName: string, index: GuideIndex, limi
     for (const token of tokens) if (guideTokens.has(token)) shared += 1
     if (shared === 0) continue
     const score = (2 * shared) / (tokens.size + guideTokens.size)
-    if (score < SUGGESTION_MIN_SCORE) continue
+    if (score < minScore) continue
     scored.push({ channelId: id, displayName: index.channels.get(id)?.displayName ?? id, score })
   }
   // Score, then display name, then guide position — the last one keeps results identical to the

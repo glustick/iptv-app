@@ -30,6 +30,9 @@ export interface OverlayState {
   updateDismissed: boolean
   aboutOpen: boolean
   guideOpen: boolean
+  // The per-channel match panel — open exactly while a channel match target is set (see
+  // epgMatchTarget), so it is derived rather than independent state that could drift.
+  channelMatchOpen: boolean
   settingsOpen: boolean
   customCategoriesOpen: boolean
   pinPromptCategoryId: string | null
@@ -42,6 +45,7 @@ export interface OverlayState {
 export type OverlayEscapeAction =
   | 'dismissUpdate'
   | 'closeAbout'
+  | 'closeChannelMatch'
   | 'closeGuide'
   | 'closeSettings'
   | 'closeCustomCategories'
@@ -54,6 +58,7 @@ export type OverlayEscapeAction =
 export function resolveEscapeAction(state: OverlayState): OverlayEscapeAction | null {
   if (state.updateInfo && !state.updateDismissed) return 'dismissUpdate'
   if (state.aboutOpen) return 'closeAbout'
+  if (state.channelMatchOpen) return 'closeChannelMatch'
   if (state.guideOpen) return 'closeGuide'
   if (state.settingsOpen) return 'closeSettings'
   if (state.customCategoriesOpen) return 'closeCustomCategories'

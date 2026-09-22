@@ -13,6 +13,7 @@ import { MultiView } from './components/MultiView'
 import { PinPrompt } from './components/PinPrompt'
 import { SettingsPage } from './components/SettingsPage'
 import { GuideSettingsPage } from './components/GuideSettingsPage'
+import { ChannelMatchModal } from './components/ChannelMatchModal'
 import { CustomCategoriesModal } from './components/CustomCategoriesModal'
 import { AboutModal } from './components/AboutModal'
 import { VpnWarnings } from './components/VpnWarnings'
@@ -100,6 +101,9 @@ function App(): JSX.Element {
         case 'closeAbout':
           state.closeAbout()
           break
+        case 'closeChannelMatch':
+          state.closeChannelMatch()
+          break
         case 'closeGuide':
           state.closeGuide()
           break
@@ -183,6 +187,7 @@ function App(): JSX.Element {
       <PinPrompt />
       <SettingsPage />
       <GuideSettingsPage />
+      <ChannelMatchModal />
       <CustomCategoriesModal />
       <AboutModal />
       <VpnWarnings />

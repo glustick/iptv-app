@@ -73,6 +73,13 @@ function resetTestMappings() {
     settings.epgChannelMappings = settings.epgChannelMappings.filter(
       (m) => !String(m.sourceUrl).includes('127.0.0.1:8123')
     )
+    // Guide *visibility* is state too, and the hide/show check asserts a click flips it — so a run
+    // that ends with a source hidden would fail the next run's first assertion. Reset it here for
+    // the same reason the mappings are reset.
+    const hiddenBefore = Array.isArray(settings.hiddenEpgSourceUrls) ? settings.hiddenEpgSourceUrls.length : 0
+    settings.hiddenEpgSourceUrls = (settings.hiddenEpgSourceUrls ?? []).filter(
+      (url) => !String(url).includes('127.0.0.1:8123')
+    )
     if (settings.epgChannelMappings.length !== before) {
       writeFileSync(cfgPath, JSON.stringify(cfg, null, 2))
       console.log(`reset ${before - settings.epgChannelMappings.length} mapping(s) left by a previous run`)
@@ -443,17 +450,57 @@ async function main() {
     '![...document.querySelectorAll(".epg-density-toggle")].some((b) => /hidden/.test(b.textContent))'
   )
 
-  // The other menu item: jump straight to fixing this channel's guide listing.
+  // The other menu item: fix this channel's guide listing, in one focused panel (0.7.101 — the
+  // two-pane editor that used to live on the guide page is gone).
   await evaluate(cdp, rightClickRow(firstChannelName))
   await evaluate(cdp, clickMenuItem('/EPG match/'))
-  await check('EPG match opens the guide surface', '!!document.querySelector(".guide-card")', 8000)
+  await check('EPG match opens the per-channel match panel', '!!document.querySelector(".channel-match-card")', 8000)
   await check(
-    'the guide says which channel it was opened for',
-    `document.body.innerText.includes(${JSON.stringify('Matching ' + firstChannelName)})`
+    'the panel is aimed at the channel that was right-clicked',
+    `document.querySelector('.channel-match-card .guide-subtitle')?.innerText === ${JSON.stringify(firstChannelName)}`
   )
-  await check('the aimed channel opens with its mapping editor', '!!document.querySelector(".epg-mapping-editor")')
+  await check(
+    'the panel offers the channel\'s current listings source and a match target',
+    `!!document.querySelector('.channel-match-source select')`
+  )
+  // The fixture's custom source carries the whole synthetic guide, so there will be candidates.
+  await check(
+    'the panel lists scored guide-channel candidates (strong ones labelled)',
+    `!!document.querySelector('.channel-match-score--strong') || !!document.querySelector('.channel-match-score--possible')`,
+    20000
+  )
+  // Pick the top candidate and map it — the whole point of the panel.
+  await evaluate(cdp, `(() => { const b = document.querySelector('.channel-match-option'); if (b) b.click(); return !!b })()`)
+  await evaluate(cdp, `[...document.querySelectorAll('.channel-match-add-row button')].find((b) => /Add mapping/.test(b.textContent))?.click() || true`)
+  await check('mapping from the panel closes it', '!document.querySelector(".channel-match-card")', 8000)
+  await evaluate(cdp, `document.querySelector("button.icon-button[title='Guide & EPG']")?.click() || true`)
+  await sleep(1500)
+  // Dump what the guide page is actually showing — this section has failed twice on state left in
+  // the config by earlier runs, and inferring from a bare pass/fail wasted more time than printing.
+  console.log(
+    'guide source rows:\n' +
+      (await evaluate(
+        cdp,
+        `[...document.querySelectorAll('.guide-source-card')].map((c) => '  ' + c.innerText.replace(/\\n/g, ' | ')).join('\\n') || '(none)'`
+      ))
+  )
+  await check(
+    // Counting "1" here would be brittle: mappings persist across runs unless the reset catches
+    // them, and the reset only clears ones it can positively attribute to the synthetic source.
+    'the guide page now reports the manual mapping it just gained',
+    `/· [0-9]+ manual/.test(document.body.innerText)`
+  )
+  await check(
+    'the guide page offers to hide a source\'s listings',
+    `[...document.querySelectorAll('.guide-source-actions button')].some((b) => /Hide guide/.test(b.textContent))`
+  )
+  await evaluate(cdp, `[...document.querySelectorAll('.guide-source-actions button')].find((b) => /Hide guide/.test(b.textContent))?.click() || true`)
+  await check(
+    'hiding a source switches its button to Show guide',
+    `[...document.querySelectorAll('.guide-source-actions button')].some((b) => /Show guide/.test(b.textContent))`
+  )
   await click('.guide-card .modal-close')
-  await check('the guide closes after the EPG-match jump', '!document.querySelector(".guide-card")', 8000)
+  await check('the guide closes again', '!document.querySelector(".guide-card")', 8000)
 
   // --- channel health: flagging channels that aren't actually live (0.7.95) ------------------
   // The fixture's own live channel is a FINISHED 6s playlist (ffmpeg -t 6 with -hls_list_size 0),

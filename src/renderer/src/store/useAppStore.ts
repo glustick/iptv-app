@@ -348,6 +348,9 @@ interface AppState {
   // channel: GuideSettingsPage consumes it on open and opens that channel's mapping editor with
   // the channel preselected (see openEpgMatch). null when nothing is being matched.
   epgMatchTarget: { streamId: number; streamName: string } | null
+  // Derived in the overlays layer from epgMatchTarget !== null; the close action simply clears
+  // the target, so the two can never disagree about whether the panel is open.
+  channelMatchOpen: boolean
   aboutOpen: boolean
 
   vpnStatus: VpnStatus
@@ -452,6 +455,11 @@ interface AppState {
   // Manual guide-channel → app-channel links (Guide & EPG ▸ Map channels) —
   // persisted in settings.epgChannelMappings and applied on the next applyEpgPool.
   addEpgChannelMapping: (mapping: EpgChannelMapping) => void
+  // Switches a guide source's listings off (or back on) without removing it — "show/hide its
+  // guide". Persisted in settings and honoured by applyEpgPool.
+  setEpgSourceHidden: (url: string, hidden: boolean) => void
+  // Backs the per-channel match panel's Escape/click-outside (see ChannelMatchModal).
+  closeChannelMatch: () => void
   removeEpgChannelMapping: (sourceUrl: string, streamId: number) => void
   // Loads the full live catalog into numericChannelCatalog when it isn't cached yet — the
   // mapping picker searches every channel the provider has, not just the currently-browsed
@@ -623,6 +631,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   settingsOpen: false,
   guideOpen: false,
   epgMatchTarget: null,
+  channelMatchOpen: false,
   aboutOpen: false,
 
   vpnStatus: 'disconnected',
@@ -1074,6 +1083,24 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Manual mappings are keyed to the custom source's own URL (the provider guide is not
       // manually mappable — see EpgChannelMapping), so look them up by this entry's label.
       const sourceUrl = epgSourceLabels[index]
+      // A hidden source is still *loaded* (so switching it back on is instant) but supplies
+      // nothing: it contributes no pool entries and reports a row explaining why it matched zero,
+      // rather than looking like a source that failed.
+      if (settings.hiddenEpgSourceUrls.includes(sourceUrl)) {
+        stats.push({
+          source: sourceUrl,
+          available: true,
+          reason: 'hidden — its guide is switched off',
+          loadedChannels: liveStreams.length,
+          matched: 0,
+          byId: 0,
+          byName: 0,
+          byFuzzy: 0,
+          byManual: 0,
+          unmatchedNames: []
+        })
+        return
+      }
       const manual = new Map(
         settings.epgChannelMappings.filter((m) => m.sourceUrl === sourceUrl).map((m) => [m.streamId, m.guideChannelId])
       )
@@ -1317,6 +1344,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   // leaves its mappings in settings harmlessly: they only ever join against a guide parsed
   // from that URL, so an orphaned mapping can't mis-fire — but pruning it here would need a
   // second updateSettings round-trip mid-edit for no user-visible gain.
+  closeChannelMatch: () => set({ epgMatchTarget: null, channelMatchOpen: false }),
+
+  setEpgSourceHidden: (url, hidden) => {
+    const current = get().settings.hiddenEpgSourceUrls
+    const next = hidden
+      ? current.includes(url) ? current : [...current, url]
+      : current.filter((entry) => entry !== url)
+    if (next === current) return
+    get().updateSettings({ hiddenEpgSourceUrls: next })
+    // Re-run the pool straight away: the point of hiding a source is to stop it supplying
+    // listings, and waiting for the next reload would leave the grid showing its programmes.
+    get().applyEpgPool()
+  },
+
   addEpgChannelMapping: (mapping) => {
     if (!mapping.sourceUrl.trim() || !mapping.guideChannelId) return
     const rest = get().settings.epgChannelMappings.filter(
@@ -1930,13 +1971,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   openSettings: () => set({ settingsOpen: true, guideOpen: false }),
   closeSettings: () => set({ settingsOpen: false }),
 
-  openGuide: () => set({ guideOpen: true, settingsOpen: false, epgMatchTarget: null }),
+  openGuide: () => set({ guideOpen: true, settingsOpen: false, epgMatchTarget: null, channelMatchOpen: false }),
   closeGuide: () => set({ guideOpen: false }),
 
   openEpgMatch: (streamId, streamName) =>
-    set({ epgMatchTarget: { streamId, streamName }, guideOpen: true, settingsOpen: false }),
+    set({ epgMatchTarget: { streamId, streamName }, channelMatchOpen: true, guideOpen: false, settingsOpen: false }),
 
-  clearEpgMatchTarget: () => set({ epgMatchTarget: null }),
+  clearEpgMatchTarget: () => set({ epgMatchTarget: null, channelMatchOpen: false }),
 
   exportBackup: async () => {
     try {

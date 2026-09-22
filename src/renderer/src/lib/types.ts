@@ -276,6 +276,11 @@ export interface AppSettings {
   // EPG-id/name matching wherever auto-matching gets a channel wrong or misses it entirely.
   // Applied in applyEpgPool alongside the automatic joins; see EpgChannelMapping above.
   epgChannelMappings: EpgChannelMapping[]
+  // Guide sources whose listings are switched off without being deleted — "show/hide its guide".
+  // applyEpgPool skips these, so hiding a source immediately stops it supplying any channel, while
+  // leaving the URL, its place in the priority order and any manual mappings intact for when it is
+  // switched back on.
+  hiddenEpgSourceUrls: string[]
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -298,6 +303,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   liveAudioFixes: {},
   customEpgUrls: [],
   epgChannelMappings: [],
+  hiddenEpgSourceUrls: [],
   customCategories: []
 }
 

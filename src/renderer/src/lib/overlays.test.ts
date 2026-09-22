@@ -6,6 +6,7 @@ const base: OverlayState = {
   updateDismissed: false,
   aboutOpen: false,
   guideOpen: false,
+  channelMatchOpen: false,
   settingsOpen: false,
   customCategoriesOpen: false,
   pinPromptCategoryId: null,
@@ -19,6 +20,7 @@ const base: OverlayState = {
 const ORDER: Array<{ key: keyof OverlayState; action: OverlayEscapeAction; on: unknown }> = [
   { key: 'updateInfo', action: 'dismissUpdate', on: { version: '1.2.3' } },
   { key: 'aboutOpen', action: 'closeAbout', on: true },
+  { key: 'channelMatchOpen', action: 'closeChannelMatch', on: true },
   { key: 'guideOpen', action: 'closeGuide', on: true },
   { key: 'settingsOpen', action: 'closeSettings', on: true },
   { key: 'customCategoriesOpen', action: 'closeCustomCategories', on: true },
