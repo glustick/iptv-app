@@ -221,20 +221,25 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
 
 ### Decided, not pending (recorded so it isn't re-raised)
 
-- **Code signing and notarization: decided against (2026-09-22).** The pipeline has been wired,
-  fixed and re-verified since 0.7.72 and stays dormant — but the certificates will not be bought.
-  Reasons, in the maintainer's words: *"its a yearly cost and its only me using this app"*, plus a
-  concern that Apple would not issue a Developer ID for an IPTV client as a matter of course. That
-  reasoning holds on the costs alone: this is a single-user application whose **test machine is
-  Windows**, where electron-updater applies updates to unsigned builds perfectly well and the only
-  consequence is a SmartScreen prompt on first install. The cost of the decision is therefore
-  confined to macOS — where the dev machine is — and amounts to downloading the `.dmg` by hand.
-  **Consequence, now permanent rather than a gap:** macOS never auto-updates. The small follow-up
-  this creates is recorded under "Code" below (make the in-app update prompt say so on macOS instead
-  of failing after the user says yes). What would change the decision: wanting to distribute the app
-  to anyone else. (For the record should that day come: a Developer ID certificate is a paid
-  *distribution* credential, not an App Store review gate, so the copyright concern is not the
-  binding constraint — the cost and single-user reasoning are.)
+- **Code signing and notarization: decided against, on BOTH platforms (2026-09-22).** The pipeline
+  has been wired, fixed and re-verified since 0.7.72 and stays dormant — but no certificates will be
+  bought, Apple's or Microsoft's. Reasons, in the maintainer's words: *"its a yearly cost and its
+  only me using this app"*, plus a concern that Apple would not issue a Developer ID for an IPTV
+  client as a matter of course; and for Windows, plainly, *"its an overkill"*. **He started the
+  sibling web IPTV project specifically to bridge this** — a browser needs no certificate from
+  anybody — so the decision is not a compromise he is stuck with: the cert-free route exists, and
+  this app is the one he actually prefers, because *"the performance of this application seems to be
+  a lot better than the web browser"*. That is the whole cost/benefit, and it favours signing
+  nothing.
+  **Consequence, permanent rather than a pending gap:** on macOS the app can find and download an
+  update but cannot apply one unsigned, so Mac builds are installed by hand from the `.dmg`;
+  Windows installs get a SmartScreen prompt the first time and update themselves thereafter
+  (electron-updater's signature check has no publisher name to verify against on an unsigned build —
+  an assumption inherited from the existing notes, worth confirming the next time an in-app update
+  is actually accepted on Windows). The small follow-up this leaves is in "Code" below. What would
+  change the decision: wanting to hand the app to anyone else. (For the record should that day come:
+  a Developer ID certificate is a paid *distribution* credential, not an App Store review gate, so
+  the copyright concern is not the binding constraint — the cost and single-user reasoning are.)
 - **The old secret wiring, for whoever revisits this:** `MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD`,
   `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`, `WIN_CSC_LINK`,
   `WIN_CSC_KEY_PASSWORD` under *Settings → Secrets and variables → Actions*; no workflow edit is
