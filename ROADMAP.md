@@ -231,13 +231,15 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
   this app is the one he actually prefers, because *"the performance of this application seems to be
   a lot better than the web browser"*. That is the whole cost/benefit, and it favours signing
   nothing.
-  **Consequence, permanent rather than a pending gap:** on macOS the app can find and download an
-  update but cannot apply one unsigned, so Mac builds are installed by hand from the `.dmg`;
-  Windows installs get a SmartScreen prompt the first time and update themselves thereafter
-  (electron-updater's signature check has no publisher name to verify against on an unsigned build —
-  an assumption inherited from the existing notes, worth confirming the next time an in-app update
-  is actually accepted on Windows). The small follow-up this leaves is in "Code" below. What would
-  change the decision: wanting to hand the app to anyone else. (For the record should that day come:
+  **Consequence, permanent rather than a pending gap — and now verified on the platform that
+  matters:** **Windows updates flawlessly** — confirmed by the maintainer on 2026-09-22, in his
+  words *"it will download, update and restart with no issue"* — so an unsigned NSIS build applies
+  its own updates cleanly (electron-updater's signature check has no publisher name to verify
+  against, which is what makes this work) and the only Windows consequence is the one-off
+  SmartScreen prompt on first install. macOS is the asymmetric one: the app can find and download an
+  update there but cannot apply one unsigned, so Mac builds are installed by hand from the `.dmg`.
+  The small follow-up that leaves is in "Code" below. What would change the decision: wanting to
+  hand the app to anyone else. (For the record should that day come:
   a Developer ID certificate is a paid *distribution* credential, not an App Store review gate, so
   the copyright concern is not the binding constraint — the cost and single-user reasoning are.)
 - **The old secret wiring, for whoever revisits this:** `MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD`,
@@ -281,7 +283,8 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
   user-visible cost of it: on macOS the in-app updater can find and download a release but cannot
   apply one to an unsigned app. Today that path ends in an error after the user has said yes; it
   should instead say what is true on that platform — download the `.dmg` from the releases page —
-  while Windows keeps updating itself. Needs the platform known in the renderer.
+  while Windows keeps doing the full download/apply/restart cycle it is already verified to do.
+  Needs the platform known in the renderer.
 - **Remove the release-workflow race.** Three platform jobs each ask GitHub to create the same
   release, and the losers get `422 already_exists` — which is what failed the mac job on v0.7.98
   (fixed by re-running it, and the notes job was skipped as collateral). The fix is structural:
