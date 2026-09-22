@@ -29,20 +29,29 @@ This is the part with the most moving pieces, so it's worth understanding as a w
    exact normalized name → relaxed match**. The relaxed tier folds diacritics, unifies `&`/`and`,
    drops noise tokens (HD/FHD/4K/HEVC/VIP/backup/UK/US, standalone numbers) and sorts tokens, so
    `101 BBC One HD` joins `BBC One`. A match with zero programmes is *not* resolved data.
-3. **Manual mapping** — per-source, per-channel overrides created in the editor, persisted in
-   `settings.epgChannelMappings`, instant to apply.
-4. **Finding the residue** — the editor's "only channels with no listings from this source" filter
-   (resolves the whole catalog once, from the event handler, never mid-render) plus ranked
-   suggestion chips (Dice similarity over the same loose tokens, floor 0.6 so "BBC One" won't
-   suggest "BBC Two").
+3. **Manual mapping** — per-source, per-channel overrides, persisted in
+   `settings.epgChannelMappings`, instant to apply. Since 0.7.101 they are made one channel at a
+   time from the channel row's right-click menu → **EPG match…** (`ChannelMatchModal.tsx`): the panel
+   shows what the channel has now (its supplying source, and any existing mapping), lets the source
+   be chosen, and lists **scored** candidates — strong ones first, weaker ones labelled with their
+   percentage and marked "possible" — with that source's whole guide behind a "show all N guide
+   channels" expander. It replaced a two-pane editor that lived on the guide page, which is now a
+   **summary**: one row per source carrying its guide size, matched count, manual count, priority
+   arrows, the full breakdown behind a disclosure, and a **Hide guide / Show guide** switch.
+4. **Finding the residue** — ranked suggestion chips (Dice similarity over the same loose tokens,
+   floor 0.6 by default so "BBC One" won't suggest "BBC Two"; the match panel deliberately asks for a
+   lower floor, because a person choosing from labelled scores may accept what an automatic join must
+   refuse) plus per-source unmatched counts in each source row's expanded breakdown.
 5. **Consumption** — the pool prefills each channel's short-EPG cache; the provider's own
    per-channel `get_short_epg` merges over it (provider entries win their slots, pool data fills
    later days). The winning source per channel is recorded (`epgSourceByStream`) and shown in the
    channel preview as `Guide: <source>`.
-6. **Bulk resolution** — the editor's "Apply suggestions at _% or better" turns the residue into
-   ordinary manual mappings in one action (never overwriting an existing mapping, one per channel,
-   threshold 60-100%), and the ⬆⬇ arrows on each source row set the priority order that decides
-   which source wins an overlapping channel.
+6. **Bulk resolution** — the guide page's "Apply across all sources at _% or better" turns the
+   residue into ordinary manual mappings in one action (never overwriting an existing mapping, one per
+   channel, thresholds 60-100%), and the ⬆⬇ arrows on each source row set the priority order that
+   decides which source wins an overlapping channel. A **Hide guide** switch takes a source out of
+   the pool without deleting it (`settings.hiddenEpgSourceUrls`): its URL, priority position and
+   manual mappings all survive, and the report describes it as hidden rather than as one that failed.
 
 ## Other features worth knowing about
 
@@ -206,13 +215,15 @@ This is the part with the most moving pieces, so it's worth understanding as a w
 
 ## Known rough edges
 
-- **No UI interaction has been runtime-verified by a human yet**: overlays and components now have
-  rendering tests (0.7.82) and the logic is well covered, but nobody has clicked through the EPG
-  mapping editor, My Categories (drag-and-drop especially), the bulk-apply button, the preview's
-  guide-source line or the update prompt's notes in a running window. A real pass is still the
-  highest-value thing outstanding.
-- Bulk-applying suggestions works per source; there is no cross-source "do all sources at once"
-  action (each source's mappings are deliberately separate).
+- **The manual pass is now real, but partial.** The user has run several sessions against the real
+  provider (on **Windows** — see below), which is where 0.7.98–0.7.101's fixes came from: the
+  fullscreen trap, the guide hang, the Multi-View picker and the per-channel matching flow were all
+  reported by hand. What has still never been clicked through in a running window: My Categories
+  drag-and-drop, the bulk-apply button, the preview's guide-source line, and the update prompt's
+  notes. Windows itself is never tested by the maintainer's machine — CI builds it, the user runs it.
+- **The guide load is the known self-inflicted hang** (107MB of XML parsed synchronously; see the
+  roadmap's Next up). Until it is reworked, opening the Guide & EPG page on this provider can freeze
+  the window for seconds and is the prime suspect for the blank-screen death reported on 2026-09-22.
 - `docs/` dates from 2026-09-14.
 
 ## Resolved 2026-09-16: VOD subtitle rendition never reached playback

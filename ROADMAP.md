@@ -244,6 +244,30 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
 
 ### Code, in the order I would take it
 
+- **Bound and unblock the guide load — the top item, and the cause of the reported hang.** Measured
+  2026-09-22: this provider's full guide is **16.3MB gzipped → 107.4MB of XML**; loading it peaked at
+  **~1GB of process memory**, settled around 570MB, and the parse runs **synchronously on the main
+  thread** — which is exactly what "hanging the application" feels like while the guide page is open,
+  and the most likely explanation for the blank-screen death reported on the same day (unproven: a
+  153-second observation never reproduced it, and 0.7.98/0.7.99 now record what happens if it
+  recurs). Three parts, in order of value: parse **off the main thread** — or at least in chunks the
+  event loop can breathe between — so the window never freezes; avoid materialising a full object
+  tree of the whole document before the Maps are built (`fast-xml-parser` builds all of it first,
+  which is where the peak comes from); and **bound** what is held, with a size cap and a clear
+  message for a guide beyond it rather than a silent stall. Re-measure afterwards with the same
+  probe that produced these numbers.
+- **Multi-View picker rework.** Reported unusable at catalogue scale: it lists thousands of channels
+  immediately (slow to populate, and it hangs the app while it does) and its category dropdown
+  arrives in a bad state. The requested shape, verbatim: *"i would recommend just showing the
+  favourites list first, then prepopulating the category selection"* — favourites first, the category
+  list populated and driving the rows instead of a bulk default, and search scoped to the chosen
+  category. The hang is very likely the item above, but "render everything by default" is wrong on
+  its own merits.
+- **Remove the release-workflow race.** Three platform jobs each ask GitHub to create the same
+  release, and the losers get `422 already_exists` — which is what failed the mac job on v0.7.98
+  (fixed by re-running it, and the notes job was skipped as collateral). The fix is structural:
+  create the release in a first job, make the three platform jobs `needs:` it, and let them upload
+  into an existing release instead of racing to create one.
 - **Channel health: distinguish "checked and live" from "not yet checked".** As shipped in 0.7.95 a
   channel with no badge means *either* of those two things, and they look identical to a user. The
   cheapest honest fix is a positive tick (or a "checked 12 of 18" count) for channels the probe has
