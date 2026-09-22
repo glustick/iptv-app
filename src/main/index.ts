@@ -251,6 +251,7 @@ function logLifecycle(message: string): void {
 /** Reload-loop guard for the crash recovery below: one automatic reload per this window of time. */
 const CRASH_RELOAD_SUPPRESSION_MS = 2 * 60 * 1000
 let lastCrashReloadAt = 0
+let lastGpuRecoveryAt = 0
 
 function findFreeLocalPort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -891,6 +892,38 @@ function createWindow(): void {
   })
   mainWindow.webContents.on('unresponsive', () => logLifecycle('renderer unresponsive'))
   mainWindow.webContents.on('responsive', () => logLifecycle('renderer responsive again'))
+
+  // GPU and other child-process deaths are the Windows-shaped failure: an RTX-class GPU plus
+  // Chromium can leave a blank window with the app technically alive (the GPU process restarts,
+  // but the renderer can be left without a working context). Reported live as "the entire
+  // application screen went blank and died" on a Windows machine with 64GB of RAM — which rules
+  // memory out and makes this the prime suspect. Every death is recorded with its type and reason
+  // so the next occurrence names its cause; a GPU death additionally triggers one bounded
+  // renderer reload to re-acquire the context, and leaves fullscreen so a blank fullscreen window
+  // can't trap the user.
+  app.on('child-process-gone', (_event, details) => {
+    logLifecycle(
+      `child process gone — type=${details.type} reason=${details.reason} exitCode=${details.exitCode}`
+    )
+    if (details.type !== 'GPU') return
+    if (mainWindowRef && !mainWindowRef.isDestroyed() && mainWindowRef.isFullScreen()) {
+      mainWindowRef.setFullScreen(false)
+    }
+    const now = Date.now()
+    if (now - lastGpuRecoveryAt < CRASH_RELOAD_SUPPRESSION_MS) {
+      logLifecycle('GPU process died again too soon — not reloading automatically')
+      return
+    }
+    lastGpuRecoveryAt = now
+    if (mainWindowRef && !mainWindowRef.isDestroyed()) {
+      logLifecycle('GPU process died — reloading the renderer to re-acquire the GPU context')
+      try {
+        mainWindowRef.webContents.reload()
+      } catch (err) {
+        logLifecycle(`reload after GPU death failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+  })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url).catch((err) => console.error('[main] failed to open external URL:', err))
