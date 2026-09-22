@@ -9,10 +9,13 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          # 22 is the oldest LTS still supported: Node 20 reached end-of-life in April 2026 and
+          # the runners were already forcing the v4 actions onto Node 24 (which is what every run
+          # was warning about). Local development is on 24, so both ends are now LTS-or-newer.
+          node-version: 22
       - run: npm install
       - run: npm run typecheck
       - run: npm run lint

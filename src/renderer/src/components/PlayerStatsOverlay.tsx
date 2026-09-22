@@ -1,5 +1,6 @@
 import { useEffect, useState, type RefObject } from 'react'
 import type Hls from 'hls.js'
+import { hasInformativeLevelData } from '../lib/hlsLevels'
 
 const POLL_INTERVAL_MS = 1000
 
@@ -88,6 +89,16 @@ export function PlayerStatsOverlay({
       const quality = video.getVideoPlaybackQuality?.()
       const hls = hlsRef.current
       const level = hls && hls.currentLevel >= 0 ? hls.levels[hls.currentLevel] : null
+      // A flat single-rendition source (what these providers serve) reports a level carrying no
+      // dimensions and no bitrate — rendering "0×0 · @ 0 kbps" dresses noise up as diagnostics, so
+      // the row is omitted entirely unless the level actually says something.
+      const levelInfo = hasInformativeLevelData(level)
+        ? `${level?.width}×${level?.height} · ${level?.videoCodec ?? level?.codecSet ?? ''} @ ${Math.round((level?.bitrate ?? 0) / 1000)} kbps`
+        : null
+      // Likewise the bandwidth estimate: it exists to explain which rendition ABR picked, and on a
+      // single-rendition feed it has nothing to compare — it reported a nonsensical ~300 Mbit/s in
+      // live testing, which is worse than showing nothing at all.
+      const bandwidthEstimateKbps = hls && hls.levels.length > 1 ? Math.round(hls.bandwidthEstimate / 1000) : null
 
       setStats({
         resolution: video.videoWidth ? `${video.videoWidth}×${video.videoHeight}` : '—',
@@ -98,14 +109,14 @@ export function PlayerStatsOverlay({
         totalFrames: quality?.totalVideoFrames ?? 0,
         videoKbps,
         audioKbps,
-        levelInfo: level ? `${level.width}×${level.height} · ${level.videoCodec ?? level.codecSet ?? ''} @ ${Math.round(level.bitrate / 1000)} kbps` : null,
+        levelInfo,
         playlistState:
           isLive && level?.details
             ? level.details.live
               ? 'Live (advancing)'
               : 'Fixed loop (finished playlist)'
             : null,
-        bandwidthEstimateKbps: hls ? Math.round(hls.bandwidthEstimate / 1000) : null
+        bandwidthEstimateKbps
       })
     }, POLL_INTERVAL_MS)
 

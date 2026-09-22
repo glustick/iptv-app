@@ -22,7 +22,7 @@ A desktop IPTV client (Electron + React) for Xtream Codes providers, with live T
 
 ## Requirements
 
-Node.js 18+ (via [nvm](https://github.com/nvm-sh/nvm) or the [official installer](https://nodejs.org/)).
+Node.js 22+ (via [nvm](https://github.com/nvm-sh/nvm) or the [official installer](https://nodejs.org/)) — Node 18 and 20 have both reached end-of-life.
 
 ## Getting started
 

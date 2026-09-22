@@ -10,6 +10,7 @@ import { useNumericChannelEntry } from '../lib/useNumericChannelEntry'
 import { useToolbarOverflow } from '../lib/useToolbarOverflow'
 import { useHoverAutoHide } from '../lib/useHoverAutoHide'
 import { isBufferStallError, nextStallAction, playbackSignature } from '../lib/playbackWatchdog'
+import { describeHlsLevel } from '../lib/hlsLevels'
 import type { VideoScaleMode } from '../lib/types'
 
 const MAX_NETWORK_RETRIES = 4
@@ -255,6 +256,11 @@ export function Player(): JSX.Element | null {
   // one active), so this only ever needs a track to cycle through, never an on/off toggle.
   const [hlsAudioTracks, setHlsAudioTracks] = useState<{ id: number; name: string }[]>([])
   const [activeHlsAudioTrack, setActiveHlsAudioTrack] = useState(-1)
+  // hls.js's own rendition list. Empty or single-entry for every channel this app's providers
+  // have ever served (one flat rendition per channel — see the level-selection note in the
+  // header below), so the picker only appears where there is genuinely something to pick.
+  const [hlsLevels, setHlsLevels] = useState<string[]>([])
+  const [activeHlsLevel, setActiveHlsLevel] = useState(-1)
   const wasOffline = useRef(false)
   const autoHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Read by the auto-hide effect below, not a dependency of it — a ref rather than state
@@ -352,6 +358,8 @@ export function Player(): JSX.Element | null {
     setActiveHlsSubtitleTrack(-1)
     setHlsAudioTracks([])
     setActiveHlsAudioTrack(-1)
+    setHlsLevels([])
+    setActiveHlsLevel(-1)
     beginTranscodeRun()
     let networkRetryCount = 0
     let mediaErrorRecoveryCount = 0
@@ -627,6 +635,14 @@ export function Player(): JSX.Element | null {
       hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_event, data) => {
         setActiveHlsAudioTrack(data.id)
       })
+      // Quality levels: hls.js exposes its own variant list, and only reports a *switch* — the
+      // set itself has to be read from the instance once the manifest is parsed. Auto is hls.js's
+      // own -1, kept as an explicit option rather than implied, because on a multi-variant source
+      // a user who has picked a level needs a way back to "let it decide".
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        setHlsLevels(hls.levels.map((level, index) => describeHlsLevel(level, index)))
+      })
+      hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => setActiveHlsLevel(data.level))
       hls.on(Hls.Events.ERROR, (_event, data) => {
         // Try transcoding once for the EC-3/AC-3-shaped failure (see useTranscodeFallback)
         // before falling through to either path's normal (terminal) error handling — and
@@ -1473,6 +1489,33 @@ export function Player(): JSX.Element | null {
                 title="Volume"
               />
             </div>
+            {// Manual quality selection — the last piece of the old TiviMate-parity trio, left
+            // open on purpose because every investigation of this app's providers found a single
+            // flat rendition per channel (so there was nothing to select). hls.js reports exactly
+            // that case as one level carrying no dimensions, which is why this stays invisible
+            // until a source genuinely offers variants — at which point it appears instead of
+            // needing to be built then. "Auto" is hls.js's own -1: ABR keeps choosing unless the
+            // user says otherwise.
+            hlsLevels.length > 1 && (
+              <label className="player-track-select" title="Quality">
+                <span aria-hidden="true">📶</span>
+                <span className="control-label">Quality</span>
+                <select
+                  value={activeHlsLevel}
+                  onChange={(e) => {
+                    const hls = hlsRef.current
+                    if (hls) hls.currentLevel = Number(e.target.value)
+                  }}
+                >
+                  <option value={-1}>Auto</option>
+                  {hlsLevels.map((label, index) => (
+                    <option key={index} value={index}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             {// hls.js's own, free/instant alternate-audio renditions — every option here is
             // already loaded in the current source's own playlist, so picking one is just
             // `hls.audioTrack = id`, no restart of anything.
