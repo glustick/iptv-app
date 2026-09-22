@@ -455,6 +455,36 @@ async function main() {
   await click('.guide-card .modal-close')
   await check('the guide closes after the EPG-match jump', '!document.querySelector(".guide-card")', 8000)
 
+  // --- channel health: flagging channels that aren't actually live (0.7.95) ------------------
+  // The fixture's own live channel is a FINISHED 6s playlist (ffmpeg -t 6 with -hls_list_size 0),
+  // the same shape this app's real provider serves on many channels, so every fixture channel is
+  // expected to be flagged. This drives the whole path: a lazily-probed manifest verdict, a badge
+  // on the row, the explanation in the preview, and the filter.
+  await check('a channel whose feed is not live is flagged in the grid', '!!document.querySelector(".epg-health-badge")', 30000)
+  await check(
+    'the preview explains why that channel behaves oddly',
+    `document.querySelector('.epg-health-note')?.innerText.includes('rather than a live feed') ?? false`,
+    15000
+  )
+  await check(
+    'a filter to hide not-live channels appears once any are found',
+    `!![...document.querySelectorAll('.epg-density-toggle')].find((b) => /not live/i.test(b.textContent))`
+  )
+  console.log(
+    'not-live filter control:',
+    await evaluate(cdp, `[...document.querySelectorAll('.epg-density-toggle')].find((b) => /not live/i.test(b.textContent))?.textContent ?? null`)
+  )
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('.epg-density-toggle')].find((b) => /Hide not live/.test(b.textContent))?.click() || true`
+  )
+  await check('hiding not-live channels leaves no flagged rows behind', '!document.querySelector(".epg-health-badge")', 15000)
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('.epg-density-toggle')].find((b) => /Show not live/.test(b.textContent))?.click() || true`
+  )
+  await check('showing them again brings the flagged rows back', '!!document.querySelector(".epg-health-badge")', 15000)
+
   // The My Categories manager, and — since both were real bugs once — that Escape closes it and
   // that it opens on the tab for the section it was launched from.
   await click('.my-categories-manage')

@@ -3,6 +3,7 @@ import { List, useListRef } from 'react-window'
 import { useAppStore } from '../store/useAppStore'
 import { useResizableWidth } from '../lib/useResizableWidth'
 import { pct } from '../lib/epgTime'
+import { describeChannelHealth } from '../lib/channelHealth'
 import type { LiveStream, ShortEpgProgram, ClockFormat } from '../lib/types'
 
 const HOUR_MS = 3_600_000
@@ -76,6 +77,8 @@ function EpgRow({
   const loadShortEpg = useAppStore((s) => s.loadShortEpg)
   const toggleEpgReminder = useAppStore((s) => s.toggleEpgReminder)
   const isEpgReminderSet = useAppStore((s) => s.isEpgReminderSet)
+  const probeChannelHealth = useAppStore((s) => s.probeChannelHealth)
+  const channelHealth = useAppStore((s) => s.channelHealthByStream[channel.stream_id])
 
   // Rows are virtualized, so this only fires for channels actually scrolled into view —
   // fine even against a 24k-channel catalog. This is also the workaround for providers
@@ -84,7 +87,13 @@ function EpgRow({
   useEffect(() => {
     // loadShortEpg catches its own errors internally (EPG is best-effort) and always resolves.
     void loadShortEpg(channel.stream_id)
-  }, [channel.stream_id, loadShortEpg])
+    // Same lazy, per-visible-row trigger for feed health: one small manifest request the first
+    // time a channel is ever shown, then cached for the session (deduped, concurrency-capped and
+    // cached inside the store — see probeChannelHealth). Fired from here rather than for a whole
+    // category at once precisely because rows are virtualized: this asks about the channels the
+    // user is actually looking at, at the rate they scroll.
+    void probeChannelHealth(channel.stream_id)
+  }, [channel.stream_id, loadShortEpg, probeChannelHealth])
 
   const listings = shortEpgByStream[channel.stream_id]
   const visible = (listings ?? []).filter(
@@ -115,6 +124,16 @@ function EpgRow({
             <span className="epg-row-channel-icon placeholder" />
           )}
           <span className="epg-row-channel-name">{channel.name}</span>
+          {/* Only ever shown for a channel we have actually judged and found wanting — 'ok' and
+              'unknown' both render nothing, so the normal case stays visually unchanged. */}
+          {channelHealth && (channelHealth.health === 'loop' || channelHealth.health === 'unavailable') && (
+            <span
+              className={`epg-health-badge epg-health-badge--${channelHealth.health}`}
+              title={describeChannelHealth(channelHealth.health, channelHealth.durationSeconds) ?? undefined}
+            >
+              {channelHealth.health === 'loop' ? '⟳' : '⚠'}
+            </span>
+          )}
         </button>
       </div>
       <div className="epg-row-timeline">

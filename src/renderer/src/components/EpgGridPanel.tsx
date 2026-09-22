@@ -5,6 +5,7 @@ import { useResizableWidth } from '../lib/useResizableWidth'
 import { useDebouncedValue } from '../lib/useDebouncedValue'
 import { useNumericChannelEntry } from '../lib/useNumericChannelEntry'
 import { EpgGrid } from './EpgGrid'
+import { describeChannelHealth } from '../lib/channelHealth'
 import type { LiveStream, ShortEpgProgram } from '../lib/types'
 
 // Docked/full-width chrome (preview video, favorite/close buttons, resize handle) around the
@@ -35,6 +36,9 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
   const hiddenLiveStreamIds = useAppStore((s) => s.settings.hiddenLiveStreamIds)
   const showHiddenLiveChannels = useAppStore((s) => s.showHiddenLiveChannels)
   const setShowHiddenLiveChannels = useAppStore((s) => s.setShowHiddenLiveChannels)
+  const channelHealthByStream = useAppStore((s) => s.channelHealthByStream)
+  const showNotLiveChannels = useAppStore((s) => s.showNotLiveChannels)
+  const setShowNotLiveChannels = useAppStore((s) => s.setShowNotLiveChannels)
   const openChannelPreview = useAppStore((s) => s.openChannelPreview)
   const epgSourceByStream = useAppStore((s) => s.epgSourceByStream)
   const openGuide = useAppStore((s) => s.openGuide)
@@ -58,8 +62,27 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
   })
 
   const debouncedSearch = useDebouncedValue(searchTerm, 150)
+  // Channels the last few seconds of browsing found not to be live (a finished playlist, or a
+  // playlist that couldn't be read) — see lib/channelHealth.ts. Kept as a separate step from the
+  // hide-these-channels filter below because the two are different decisions: one is the user's
+  // own list, this one is a claim about the provider that the user can choose to act on.
+  const notLiveCount = useMemo(
+    () =>
+      liveStreams.filter((c) => {
+        if (!showHiddenLiveChannels && hiddenLiveStreamIds.includes(c.stream_id)) return false
+        const health = channelHealthByStream[c.stream_id]?.health
+        return health === 'loop' || health === 'unavailable'
+      }).length,
+    [liveStreams, channelHealthByStream, showHiddenLiveChannels, hiddenLiveStreamIds]
+  )
   const channels = useMemo(() => {
-    const source = showHiddenLiveChannels ? liveStreams : liveStreams.filter((c) => !hiddenLiveStreamIds.includes(c.stream_id))
+    let source = showHiddenLiveChannels ? liveStreams : liveStreams.filter((c) => !hiddenLiveStreamIds.includes(c.stream_id))
+    if (!showNotLiveChannels) {
+      source = source.filter((c) => {
+        const health = channelHealthByStream[c.stream_id]?.health
+        return health !== 'loop' && health !== 'unavailable'
+      })
+    }
     if (!debouncedSearch.trim()) return source
     const needle = debouncedSearch.toLowerCase()
     return source.filter((c) => {
@@ -72,7 +95,7 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
       const listings = shortEpgByStream[c.stream_id]
       return listings?.some((p) => p.title.toLowerCase().includes(needle)) ?? false
     })
-  }, [liveStreams, debouncedSearch, shortEpgByStream, hiddenLiveStreamIds, showHiddenLiveChannels])
+  }, [liveStreams, debouncedSearch, shortEpgByStream, hiddenLiveStreamIds, showHiddenLiveChannels, showNotLiveChannels, channelHealthByStream])
 
   // Suppress the small preview's own stream while the fullscreen player has one open for
   // the same account — most Xtream providers cap concurrent connections quite low (often
@@ -114,6 +137,7 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
   }
 
   const favorited = isFavorited('live', previewChannel.stream_id)
+  const previewHealth = channelHealthByStream[previewChannel.stream_id]
 
   function watchFullscreen(channel: LiveStream = previewChannel!): void {
     play('live', channel.stream_id, channel.name, 'm3u8', channel.stream_icon, channel.tv_archive)
@@ -177,6 +201,14 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
             <button className="watch-now-button watch-now-button--compact" onClick={() => watchFullscreen()}>
               ⛶ Watch fullscreen
             </button>
+            {/* Why this channel behaves oddly — the one place a user is already looking at the
+                channel itself. Only rendered for a judged-and-wanting channel; nothing at all for
+                a live one. */}
+            {previewHealth && describeChannelHealth(previewHealth.health, previewHealth.durationSeconds) && (
+              <p className="epg-health-note">
+                {describeChannelHealth(previewHealth.health, previewHealth.durationSeconds)}
+              </p>
+            )}
             {epgSourceByStream[previewChannel.stream_id] && (
               <p
                 className="epg-guide-source"
@@ -219,6 +251,17 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
               {hiddenLiveStreamIds.length > 0 && (
                 <button className="epg-density-toggle" onClick={() => setShowHiddenLiveChannels(!showHiddenLiveChannels)}>
                   {showHiddenLiveChannels ? 'Hide hidden' : `Show hidden (${hiddenLiveStreamIds.length})`}
+                </button>
+              )}
+              {/* Appears only once something has actually been found, so the control can't be
+                  mistaken for a filter that does nothing. */}
+              {notLiveCount > 0 && (
+                <button
+                  className="epg-density-toggle"
+                  onClick={() => setShowNotLiveChannels(!showNotLiveChannels)}
+                  title="Channels whose feed isn't live right now — a fixed clip on repeat, or a playlist that couldn't be read"
+                >
+                  {showNotLiveChannels ? `Hide not live (${notLiveCount})` : `Show not live (${notLiveCount})`}
                 </button>
               )}
             </>

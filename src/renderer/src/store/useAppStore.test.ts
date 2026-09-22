@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { useAppStore, PROVIDER_GUIDE_LABEL } from './useAppStore'
 import { XtreamClient } from '../lib/xtream'
 import { DEFAULT_SETTINGS } from '../lib/types'
@@ -50,6 +50,7 @@ beforeEach(() => {
     favoriteGroups: [],
     numericChannelCatalog: null,
     showHiddenLiveChannels: false,
+    channelHealthByStream: {},
     guideOpen: false,
     epgMatchTarget: null
   })
@@ -1911,5 +1912,101 @@ describe('bulk-applying EPG suggestions', () => {
   it('does nothing when the source is not loaded or the catalog has not been fetched', async () => {
     useAppStore.setState({ numericChannelCatalog: null, epgSources: [], epgSourceLabels: [], settings: DEFAULT_SETTINGS })
     expect(await useAppStore.getState().applySuggestedMappings(SOURCE, 0.8)).toEqual({ applied: 0, stillUnmatched: 0 })
+  })
+})
+
+describe('channel health probing (probeChannelHealth)', () => {
+  // A finished playlist on a live URL — the shape this app's own provider serves on many
+  // channels, and the only thing this probe claims to detect.
+  const FINISHED = `#EXTM3U
+#EXT-X-TARGETDURATION:11
+#EXT-X-MEDIA-SEQUENCE:0
+#EXTINF:10.000,A
+https://cdn.example/0.ts
+#EXTINF:10.000,B
+https://cdn.example/1.ts
+#EXTINF:10.300,C
+https://cdn.example/2.ts
+#EXT-X-ENDLIST
+`
+  const LIVE = `#EXTM3U
+#EXT-X-TARGETDURATION:7
+#EXT-X-MEDIA-SEQUENCE:99
+#EXTINF:7.000,
+https://cdn.example/a.ts
+`
+
+  const realFetch = globalThis.fetch
+  afterEach(() => {
+    globalThis.fetch = realFetch
+    vi.restoreAllMocks()
+  })
+
+  function prepare(urlFor: (streamId: number) => string): void {
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    vi.spyOn(client, 'getStreamUrl').mockImplementation((_kind, streamId) => urlFor(streamId))
+    useAppStore.setState({ client })
+  }
+
+  function stubFetch(body: string | Error): ReturnType<typeof vi.fn> {
+    const spy = vi.fn()
+    if (body instanceof Error) spy.mockRejectedValue(body)
+    else spy.mockResolvedValue({ ok: true, status: 200, text: async () => body } as unknown as Response)
+    globalThis.fetch = spy as unknown as typeof fetch
+    return spy
+  }
+
+  it('records a finished playlist as a fixed loop, with its length', async () => {
+    prepare((id) => `http://fixture.test/live/u/p/${id}.m3u8`)
+    stubFetch(FINISHED)
+
+    await useAppStore.getState().probeChannelHealth(41)
+
+    const entry = useAppStore.getState().channelHealthByStream[41]
+    expect(entry.health).toBe('loop')
+    expect(entry.durationSeconds).toBeCloseTo(30.3, 1)
+  })
+
+  it('records an advancing playlist as live', async () => {
+    prepare((id) => `http://fixture.test/live/u/p/${id}.m3u8`)
+    stubFetch(LIVE)
+
+    await useAppStore.getState().probeChannelHealth(42)
+
+    expect(useAppStore.getState().channelHealthByStream[42].health).toBe('ok')
+  })
+
+  it('probes a channel only once per session, however many rows remount', async () => {
+    prepare((id) => `http://fixture.test/live/u/p/${id}.m3u8`)
+    const fetchSpy = stubFetch(FINISHED)
+
+    await useAppStore.getState().probeChannelHealth(43)
+    await useAppStore.getState().probeChannelHealth(43)
+    await useAppStore.getState().probeChannelHealth(43)
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('records no verdict at all when the probe fails for a transport reason, and backs off', async () => {
+    prepare((id) => `http://fixture.test/live/u/p/${id}.m3u8`)
+    const fetchSpy = stubFetch(new Error('network down'))
+
+    await useAppStore.getState().probeChannelHealth(44)
+    // A second row mount during the cooldown must not retry — but nothing was claimed either.
+    await useAppStore.getState().probeChannelHealth(44)
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(useAppStore.getState().channelHealthByStream[44]).toBeUndefined()
+  })
+
+  it('never fetches a channel whose URL is not an HLS playlist', async () => {
+    // An M3U profile's channels are often raw .ts — judging one would mean downloading video.
+    prepare((id) => `http://fixture.test/live/u/p/${id}.ts`)
+    const fetchSpy = stubFetch(FINISHED)
+
+    await useAppStore.getState().probeChannelHealth(45)
+
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(useAppStore.getState().channelHealthByStream[45]).toBeUndefined()
   })
 })

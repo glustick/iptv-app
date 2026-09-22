@@ -1,14 +1,14 @@
 # Project state
 
-_A consolidated handover snapshot, first written 2026-09-14 at v0.7.74 and updated 2026-09-21 at
-v0.7.94. `ROADMAP.md` remains the authoritative, per-release history — this page is the "where are
+_A consolidated handover snapshot, first written 2026-09-14 at v0.7.74 and updated 2026-09-22 at
+v0.7.95. `ROADMAP.md` remains the authoritative, per-release history — this page is the "where are
 we and why" summary for whoever picks this up next (human or agent)._
 
 ## TL;DR
 
 AllisonIPTV is a working desktop IPTV client (Electron + React + TypeScript) in daily use against a
-real Xtream provider with a ~30k-channel catalog. Current release: **v0.7.94** (see ROADMAP for the
-full history). Test suite: **346 passing**. CI (typecheck/lint/test/build) and the three-platform
+real Xtream provider with a ~30k-channel catalog. Current release: **v0.7.95** (see ROADMAP for the
+full history). Test suite: **363 passing**. CI (typecheck/lint/test/build) and the three-platform
 Release workflow are both green on every tagged release.
 
 0.7.65 → 0.7.79 were almost entirely about the **EPG system**, **user-made categories**, and the

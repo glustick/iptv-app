@@ -51,6 +51,12 @@ import type {
   VpnProfile,
   MultiViewLayout
 } from '../lib/types'
+import {
+  analyzeMediaPlaylist,
+  classifyChannelHealth,
+  type ChannelHealth,
+  type MediaPlaylistAnalysis
+} from '../lib/channelHealth'
 import { DEFAULT_SETTINGS, favoriteKey } from '../lib/types'
 import { addStreamIds, kindOf, moveItem, removeStreamId } from '../lib/customCategories'
 import { shouldWarnOnVpnDisconnect } from '../lib/vpnStatus'
@@ -123,6 +129,37 @@ async function planBulkSuggestionApplyChunked(
 const shortEpgInFlight = new Set<number>()
 const shortEpgFailedAt = new Map<number, number>()
 
+// Channel-health probing (see probeChannelHealth): one small manifest request per channel, so a
+// whole category's worth of rows mounting at once must not become a burst — the same queueing
+// idea as the short-EPG fetches above, with a lower cap because these are ad-hoc per-channel GETs
+// against the provider rather than a documented, bulk-friendly API.
+const MAX_CONCURRENT_HEALTH_PROBES = 2
+const HEALTH_PROBE_TIMEOUT_MS = 10_000
+// A probe that failed for a *transport* reason (timeout, HTTP error) says nothing about the
+// channel itself — unlike a body that was fetched and found to be unusable. Those are retried
+// after this cooldown instead of being recorded as a verdict, so a passing network blip can't
+// brand a channel for the rest of the session.
+const HEALTH_PROBE_FAILURE_COOLDOWN_MS = 5 * 60 * 1000
+let activeHealthProbes = 0
+// `| Promise<void>` for the same reason the short-EPG queue carries it: each entry's own
+// try/finally settles it and chains the next one, so runNextHealthProbe() never awaits.
+const healthProbeQueue: Array<() => void | Promise<void>> = []
+const healthProbeInFlight = new Set<number>()
+// Channels already given a verdict this session. Deliberately module-level, like the short-EPG
+// bookkeeping above, because it is plumbing rather than anything a component renders — and it is
+// cleared on connect/disconnect, since stream ids are provider-scoped and a previous provider's
+// verdicts would be about a different channel entirely.
+const healthProbeSettled = new Set<number>()
+const healthProbeFailedAt = new Map<number, number>()
+
+function runNextHealthProbe(): void {
+  if (activeHealthProbes >= MAX_CONCURRENT_HEALTH_PROBES) return
+  const next = healthProbeQueue.shift()
+  if (!next) return
+  activeHealthProbes++
+  void next()
+}
+
 function runNextShortEpgFetch(): void {
   if (activeShortEpgFetches >= MAX_CONCURRENT_SHORT_EPG_FETCHES) return
   const next = shortEpgQueue.shift()
@@ -135,6 +172,14 @@ function runNextShortEpgFetch(): void {
  * entry is told apart from user-added URL sources — a custom source's label IS its URL, which
  * can't collide with this literal in any realistic setup. */
 export const PROVIDER_GUIDE_LABEL = 'Provider guide (xmltv.php)'
+
+/** One probed channel's feed health — see lib/channelHealth.ts and probeChannelHealth. */
+export interface ChannelHealthEntry {
+  health: ChannelHealth
+  /** Total playlist length when the feed is a fixed loop; null when unknown or not applicable. */
+  durationSeconds: number | null
+  checkedAt: number
+}
 
 /** One row of the per-source EPG match report shown in Settings — see applyEpgPool. */
 export interface EpgSourceMatchStats {
@@ -234,6 +279,10 @@ interface AppState {
   // entries prefilled from a guide pool — those want the provider's fresher data as soon as
   // their row loads). Drives SHORT_EPG_TTL_MS staleness in loadShortEpg.
   shortEpgFetchedAt: Record<number, number>
+  // Per-channel feed health, probed lazily as rows scroll into view (probeChannelHealth) —
+  // 'loop' is a channel whose playlist is already finished, i.e. a fixed clip rather than a
+  // live feed; see lib/channelHealth.ts for why that is the signal and how it is read.
+  channelHealthByStream: Record<number, ChannelHealthEntry>
   // The local proxy's base URL, captured at connect() — fetching a user-added third-party EPG
   // URL needs the proxy's /__fetch/ passthrough (same reason every other cross-origin request
   // here goes through it), and nothing else exposes it to the store.
@@ -264,6 +313,11 @@ interface AppState {
   // when the picker isn't open.
   multiViewPickingSlot: number | null
   showHiddenLiveChannels: boolean
+  // Whether channels known not to be live are listed alongside the rest. On by default: the
+  // badge already tells the truth about them, and silently hiding channels a provider is
+  // serving (badly) would look like the app is missing content. The toggle is what a user
+  // reaches for once they've decided they don't want to scroll past them.
+  showNotLiveChannels: boolean
   // Which user-made category the sidebar has selected (see CustomCategory) — null whenever a
   // provider category (or All) is selected instead. Kept separate from selectedCategoryId
   // because a custom category has no provider category_id: setting that field to a custom id
@@ -435,6 +489,11 @@ interface AppState {
   clearMultiViewSlot: (slotIndex: number) => void
   toggleHiddenLiveChannel: (streamId: number) => void
   setShowHiddenLiveChannels: (show: boolean) => void
+  // Probes one channel's own playlist for feed health (see lib/channelHealth.ts). Resolves when
+  // the queued probe actually ran; a channel already judged this session, or already in flight,
+  // resolves immediately.
+  probeChannelHealth: (streamId: number) => Promise<void>
+  setShowNotLiveChannels: (show: boolean) => void
   // Records (or, via forgetLiveAudioFix, clears) that a live channel needs the ffmpeg AAC-remux
   // audio fallback, so the next open skips detection and engages the remux immediately — see
   // the liveAudioFixes field's own comment in lib/types.ts for the shape and why the URL is
@@ -527,6 +586,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   epgSourceMatchStats: [],
   shortEpgByStream: {},
   shortEpgFetchedAt: {},
+  channelHealthByStream: {},
   proxyBase: null,
 
   nowPlaying: null,
@@ -544,6 +604,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   multiViewSlots: Array(DEFAULT_SETTINGS.multiViewLayout).fill(null),
   multiViewPickingSlot: null,
   showHiddenLiveChannels: false,
+  showNotLiveChannels: true,
   selectedCustomCategoryId: null,
   customCategoriesOpen: false,
 
@@ -758,6 +819,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         // completely different channel that happens to share the id.
         shortEpgByStream: {},
         shortEpgFetchedAt: {},
+        channelHealthByStream: {},
         epgSources: [],
         epgSourceLabels: [],
         epgSourceByStream: {},
@@ -768,6 +830,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         proxyBase
       })
       shortEpgFailedAt.clear()
+      healthProbeSettled.clear()
+      healthProbeFailedAt.clear()
+      healthProbeInFlight.clear()
       await saveActiveProfileId(profileId)
       await get().setViewMode('live')
       // Full-guide sources are strictly an enrichment layered on top of the per-channel short
@@ -795,6 +860,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   disconnect: () => {
     shortEpgFailedAt.clear()
+    healthProbeSettled.clear()
+    healthProbeFailedAt.clear()
+    healthProbeInFlight.clear()
     set({
       client: null,
       activeProfile: null,
@@ -815,6 +883,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       epgSourceMatchStats: [],
       shortEpgByStream: {},
       shortEpgFetchedAt: {},
+      channelHealthByStream: {},
       proxyBase: null,
       nowPlaying: null,
       channelBarOpen: false,
@@ -1498,6 +1567,70 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
   },
 
+  probeChannelHealth: (streamId) => {
+    const { client } = get()
+    if (!client) return Promise.resolve()
+    if (healthProbeSettled.has(streamId) || healthProbeInFlight.has(streamId)) return Promise.resolve()
+    const failedAt = healthProbeFailedAt.get(streamId) ?? 0
+    if (Date.now() - failedAt < HEALTH_PROBE_FAILURE_COOLDOWN_MS) return Promise.resolve()
+    let url: string
+    try {
+      url = client.getStreamUrl('live', streamId, 'm3u8')
+    } catch {
+      // A channel id this client can't resolve (an M3U playlist that changed underneath us,
+      // say) — there is nothing to probe, and it is not this channel's fault.
+      return Promise.resolve()
+    }
+    // Only ever fetch something that can be judged cheaply: an HLS media playlist. For an M3U
+    // profile this URL is the channel's own address, which is very often a raw .ts stream —
+    // pulling that would mean downloading real video just to glance at its first bytes. Anything
+    // not ending in .m3u8 is therefore left unjudged on purpose. (The same test Player.tsx and
+    // useHlsAttach.ts use to decide what hls.js can play at all.)
+    if (!url.endsWith('.m3u8')) return Promise.resolve()
+    healthProbeInFlight.add(streamId)
+    return new Promise((resolve) => {
+      healthProbeQueue.push(async () => {
+        try {
+          const controller = new AbortController()
+          const timer = setTimeout(() => controller.abort(), HEALTH_PROBE_TIMEOUT_MS)
+          let analysis: MediaPlaylistAnalysis | null = null
+          try {
+            const res = await fetch(url, { signal: controller.signal })
+            if (!res.ok) throw new Error(`HTTP ${res.status}`)
+            analysis = analyzeMediaPlaylist(await res.text())
+          } finally {
+            clearTimeout(timer)
+          }
+          healthProbeFailedAt.delete(streamId)
+          healthProbeSettled.add(streamId)
+          set({
+            channelHealthByStream: {
+              ...get().channelHealthByStream,
+              [streamId]: {
+                health: classifyChannelHealth(analysis),
+                // A master playlist's own summed durations say nothing about the variants it
+                // hands off to, so only a media playlist's length is worth keeping.
+                durationSeconds: analysis && !analysis.isMaster ? analysis.durationSeconds : null,
+                checkedAt: Date.now()
+              }
+            }
+          })
+        } catch {
+          // Transport-level failure — no verdict at all, just back off before trying again (see
+          // HEALTH_PROBE_FAILURE_COOLDOWN_MS). Recording "unavailable" here would be a lie the
+          // user would act on.
+          healthProbeFailedAt.set(streamId, Date.now())
+        } finally {
+          healthProbeInFlight.delete(streamId)
+          activeHealthProbes--
+          resolve()
+          runNextHealthProbe()
+        }
+      })
+      runNextHealthProbe()
+    })
+  },
+
   play: (kind, streamId, name, extension, icon = '', tvArchive = 0) => {
     const { client, recentlyWatched } = get()
     if (!client) return
@@ -1593,6 +1726,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setShowHiddenLiveChannels: (show) => set({ showHiddenLiveChannels: show }),
+
+  setShowNotLiveChannels: (show) => set({ showNotLiveChannels: show }),
 
   rememberLiveAudioFix: (streamId, audioIndex, url) => {
     const liveAudioFixes = { ...get().settings.liveAudioFixes, [String(streamId)]: { audioIndex, url } }

@@ -1737,10 +1737,41 @@ body.resizing-col {
 }
 
 .epg-row-channel-name {
+  /* Flexed so a health badge (added after it) stays visible rather than being clipped away —
+     the name shrinks instead, and the ellipsis does its job at whatever width is left. */
+  flex: 1;
+  min-width: 0;
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Feed-health badge on a channel row (⟳ = finished playlist served on a live URL, ⚠ = playlist
+   unreadable). Deliberately small and quiet: it is context for the row, not a siren. */
+.epg-health-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 4px;
+}
+
+.epg-health-badge--loop {
+  color: var(--text-dim);
+  background: var(--bg-hover);
+}
+
+.epg-health-badge--unavailable {
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+}
+
+/* The plain-language version of the same thing, in the channel preview. */
+.epg-health-note {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
 }
 
 /* The channel row's right-click menu (hide / EPG match). Fixed-positioned at the cursor and
