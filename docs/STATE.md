@@ -56,15 +56,25 @@ This is the part with the most moving pieces, so it's worth understanding as a w
 - **Playback fallbacks** — `transcodeService.ts` remuxes unsupported audio (EC-3/AC-3) to AAC via
   the bundled ffmpeg, mapping one text-based subtitle stream as a WebVTT rendition with a
   hand-written master playlist, a grace fallback, and a bitmap-codec auto-retry.
+- **Channel health** (`lib/channelHealth.ts`, `probeChannelHealth` in the store) — a live channel
+  whose playlist is already *finished* (`#EXT-X-ENDLIST` on a live URL) is a clip on repeat, not a
+  live feed; rows are flagged ⟳/⚠ from a lazily-probed manifest, the preview explains it in words,
+  and a "Hide not live (N)" filter appears once any are found. Verdicts are per-session (cleared on
+  connect/disconnect) and a transport failure records **no** verdict at all, so a network blip can
+  never brand a channel.
 - **VPN** — OpenVPN profiles (requires OpenVPN installed), split-tunnel to the provider only,
-  orphaned-session recovery on launch.
+  orphaned-session recovery on launch. The tunnel routes **every** address the provider host
+  resolves to (not just the first — see `main/vpnRouteScript.ts`), and because adding a route to a
+  *running* tunnel needs root, a mid-session DNS change is repairable rather than automatic: the
+  stream-route warning offers a "Reconnect VPN" button that rebuilds the routes against the current
+  answer.
 - **Auto-update** — electron-updater against GitHub Releases, with an in-app prompt that now shows
   the release's own notes (generated from ROADMAP.md into the update feed at build time — see
   `scripts/extract-release-notes.mjs` and `lib/releaseNotes.ts`).
 
 ## Release & CI/CD
 
-- Push `main` → **CI** workflow (Node 20: typecheck, lint, test, build).
+- Push `main` → **CI** workflow (Node 22: typecheck, lint, test, build).
 - Push a `v*` tag → **Release** workflow: three explicit jobs (mac / windows / linux), each building
   and publishing installers + update feeds to the GitHub Release, then a fourth `notes` job that
   fills the release body from this version's ROADMAP entry (`scripts/extract-release-notes.mjs`,
