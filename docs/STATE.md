@@ -88,7 +88,11 @@ This is the part with the most moving pieces, so it's worth understanding as a w
   and publishing installers + update feeds to the GitHub Release, then a fourth `notes` job that
   fills the release body from this version's ROADMAP entry (`scripts/extract-release-notes.mjs`,
   which also feeds the in-app update prompt via the update feed's `releaseNotes`).
-- **Code signing is wired and dormant**: each job checks for its own certificate secret at job level
+- **Code signing is wired and dormant, and staying that way**: the maintainer decided against
+  buying certificates on 2026-09-22 (cost; single-user app; the test machine is Windows, where
+  unsigned updates work) — see ROADMAP's "Decided, not pending". Practically: macOS never
+  auto-updates and its builds are installed by hand.
+- **How the wiring works**: each job checks for its own certificate secret at job level
   (`MAC_SIGNING_READY` / `WIN_SIGNING_READY`) and applies signing envs only on the signed step.
   Required secrets, documented in the README: `MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD`, `APPLE_ID`,
   `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`, `WIN_CSC_LINK`, `WIN_CSC_KEY_PASSWORD`.
@@ -204,7 +208,7 @@ This is the part with the most moving pieces, so it's worth understanding as a w
 
 | Item | Needs |
 | --- | --- |
-| Activate code signing & notarization | The 7 secrets + an Apple Developer account + a Windows cert |
+| Make the macOS update prompt say "download the .dmg" instead of failing | ~an hour, no external resources |
 | VPN verification (routing, split-tunnel, unreachable-after-failure) | A live Windows session |
 | Linux packaged window-icon check | Real Linux hardware |
 | Proxy stuck-connection root cause | A live repro + `chrome://net-export` capture |

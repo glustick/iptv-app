@@ -219,19 +219,28 @@ What's below is a fresh list, reflecting where things stand after 0.7.101.
 
 Ordered by what I'd actually do first, not by size. Two of the top three are not code.
 
-### Yours to do (no code needed)
+### Decided, not pending (recorded so it isn't re-raised)
 
-- **Obtain the signing certificates.** The workflow, entitlements and per-platform secret wiring have
-  been finished and re-verified since 0.7.72; what is missing is the credentials themselves, and
-  until they exist this is not polish but a **hard functional gap**: macOS's updater will not apply
-  an update to an unsigned app at all, so every Mac install is a manual download, and Windows
-  installers trip SmartScreen. Needs an Apple Developer ID Application certificate (~$99/yr) plus
-  the notarization credentials, and a Windows code-signing certificate; then paste
-  `MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`,
-  `APPLE_TEAM_ID`, `WIN_CSC_LINK`, `WIN_CSC_KEY_PASSWORD` under *Settings → Secrets and variables →
-  Actions*. No workflow edit is required — the pipeline activates itself the moment the secrets
-  exist. One trap already learned: `CSC_LINK` must never be defined-but-empty (electron-builder
-  treats an empty value as a supplied certificate path and fails trying to open `''`).
+- **Code signing and notarization: decided against (2026-09-22).** The pipeline has been wired,
+  fixed and re-verified since 0.7.72 and stays dormant — but the certificates will not be bought.
+  Reasons, in the maintainer's words: *"its a yearly cost and its only me using this app"*, plus a
+  concern that Apple would not issue a Developer ID for an IPTV client as a matter of course. That
+  reasoning holds on the costs alone: this is a single-user application whose **test machine is
+  Windows**, where electron-updater applies updates to unsigned builds perfectly well and the only
+  consequence is a SmartScreen prompt on first install. The cost of the decision is therefore
+  confined to macOS — where the dev machine is — and amounts to downloading the `.dmg` by hand.
+  **Consequence, now permanent rather than a gap:** macOS never auto-updates. The small follow-up
+  this creates is recorded under "Code" below (make the in-app update prompt say so on macOS instead
+  of failing after the user says yes). What would change the decision: wanting to distribute the app
+  to anyone else. (For the record should that day come: a Developer ID certificate is a paid
+  *distribution* credential, not an App Store review gate, so the copyright concern is not the
+  binding constraint — the cost and single-user reasoning are.)
+- **The old secret wiring, for whoever revisits this:** `MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD`,
+  `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`, `WIN_CSC_LINK`,
+  `WIN_CSC_KEY_PASSWORD` under *Settings → Secrets and variables → Actions*; no workflow edit is
+  needed, the pipeline activates itself the moment they exist. Trap already learned: `CSC_LINK` must
+  never be defined-but-empty (electron-builder treats an empty value as a supplied certificate path
+  and fails trying to open `''`).
 - **Tell the provider about the placeholder-loop behaviour.** Measured 2026-09-21: three unrelated
   channels (`Amazon US: Sky News`, `101 BBC One HD London`, `UK: Sky Sports Main Event UHD`)
   answered with **byte-identical media** — the same 12-segment / 120.3s playlist, every one carrying
@@ -263,6 +272,11 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
   list populated and driving the rows instead of a bulk default, and search scoped to the chosen
   category. The hang is very likely the item above, but "render everything by default" is wrong on
   its own merits.
+- **Make the macOS update prompt honest.** Consequence of the decision above, and now the only
+  user-visible cost of it: on macOS the in-app updater can find and download a release but cannot
+  apply one to an unsigned app. Today that path ends in an error after the user has said yes; it
+  should instead say what is true on that platform — download the `.dmg` from the releases page —
+  while Windows keeps updating itself. Needs the platform known in the renderer.
 - **Remove the release-workflow race.** Three platform jobs each ask GitHub to create the same
   release, and the losers get `422 already_exists` — which is what failed the mac job on v0.7.98
   (fixed by re-running it, and the notes job was skipped as collateral). The fix is structural:
