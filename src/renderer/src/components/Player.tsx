@@ -204,6 +204,10 @@ export function Player(): JSX.Element | null {
   const [muted, setMuted] = useState(false)
   const [volume, setVolume] = useState(1)
   const [isFullscreen, setIsFullscreen] = useState(false)
+  // macOS's own window fullscreen, which the app never enters but the OS can (a system
+  // shortcut, or a double-click on the title bar). Mirrored from the main process, since the
+  // renderer has no way to see it otherwise.
+  const [nativeFullScreen, setNativeFullScreen] = useState(false)
   const [statsVisible, setStatsVisible] = useState(false)
   // Header, seek bar, and channel info panel are all purely hover-driven overlays with the exact
   // same real bug otherwise: a plain position-only mousemove handler has no way to notice the
@@ -1184,7 +1188,14 @@ export function Player(): JSX.Element | null {
   useEffect(() => {
     const onFullscreenChange = (): void => setIsFullscreen(document.fullscreenElement === playerRef.current)
     document.addEventListener('fullscreenchange', onFullscreenChange)
-    return () => document.removeEventListener('fullscreenchange', onFullscreenChange)
+    // ...and the window kind, pushed from the main process (plus one initial read, in case the
+    // window was already fullscreen before this player mounted).
+    const unsubscribe = window.api.app.onFullScreenChanged(setNativeFullScreen)
+    void window.api.app.isFullScreen().then(setNativeFullScreen).catch(() => {})
+    return () => {
+      document.removeEventListener('fullscreenchange', onFullscreenChange)
+      unsubscribe()
+    }
   }, [])
 
   // The header starts visible every time a new title starts playing (or the player reopens) —
@@ -1330,11 +1341,24 @@ export function Player(): JSX.Element | null {
     try {
       if (document.fullscreenElement) {
         await document.exitFullscreen()
-      } else {
-        await playerRef.current?.requestFullscreen()
+        return
       }
-    } catch {
-      // Same rationale as PiP above — not worth surfacing as a user-facing error.
+      // The *window* being natively fullscreen is a different thing from the page being
+      // fullscreen, and document.fullscreenElement says nothing about it. Without this branch the
+      // button appeared to do nothing at all when the window had gone fullscreen on its own, and
+      // the only way out was closing the window (reported live, twice over: "it went into full
+      // screen by itself ... the exit full screen button is not working at all"). This can only
+      // ever *leave* native fullscreen — the app never asks for it.
+      if (nativeFullScreen) {
+        await window.api.app.exitFullScreen()
+        return
+      }
+      await playerRef.current?.requestFullscreen()
+    } catch (err) {
+      // Was an empty catch: every failure, including a refused exit, was swallowed, so a broken
+      // button left no trace anywhere. It still isn't a user-facing error dialog, but it is now
+      // something a log can show.
+      console.error('[player] fullscreen toggle failed:', err)
     }
   }
 
@@ -1738,8 +1762,15 @@ export function Player(): JSX.Element | null {
             >
               📊 <span className="control-label">Stats</span>
             </button>
-            <button className="player-control-btn" onClick={toggleFullscreen} title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
-              ⛶ <span className="control-label">{isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}</span>
+            <button
+              className="player-control-btn"
+              onClick={toggleFullscreen}
+              title={isFullscreen || nativeFullScreen ? 'Exit fullscreen' : 'Fullscreen'}
+            >
+              ⛶{' '}
+              <span className="control-label">
+                {isFullscreen || nativeFullScreen ? 'Exit Fullscreen' : 'Fullscreen'}
+              </span>
             </button>
             <button className="player-pip" onClick={togglePip} title="Picture in picture">
               ⧉ <span className="control-label">{pipActive ? 'Exit PiP' : 'PiP'}</span>

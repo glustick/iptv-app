@@ -82,6 +82,12 @@ function App(): JSX.Element {
         document.exitFullscreen().catch(() => {})
         return
       }
+      // ...and the other kind: the *window* being fullscreen (macOS's own, which the app never
+      // asks for but a system shortcut or a stray double-click can trigger) is invisible to
+      // document.fullscreenElement, so without this Escape did nothing and the only way out was
+      // closing the window — reported live. The main process no-ops this unless the window really
+      // is natively fullscreen, so it costs nothing in the ordinary case.
+      void window.api.app.exitFullScreen()
       const state = useAppStore.getState()
       // Which overlay Escape closes is decided by a pure function in lib/overlays.ts, where the
       // priority order is pinned by tests — "add an overlay, forget the chain" is exactly how the

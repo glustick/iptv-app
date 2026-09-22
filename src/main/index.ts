@@ -20,7 +20,7 @@ import { URL } from 'url'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { mkdtemp, mkdir, rm, readFile, writeFile, chmod, readdir, copyFile } from 'fs/promises'
-import { existsSync, readFileSync } from 'fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { randomUUID } from 'crypto'
 import { lookup as dnsLookup } from 'dns/promises'
@@ -226,6 +226,31 @@ function setVpnStatus(status: VpnStatus, errorMessage: string | null = null): vo
   }
   mainWindowRef?.webContents.send('vpn:status-changed', { status, errorMessage })
 }
+
+/**
+ * Appends one line to a persistent log under the OS's own log directory (macOS:
+ * `~/Library/Logs/AllisonIPTV/`).
+ *
+ * This exists because a renderer death used to leave *no trace at all* — reported live as "the
+ * screen went blank and the app died", with nothing in the macOS diagnostic reports, nothing on
+ * disk, and (launched from Finder) no stdout either. Lifecycle and crash events now land here, so
+ * the next occurrence is a timestamped record rather than a memory.
+ *
+ * Deliberately never throws: logging must not be able to break the app it is describing.
+ */
+function logLifecycle(message: string): void {
+  try {
+    const dir = app.getPath('logs')
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    appendFileSync(join(dir, 'allisoniptv.log'), `${new Date().toISOString()} ${message}\n`)
+  } catch {
+    // Nothing useful to do — swallowing is the whole point here.
+  }
+}
+
+/** Reload-loop guard for the crash recovery below: one automatic reload per this window of time. */
+const CRASH_RELOAD_SUPPRESSION_MS = 2 * 60 * 1000
+let lastCrashReloadAt = 0
 
 function findFreeLocalPort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -820,10 +845,52 @@ function createWindow(): void {
   // doesn't intercept or steal mouse events near the top edge of the screen.
   mainWindow.on('enter-full-screen', () => {
     mainWindow.setMenuBarVisibility(false)
+    // The *window* being fullscreen is invisible to the renderer's `document.fullscreenElement`
+    // — the page has no idea it happened. Reported live as "it went into fullscreen by itself and
+    // the exit button did nothing at all". Logging it here means that event is at least recorded
+    // (the log is the first place to look when someone says the app did something on its own), and
+    // the renderer is told so its own fullscreen control can offer to leave this too.
+    logLifecycle('window entered native fullscreen')
+    mainWindow.webContents.send('window:full-screen-changed', true)
   })
   mainWindow.on('leave-full-screen', () => {
     mainWindow.setMenuBarVisibility(false)
+    logLifecycle('window left native fullscreen')
+    mainWindow.webContents.send('window:full-screen-changed', false)
   })
+
+  // HTML fullscreen (the player's own fullscreen, via the Fullscreen API) is a different thing
+  // again, and equally invisible from here — recorded for the same reason.
+  mainWindow.webContents.on('enter-html-full-screen', () => logLifecycle('player entered fullscreen (html)'))
+  mainWindow.webContents.on('leave-html-full-screen', () => logLifecycle('player left fullscreen (html)'))
+
+  // A renderer that has died leaves a blank window — and, if it died while fullscreen, a blank
+  // *fullscreen* window whose controls are all dead, which is exactly the trap reported live
+  // ("stuck in fullscreen, had to close the window"). Record it, get the window out of fullscreen
+  // so it is escapable, and reload once so the app recovers by itself rather than needing a
+  // force-quit. A repeat within CRASH_RELOAD_SUPPRESSION_MS is a real fault, not a blip: it is
+  // logged and left visible rather than reloaded in a loop.
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    logLifecycle(
+      `renderer process gone — reason=${details.reason} exitCode=${details.exitCode}`
+    )
+    if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false)
+    if (mainWindow.isDestroyed()) return
+    const now = Date.now()
+    if (now - lastCrashReloadAt < CRASH_RELOAD_SUPPRESSION_MS) {
+      logLifecycle('renderer crashed again too soon — not reloading automatically')
+      return
+    }
+    lastCrashReloadAt = now
+    logLifecycle('reloading the renderer after the crash')
+    try {
+      mainWindow.webContents.reload()
+    } catch (err) {
+      logLifecycle(`reload after crash failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  })
+  mainWindow.webContents.on('unresponsive', () => logLifecycle('renderer unresponsive'))
+  mainWindow.webContents.on('responsive', () => logLifecycle('renderer responsive again'))
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url).catch((err) => console.error('[main] failed to open external URL:', err))
@@ -895,6 +962,18 @@ app.whenReady().then(async () => {
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
+  })
+
+  // The renderer's fullscreen control needs to know about the *window* being fullscreen as well
+  // as the page (see the enter-full-screen handler above). Nothing here can enter native
+  // fullscreen — only leave it — which is deliberate: the app never puts its own window into
+  // macOS's fullscreen mode, it only offers a way out when the OS does.
+  ipcMain.handle('app:is-full-screen', () => mainWindowRef?.isFullScreen() ?? false)
+  ipcMain.handle('app:exit-full-screen', () => {
+    if (!mainWindowRef || mainWindowRef.isDestroyed()) return
+    if (!mainWindowRef.isFullScreen()) return
+    logLifecycle('renderer asked to leave native fullscreen')
+    mainWindowRef.setFullScreen(false)
   })
 
   ipcMain.handle('app:info', () => ({

@@ -3,6 +3,9 @@ import type { ElectronAPI } from '@electron-toolkit/preload'
 interface AppInfoAPI {
   getInfo: () => Promise<{ name: string; version: string; buildNumber: number }>
   onOpenAbout: (callback: () => void) => () => void
+  isFullScreen: () => Promise<boolean>
+  exitFullScreen: () => Promise<void>
+  onFullScreenChanged: (callback: (isFullScreen: boolean) => void) => () => void
 }
 
 interface StoreAPI {

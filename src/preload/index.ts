@@ -5,6 +5,16 @@ const api = {
   app: {
     getInfo: () =>
       ipcRenderer.invoke('app:info') as Promise<{ name: string; version: string; buildNumber: number }>,
+    // Native *window* fullscreen (macOS's own, not the page's Fullscreen API) — the app never
+    // enters it, but the OS can, and without these the player's fullscreen control could not tell
+    // the two apart, so it offered no way out of the former.
+    isFullScreen: () => ipcRenderer.invoke('app:is-full-screen') as Promise<boolean>,
+    exitFullScreen: () => ipcRenderer.invoke('app:exit-full-screen') as Promise<void>,
+    onFullScreenChanged: (callback: (isFullScreen: boolean) => void) => {
+      const listener = (_event: unknown, isFullScreen: boolean): void => callback(isFullScreen)
+      ipcRenderer.on('window:full-screen-changed', listener)
+      return () => ipcRenderer.removeListener('window:full-screen-changed', listener)
+    },
     onOpenAbout: (callback: () => void) => {
       const listener = (): void => callback()
       ipcRenderer.on('menu:open-about', listener)
