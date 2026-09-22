@@ -204,6 +204,35 @@ This is the part with the most moving pieces, so it's worth understanding as a w
 - Destructive or irreversible actions ask first (`window.confirm`), and are called out in code
   comments with the reasoning.
 
+## Direction: parity with the web sibling, and the door to a merge
+
+There are two IPTV applications in this environment: **this Electron one, and a browser-based
+sibling** started specifically because a web app needs no code-signing certificate from Apple or
+Microsoft (see ROADMAP's "Decided, not pending"). The maintainer's stated hope is **parity between
+them, and possibly a merge one day** — with an important caveat he has already observed himself:
+*"the fat application seems to have a lot better options to play video than in a web browser"*.
+
+That observation is structural, not incidental, and it shapes what parity can mean:
+
+| Capability | Here (Electron) | In a browser |
+| --- | --- | --- |
+| Local proxy in front of the provider | Yes — no CORS/mixed-content limits, own headers, transparent gzip | No — the browser's own request rules apply |
+| A real ffmpeg | Bundled: the audio-fix remux and text-subtitle conversion depend on it | None — no transcoding/remuxing at all |
+| VPN / split-tunnel control | Yes — it owns the tunnel and the routes | No — it cannot touch the OS |
+| Background throttling | Never — the window keeps decoding when unfocused | Tabs are throttled; playback stalls when backgrounded |
+| Window/fullscreen/keep-awake | Native control | Whatever the browser allows |
+| Codec fallbacks | Can remux or swap streams on the fly | Whatever the browser can decode, full stop |
+
+So: **a full merge cannot give the browser those things** — the honest goal is parity *at the logic
+layer* plus a shared UI, with the native capabilities kept behind an interface the browser target
+stubs out. That is the shape a merge would actually take (one codebase, two targets), and the seed of
+it already exists: the two projects trade findings through handoff notes, and the pure modules here —
+`epg.ts`, `epgTime.ts`, `channelHealth.ts`, `channelMatch.ts`, `playbackWatchdog.ts`, `hlsLevels.ts`,
+`iptvClient.ts`, `m3u.ts`/`m3uClient.ts`, `reminders.ts`, `overlays.ts` — have no Electron or DOM
+dependency (the hooks wrapping them do). **The cheap discipline that keeps the option open: keep new
+pure logic free of `window`, `document` and Electron imports, and put the platform bits in hooks or
+services.** No work is scheduled for this; it is recorded so the choice stays available.
+
 ## What's next (all of it needs a human's resources)
 
 | Item | Needs |
