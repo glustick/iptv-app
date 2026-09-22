@@ -942,6 +942,35 @@ describe('VPN toggle (toggleVpnTunnel) and lastVpnProfileId', () => {
     expect(useAppStore.getState().settings.lastVpnProfileId).toBe('a')
   })
 
+  it('reconnectVpnTunnel tears the current tunnel down before re-activating', async () => {
+    useAppStore.setState({
+      settings: { ...DEFAULT_SETTINGS, vpnProfiles: [profileA], activeVpnProfileId: 'a', lastVpnProfileId: 'a' },
+      vpnStatus: 'connected',
+      vpnStreamRouteWarning: 'example.com now resolves to 10.0.0.99, which the VPN is not routing'
+    })
+
+    await useAppStore.getState().reconnectVpnTunnel()
+
+    // The main process no-ops a connect while a tunnel is already up, so the disconnect MUST have
+    // happened for the reconnect to be anything more than a no-op.
+    expect(window.api.vpn.disconnect).toHaveBeenCalled()
+    expect(window.api.vpn.connect).toHaveBeenCalledWith(profileA.configPath, null, null)
+    // ...and the warning that prompted it is cleared once the routes were rebuilt.
+    expect(useAppStore.getState().vpnStreamRouteWarning).toBeNull()
+  })
+
+  it('reconnectVpnTunnel is a no-op without any VPN profile to activate', async () => {
+    useAppStore.setState({
+      settings: { ...DEFAULT_SETTINGS, vpnProfiles: [], lastVpnProfileId: null },
+      vpnStatus: 'connected'
+    })
+
+    await useAppStore.getState().reconnectVpnTunnel()
+
+    expect(window.api.vpn.disconnect).not.toHaveBeenCalled()
+    expect(window.api.vpn.connect).not.toHaveBeenCalled()
+  })
+
   it('reconnects to lastVpnProfileId, not just the first profile, once one has been set', async () => {
     useAppStore.setState({
       settings: { ...DEFAULT_SETTINGS, vpnProfiles: [profileA, profileB], lastVpnProfileId: 'b' }

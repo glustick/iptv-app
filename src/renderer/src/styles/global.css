@@ -417,6 +417,22 @@ input {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
 }
 
+.vpn-warning-action {
+  flex-shrink: 0;
+  margin-left: auto;
+  background: none;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 5px 10px;
+}
+
+.vpn-warning-action:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
 .vpn-warning-dismiss {
   flex-shrink: 0;
   background: none;

@@ -550,6 +550,8 @@ interface AppState {
   toggleVpnTunnel: () => Promise<void>
   dismissVpnDisconnectWarning: () => void
   dismissVpnStreamRouteWarning: () => void
+  // Backs the "Reconnect VPN" action on the stream-route warning banner — see VpnWarnings.tsx.
+  reconnectVpnTunnel: () => Promise<void>
 
   checkForUpdates: () => Promise<void>
   downloadUpdate: () => Promise<void>
@@ -2040,6 +2042,24 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   dismissVpnDisconnectWarning: () => set({ vpnDisconnectWarning: null }),
   dismissVpnStreamRouteWarning: () => set({ vpnStreamRouteWarning: null }),
+
+  reconnectVpnTunnel: async () => {
+    const { settings, vpnStatus } = get()
+    const targetId = settings.activeVpnProfileId ?? settings.lastVpnProfileId ?? settings.vpnProfiles[0]?.id
+    if (!targetId) return
+    // Tear the current tunnel down first: the main process's startVpn() deliberately no-ops
+    // while a tunnel is connecting/connected, so re-activating the same profile without this
+    // would do nothing at all — and there is no way to add a route to a *running* tunnel
+    // without root, which this app never does silently. Bringing the tunnel up again is a
+    // normal activation: same code path, same elevation prompt an Activate click always makes.
+    if (vpnStatus === 'connected' || vpnStatus === 'connecting') {
+      await get().deactivateVpnProfile()
+    }
+    await get().activateVpnProfile(targetId)
+    // The routes were just rebuilt against the current DNS answer; if the answer rotates
+    // again the probe warns again fresh (the main process's own dedupe resets on status change).
+    get().dismissVpnStreamRouteWarning()
+  },
 
   // Manual re-check (an "Check for Updates" button, not just the launch-time one in
   // src/main/index.ts) — update:available/update:not-available both resolve this promise, but

@@ -128,7 +128,7 @@ function makeDeps(overrides: Partial<ProxyServerDeps> = {}): ProxyServerDeps {
     isVpnConnected: () => false,
     getVpnTunneledHost: () => null,
     onOffTunnelRedirect: () => {},
-    getVpnTunneledIp: () => null,
+    getVpnTunneledIps: () => [],
     resolveHostIp: () => Promise.resolve(null),
     onTunneledHostIpChanged: () => {},
     handleTranscodeRequest: () => {},
@@ -540,7 +540,7 @@ describe('createProxyServer', () => {
         upstreamTimeoutMs: 150,
         isVpnConnected: () => true,
         getVpnTunneledHost: () => '127.0.0.1',
-        getVpnTunneledIp: () => '127.0.0.1',
+        getVpnTunneledIps: () => ['127.0.0.1'],
         resolveHostIp: () => Promise.resolve('10.0.0.99'),
         onTunneledHostIpChanged
       })
@@ -551,7 +551,7 @@ describe('createProxyServer', () => {
     // response path — give it a moment to actually run before asserting.
     await new Promise((resolve) => setTimeout(resolve, 50))
 
-    expect(onTunneledHostIpChanged).toHaveBeenCalledWith('127.0.0.1', '127.0.0.1', '10.0.0.99')
+    expect(onTunneledHostIpChanged).toHaveBeenCalledWith('127.0.0.1', ['127.0.0.1'], '10.0.0.99')
   })
 
   it('does not warn when the retry resolves the same IP the VPN route already covers', async () => {
@@ -570,8 +570,39 @@ describe('createProxyServer', () => {
         upstreamTimeoutMs: 150,
         isVpnConnected: () => true,
         getVpnTunneledHost: () => '127.0.0.1',
-        getVpnTunneledIp: () => '127.0.0.1',
+        getVpnTunneledIps: () => ['127.0.0.1'],
         resolveHostIp: () => Promise.resolve('127.0.0.1'),
+        onTunneledHostIpChanged
+      })
+    )
+
+    await fetchViaProxy(proxy, '/slow')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(onTunneledHostIpChanged).not.toHaveBeenCalled()
+  })
+
+  it('does not warn when the fresh answer is one of several addresses the tunnel already routes', async () => {
+    // A panel behind several A records gets a route per address (see vpnRouteScript), so a lookup
+    // returning any *one* of them is fully covered — warning here would be a false alarm on the
+    // exact setup the multi-address routing exists for.
+    let attempts = 0
+    const { url: originUrl, server: origin } = await startMockOrigin((_req, res) => {
+      attempts += 1
+      if (attempts === 1) return
+      res.writeHead(200)
+      res.end('recovered on retry')
+    })
+    openServers.push(origin)
+    const onTunneledHostIpChanged = vi.fn()
+    const proxy = await startProxy(
+      makeDeps({
+        getProxyTargetBase: () => originUrl,
+        upstreamTimeoutMs: 150,
+        isVpnConnected: () => true,
+        getVpnTunneledHost: () => '127.0.0.1',
+        getVpnTunneledIps: () => ['10.0.0.1', '10.0.0.2'],
+        resolveHostIp: () => Promise.resolve('10.0.0.2'),
         onTunneledHostIpChanged
       })
     )
@@ -599,7 +630,7 @@ describe('createProxyServer', () => {
         upstreamTimeoutMs: 150,
         isVpnConnected: () => false,
         getVpnTunneledHost: () => '127.0.0.1',
-        getVpnTunneledIp: () => '127.0.0.1',
+        getVpnTunneledIps: () => ['127.0.0.1'],
         resolveHostIp,
         onTunneledHostIpChanged
       })

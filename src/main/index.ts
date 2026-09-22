@@ -34,6 +34,7 @@ import { createProxyServer, type UpstreamClientRequest } from './proxyServer'
 import { createFfmpegResolver } from './ffmpegResolver'
 import { createTranscodeService } from './transcodeService'
 import { createVpnRecoveryService } from './vpnRecoveryService'
+import { buildRouteScriptText, normalizeRouteIps } from './vpnRouteScript'
 import { createKeepAwakeService } from './keepAwakeService'
 
 const execFileAsync = promisify(execFile)
@@ -186,11 +187,13 @@ interface VpnRuntimeState {
   // handler can tell whether a given redirect target is one of the hosts this connection
   // promised to route, without threading it through as a parameter.
   tunneledHost: string | null
-  // The single IP address actually written into the OS route (see writeRouteScript) — resolved
-  // once, at connect time, via this app's own dns.lookup, entirely independent of Chromium's own
-  // DNS resolution for the proxy's actual requests. Kept so the proxy can tell whether a *fresh*
-  // resolution of the same tunneled host later returns something the route no longer covers.
-  tunneledIp: string | null
+  // Every IP address actually written into the OS routes (see writeRouteScript) — resolved once,
+  // at connect time, via this app's own dns.lookup, entirely independent of Chromium's own DNS
+  // resolution for the proxy's actual requests. Plural because a panel behind several A records
+  // needs all of them routed, not just whichever one came back first. Kept so the proxy can tell
+  // whether a *fresh* resolution of the same tunneled host later returns an address the routes no
+  // longer cover.
+  tunneledIps: string[]
 }
 
 const vpnRuntime: VpnRuntimeState = {
@@ -200,7 +203,7 @@ const vpnRuntime: VpnRuntimeState = {
   managementBuffer: '',
   tempDir: null,
   tunneledHost: null,
-  tunneledIp: null
+  tunneledIps: []
 }
 
 // Redirect targets already reported for the current connection — reset on every new connect
@@ -217,7 +220,7 @@ function setVpnStatus(status: VpnStatus, errorMessage: string | null = null): vo
   vpnRuntime.errorMessage = errorMessage
   if (status !== 'connected' && status !== 'connecting') {
     vpnRuntime.tunneledHost = null
-    vpnRuntime.tunneledIp = null
+    vpnRuntime.tunneledIps = []
     warnedOffTunnelHosts.clear()
     warnedTunnelIpChanges.clear()
   }
@@ -341,38 +344,16 @@ async function getDefaultGateway(): Promise<string | null> {
 async function writeRouteScript(
   dir: string,
   name: string,
-  xtreamIp: string,
+  xtreamIps: string[],
   action: 'add' | 'delete',
   originalGateway: string | null
 ): Promise<string> {
   const isWindows = process.platform === 'win32'
   const path = join(dir, isWindows ? `${name}.bat` : `${name}.sh`)
-  let content: string
-  if (action === 'delete') {
-    // OpenVPN's own teardown removes whatever it installed itself (including the redirect-
-    // gateway /1 routes) once the process exits — only the narrow route this app added
-    // independently needs explicit removal here.
-    content = isWindows
-      ? `@echo off\r\nroute delete ${xtreamIp} mask 255.255.255.255 >nul 2>&1\r\n`
-      : process.platform === 'darwin'
-        ? `#!/bin/sh\n/sbin/route -n delete -host ${xtreamIp} "$route_vpn_gateway" 2>/dev/null\n`
-        : `#!/bin/sh\nip route del ${xtreamIp}/32 via "$route_vpn_gateway" 2>/dev/null || route delete -host ${xtreamIp} gw "$route_vpn_gateway" 2>/dev/null\n`
-  } else if (isWindows) {
-    const restore = originalGateway
-      ? `route delete 0.0.0.0 mask 128.0.0.0 >nul 2>&1\r\nroute delete 128.0.0.0 mask 128.0.0.0 >nul 2>&1\r\nroute add 0.0.0.0 mask 0.0.0.0 ${originalGateway} metric 1 >nul 2>&1\r\n`
-      : ''
-    content = `@echo off\r\n${restore}route add ${xtreamIp} mask 255.255.255.255 %route_vpn_gateway%\r\n`
-  } else if (process.platform === 'darwin') {
-    const restore = originalGateway
-      ? `route -n delete -net 0.0.0.0/1 2>/dev/null\nroute -n delete -net 128.0.0.0/1 2>/dev/null\nroute -n add default ${originalGateway} 2>/dev/null\n`
-      : ''
-    content = `#!/bin/sh\n${restore}/sbin/route -n add -host ${xtreamIp} "$route_vpn_gateway"\n`
-  } else {
-    const restore = originalGateway
-      ? `ip route del 0.0.0.0/1 2>/dev/null\nip route del 128.0.0.0/1 2>/dev/null\nip route replace default via ${originalGateway} 2>/dev/null\n`
-      : ''
-    content = `#!/bin/sh\n${restore}ip route add ${xtreamIp}/32 via "$route_vpn_gateway" 2>/dev/null || route add -host ${xtreamIp} gw "$route_vpn_gateway"\n`
-  }
+  // The script text itself (one route line per address, plus the default-gateway restore when
+  // adding) comes from a pure, separately-tested function — see vpnRouteScript.ts for why: these
+  // lines run as root, and a wrong one fails silently rather than throwing anywhere visible.
+  const content = buildRouteScriptText({ platform: process.platform, ips: xtreamIps, action, originalGateway })
   await writeFile(path, content, { mode: 0o755 })
   if (!isWindows) await chmod(path, 0o755)
   return path
@@ -560,6 +541,32 @@ async function importPickedVpnConfig(pickedPath: string): Promise<string> {
   }
 }
 
+/**
+ * Every IPv4 address `hostname` currently resolves to, in resolver order, de-duplicated and
+ * capped. Falls back to the plain single-address lookup if the all-addresses form fails, so a
+ * resolver that refuses the option degrades to this app's previous behaviour instead of failing
+ * the connect.
+ *
+ * IPv4 only: the route lines this feeds are IPv4-syntax on every platform. A host that resolves
+ * to nothing else now fails the connect loudly (see startVpn) rather than writing a route line
+ * that couldn't express it.
+ */
+async function resolveRouteAddresses(hostname: string): Promise<string[]> {
+  try {
+    const addresses = await dnsLookup(hostname, { all: true, family: 4 })
+    const usable = normalizeRouteIps(addresses.map((entry) => entry.address))
+    if (usable.length > 0) return usable
+  } catch {
+    // Fall through to the single-address form below.
+  }
+  try {
+    const { address } = await dnsLookup(hostname)
+    return normalizeRouteIps([address])
+  } catch {
+    return []
+  }
+}
+
 async function startVpn(
   configPath: string,
   username: string | null,
@@ -572,18 +579,25 @@ async function startVpn(
     const openvpnPath = await findOpenvpnBinary()
     const xtreamHost = new URL(xtreamServerUrl).hostname
     vpnRuntime.tunneledHost = xtreamHost.toLowerCase()
-    const { address: xtreamIp } = await dnsLookup(xtreamHost)
-    vpnRuntime.tunneledIp = xtreamIp
+    // Every address, not just the first — a panel behind several A records would otherwise have
+    // most of its traffic quietly riding the normal default route while the UI showed the VPN as
+    // on. Failing here is deliberate: connecting without routing the provider would look like it
+    // worked.
+    const xtreamIps = await resolveRouteAddresses(xtreamHost)
+    if (xtreamIps.length === 0) {
+      throw new Error(`Could not resolve ${xtreamHost} to an address to route through the tunnel`)
+    }
+    vpnRuntime.tunneledIps = xtreamIps
     const originalGateway = await getDefaultGateway()
     const dir = await mkdtemp(join(tmpdir(), 'allisoniptv-vpn-'))
     vpnRuntime.tempDir = dir
     const importedConfigPath = await importVpnConfigInto(dir, configPath)
-    const routeUpScript = await writeRouteScript(dir, 'route-up', xtreamIp, 'add', originalGateway)
+    const routeUpScript = await writeRouteScript(dir, 'route-up', xtreamIps, 'add', originalGateway)
     // OpenVPN has no "--route-down" option — the flag that runs a command before routes are
     // torn down is "--route-pre-down". Using a nonexistent flag makes OpenVPN reject the whole
     // command line at option-parsing time ("Unrecognized option... route-down") and exit
     // immediately, which surfaces to the renderer as a content-free "Command failed" error.
-    const routePreDownScript = await writeRouteScript(dir, 'route-pre-down', xtreamIp, 'delete', originalGateway)
+    const routePreDownScript = await writeRouteScript(dir, 'route-pre-down', xtreamIps, 'delete', originalGateway)
     const managementPort = await findFreeLocalPort()
     const logPath = join(dir, 'openvpn.log')
     // Recorded before openvpn is even spawned (not after a successful connect) so a crash at any
@@ -721,7 +735,7 @@ function startLocalProxy(): Promise<number> {
           message: `A request was redirected to ${redirectHost}, which isn't routed through the VPN — only ${tunneledHost} is. That traffic may be bypassing the tunnel.`
         })
       },
-      getVpnTunneledIp: () => vpnRuntime.tunneledIp,
+      getVpnTunneledIps: () => vpnRuntime.tunneledIps,
       resolveHostIp: async (hostname) => {
         try {
           return (await dnsLookup(hostname)).address
@@ -729,12 +743,16 @@ function startLocalProxy(): Promise<number> {
           return null
         }
       },
-      onTunneledHostIpChanged: (tunneledHost, tunneledIp, resolvedIp) => {
+      onTunneledHostIpChanged: (tunneledHost, tunneledIps, resolvedIp) => {
         if (warnedTunnelIpChanges.has(resolvedIp)) return
         warnedTunnelIpChanges.add(resolvedIp)
-        console.warn(`[vpn] ${tunneledHost} now resolves to ${resolvedIp}, but the VPN route only covers ${tunneledIp}`)
+        console.warn(`[vpn] ${tunneledHost} now resolves to ${resolvedIp}, but the VPN routes only ${tunneledIps.join(', ')}`)
         mainWindowRef?.webContents.send('vpn:stream-route-warning', {
-          message: `${tunneledHost} now resolves to a different address (${resolvedIp}) than the one the VPN is routing (${tunneledIp}). Traffic to it may be bypassing the tunnel.`
+          // Names the fix, because there is one: re-adding routes needs root, so the only honest
+          // way to cover a *later* DNS answer is to bring the tunnel up again — which re-runs the
+          // route-up script against whatever the host resolves to now. VpnWarnings offers exactly
+          // that as a button.
+          message: `${tunneledHost} now resolves to ${resolvedIp}, which the VPN isn't routing — traffic to it may be bypassing the tunnel. Reconnecting the VPN will route the address it resolves to now.`
         })
       },
       handleTranscodeRequest: (url, res) => void transcodeService.serveTranscodeFile(url, res)

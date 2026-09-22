@@ -11,6 +11,8 @@ export function VpnWarnings(): JSX.Element | null {
   const dismissDisconnect = useAppStore((s) => s.dismissVpnDisconnectWarning)
   const streamRouteMessage = useAppStore((s) => s.vpnStreamRouteWarning)
   const dismissStreamRoute = useAppStore((s) => s.dismissVpnStreamRouteWarning)
+  const reconnectVpnTunnel = useAppStore((s) => s.reconnectVpnTunnel)
+  const hasVpnProfile = useAppStore((s) => s.settings.vpnProfiles.length > 0)
 
   if (!disconnectMessage && !streamRouteMessage) return null
 
@@ -29,6 +31,13 @@ export function VpnWarnings(): JSX.Element | null {
         <div className="vpn-warning">
           <span className="vpn-dot vpn-dot--error" />
           <span>{streamRouteMessage}</span>
+          {/* The warning names the problem and this names the fix: re-adding routes needs root, so
+              the only honest repair is bringing the tunnel up again, which is a normal activation. */}
+          {hasVpnProfile && (
+            <button className="vpn-warning-action" onClick={() => void reconnectVpnTunnel()}>
+              Reconnect VPN
+            </button>
+          )}
           <button className="vpn-warning-dismiss" onClick={dismissStreamRoute}>
             ✕
           </button>

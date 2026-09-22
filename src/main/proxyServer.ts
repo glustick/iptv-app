@@ -105,7 +105,9 @@ export interface ProxyServerDeps {
   // The IP address actually written into the OS route for getVpnTunneledHost() (see
   // writeRouteScript in index.ts) — resolved once, at connect time, independent of Chromium's
   // own DNS resolution for this proxy's actual requests.
-  getVpnTunneledIp: () => string | null
+  // Every address this connection's routes actually cover — plural, because a panel behind
+  // several A records gets a route per address (see resolveRouteAddresses / vpnRouteScript).
+  getVpnTunneledIps: () => string[]
   // Node's dns.lookup in production — deliberately separate from Electron's own resolver (and
   // from clearHostResolverCache, which only clears Chromium's cache) so this reflects a genuinely
   // fresh, independent answer to compare against getVpnTunneledIp().
@@ -113,7 +115,7 @@ export interface ProxyServerDeps {
   // Called when a retry's fresh DNS lookup resolves the tunneled host to a different IP than
   // getVpnTunneledIp() — distinct from onOffTunnelRedirect: same hostname, different underlying
   // address, not a redirect at all, so the hostname-based check above can't catch it.
-  onTunneledHostIpChanged: (tunneledHost: string, tunneledIp: string, resolvedIp: string) => void
+  onTunneledHostIpChanged: (tunneledHost: string, tunneledIps: string[], resolvedIp: string) => void
   // Transcoded HLS output lives on local disk, not upstream — index.ts wires this to
   // serveTranscodeFile so /__transcode/ requests never get treated as something to proxy.
   handleTranscodeRequest: (url: string, res: ServerResponse) => void
@@ -289,13 +291,13 @@ export function createProxyServer(deps: ProxyServerDeps): Server {
           // lets this delay the retry itself — fire-and-forget, same as the line above.
           if (deps.isVpnConnected()) {
             const tunneledHost = deps.getVpnTunneledHost()
-            const tunneledIp = deps.getVpnTunneledIp()
-            if (tunneledHost && tunneledIp && target.hostname.toLowerCase() === tunneledHost) {
+            const tunneledIps = deps.getVpnTunneledIps()
+            if (tunneledHost && tunneledIps.length > 0 && target.hostname.toLowerCase() === tunneledHost) {
               deps
                 .resolveHostIp(target.hostname)
                 .then((resolvedIp) => {
-                  if (resolvedIp && resolvedIp !== tunneledIp) {
-                    deps.onTunneledHostIpChanged(tunneledHost, tunneledIp, resolvedIp)
+                  if (resolvedIp && !tunneledIps.includes(resolvedIp)) {
+                    deps.onTunneledHostIpChanged(tunneledHost, tunneledIps, resolvedIp)
                   }
                 })
                 .catch(() => {})
