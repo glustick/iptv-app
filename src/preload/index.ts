@@ -9,6 +9,8 @@ const api = {
     // enters it, but the OS can, and without these the player's fullscreen control could not tell
     // the two apart, so it offered no way out of the former.
     isFullScreen: () => ipcRenderer.invoke('app:is-full-screen') as Promise<boolean>,
+    getGpuSummary: () =>
+      ipcRenderer.invoke('app:gpu-summary') as Promise<{ videoDecode: string | null; devices: string[] } | null>,
     exitFullScreen: () => ipcRenderer.invoke('app:exit-full-screen') as Promise<void>,
     onFullScreenChanged: (callback: (isFullScreen: boolean) => void) => {
       const listener = (_event: unknown, isFullScreen: boolean): void => callback(isFullScreen)

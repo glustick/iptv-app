@@ -4,6 +4,7 @@ interface AppInfoAPI {
   getInfo: () => Promise<{ name: string; version: string; buildNumber: number }>
   onOpenAbout: (callback: () => void) => () => void
   isFullScreen: () => Promise<boolean>
+  getGpuSummary: () => Promise<{ videoDecode: string | null; devices: string[] } | null>
   exitFullScreen: () => Promise<void>
   onFullScreenChanged: (callback: (isFullScreen: boolean) => void) => () => void
 }

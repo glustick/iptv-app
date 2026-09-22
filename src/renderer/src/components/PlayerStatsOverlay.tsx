@@ -1,6 +1,7 @@
 import { useEffect, useState, type RefObject } from 'react'
 import type Hls from 'hls.js'
 import { hasInformativeLevelData } from '../lib/hlsLevels'
+import { describeGpuDecode } from '../lib/gpuDecode'
 
 const POLL_INTERVAL_MS = 1000
 
@@ -61,6 +62,22 @@ export function PlayerStatsOverlay({
   isLive?: boolean
 }): JSX.Element | null {
   const [stats, setStats] = useState<Stats | null>(null)
+  // Fetched once per open: this describes the GPU/Chromium state, which changes far less often
+  // than the per-second frame counters the interval below tracks.
+  const [gpuDecode, setGpuDecode] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void window.api.app
+      .getGpuSummary()
+      .then((summary) => {
+        if (!cancelled) setGpuDecode(describeGpuDecode(summary))
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     // Deltas (bytes decoded since the last tick) are what make the byte counters meaningful as
@@ -157,6 +174,12 @@ export function PlayerStatsOverlay({
         <span>Audio bitrate</span>
         <span>{stats.audioKbps === null ? '—' : `${stats.audioKbps} kbps`}</span>
       </div>
+      {gpuDecode && (
+        <div className="player-stats-row">
+          <span>GPU decode</span>
+          <span>{gpuDecode}</span>
+        </div>
+      )}
       {stats.playlistState && (
         <div className="player-stats-row">
           <span>Playlist</span>

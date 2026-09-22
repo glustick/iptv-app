@@ -238,6 +238,24 @@ function setVpnStatus(status: VpnStatus, errorMessage: string | null = null): vo
  *
  * Deliberately never throws: logging must not be able to break the app it is describing.
  */
+/**
+ * Names of the GPUs Chromium is actually using, where the platform reports them. Best-effort by
+ * design: the device list is a nicety, and a platform that won't say must not break the status
+ * line it accompanies.
+ */
+async function readActiveGpuDevices(): Promise<string[]> {
+  try {
+    const info = (await app.getGPUInfo('basic')) as {
+      gpuDevice?: Array<{ active?: boolean; deviceString?: string }>
+    }
+    return (info.gpuDevice ?? [])
+      .filter((device) => device.active !== false && !!device.deviceString)
+      .map((device) => String(device.deviceString))
+  } catch {
+    return []
+  }
+}
+
 function logLifecycle(message: string): void {
   try {
     const dir = app.getPath('logs')
@@ -252,6 +270,8 @@ function logLifecycle(message: string): void {
 const CRASH_RELOAD_SUPPRESSION_MS = 2 * 60 * 1000
 let lastCrashReloadAt = 0
 let lastGpuRecoveryAt = 0
+// The live GPU reading is logged once per launch (see app:gpu-summary), not per overlay open.
+let gpuLiveLogged = false
 
 function findFreeLocalPort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -842,6 +862,29 @@ function createWindow(): void {
     mainWindow.show()
   })
 
+  // Record what the GPU is doing, once per launch. This app never re-encodes video (its only
+  // transcode copies the video and fixes the audio), so hardware *decode* is the GPU's real job
+  // here — and whether Chromium is actually using it is otherwise invisible. When decode silently
+  // falls back to the CPU (a driver fault, a blocklist entry), the symptoms look like a stream
+  // problem, so the launch record is the baseline to compare a later report against.
+  void (async () => {
+    try {
+      const features = app.getGPUFeatureStatus()
+      const devices = await readActiveGpuDevices()
+      // Labelled a *snapshot* on purpose: this value legitimately changes as the GPU process
+      // warms up — on the machine this was verified on it read `disabled_software` a second
+      // after launch and `enabled` once playback was running — so an unlabelled line here would
+      // read as "your GPU is doing nothing" when it is doing the decoding. The live value is
+      // logged the first time the stats overlay asks for it (see app:gpu-summary below).
+      logLifecycle(
+        `GPU video decode (startup snapshot): ${features.video_decode ?? 'unknown'}` +
+          `${devices.length ? ` — ${devices.join(', ')}` : ''}`
+      )
+    } catch (err) {
+      logLifecycle(`GPU status unavailable: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  })()
+
   // On Windows/Linux, entering fullscreen should completely suppress the menu bar so it
   // doesn't intercept or steal mouse events near the top edge of the screen.
   mainWindow.on('enter-full-screen', () => {
@@ -1001,6 +1044,27 @@ app.whenReady().then(async () => {
   // as the page (see the enter-full-screen handler above). Nothing here can enter native
   // fullscreen — only leave it — which is deliberate: the app never puts its own window into
   // macOS's fullscreen mode, it only offers a way out when the OS does.
+  // Backs the stats overlay's "GPU decode" row — the one place a user can see whether the GPU is
+  // doing the decoding or the CPU is carrying it (see lib/gpuDecode.ts for why that matters).
+  ipcMain.handle('app:gpu-summary', async () => {
+    try {
+      const features = app.getGPUFeatureStatus()
+      const devices = await readActiveGpuDevices()
+      const videoDecode = features.video_decode ?? null
+      // Record the *live* reading once per launch — this is the value a user is actually shown,
+      // and it is the one worth comparing against a later "why is my CPU pegged" report.
+      if (!gpuLiveLogged) {
+        gpuLiveLogged = true
+        logLifecycle(
+          `GPU video decode (live): ${videoDecode ?? 'unknown'}${devices.length ? ` — ${devices.join(', ')}` : ''}`
+        )
+      }
+      return { videoDecode, devices }
+    } catch {
+      return null
+    }
+  })
+
   ipcMain.handle('app:is-full-screen', () => mainWindowRef?.isFullScreen() ?? false)
   ipcMain.handle('app:exit-full-screen', () => {
     if (!mainWindowRef || mainWindowRef.isDestroyed()) return
