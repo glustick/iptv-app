@@ -532,6 +532,31 @@ async function main() {
   )
   await check('showing them again brings the flagged rows back', '!!document.querySelector(".epg-health-badge")', 15000)
 
+  // --- Multi-View picker: opens on favourites, not on a bulk category (0.7.104) ---------------
+  // Reported unusable at catalogue scale: it opened on whatever the sidebar showed — "All" by
+  // default, i.e. thousands of rows — so picking a channel meant waiting for a bulk load first.
+  await evaluate(cdp, `[...document.querySelectorAll('button.tab')].find((b) => b.textContent.trim() === 'Multi-View')?.click() || true`)
+  await sleep(1500)
+  await evaluate(cdp, `[...document.querySelectorAll('button')].find((b) => /Add Channel/.test(b.textContent))?.click() || true`)
+  await sleep(1200)
+  await check('the Multi-View picker opens', '!!document.querySelector(".multiview-picker-card")')
+  await check(
+    'the picker opens on favourites rather than bulk-loading a category',
+    `document.querySelector('.multiview-picker-card select')?.value === 'favorites'`
+  )
+  await check(
+    'the category list is populated in the picker (not left empty)',
+    `(document.querySelectorAll('.multiview-picker-card select option').length) > 1`
+  )
+  // With no favourites in the fixture the picker must say so rather than showing an empty grid.
+  await check(
+    'the picker explains itself when there are no favourites yet',
+    `/No favourite channels yet/.test(document.body.innerText)`
+  )
+  await click('.multiview-picker-card .modal-close')
+  await sleep(600)
+  await check('the picker closes', '!document.querySelector(".multiview-picker-card")', 8000)
+
   // The My Categories manager, and — since both were real bugs once — that Escape closes it and
   // that it opens on the tab for the section it was launched from.
   await click('.my-categories-manage')

@@ -3168,6 +3168,12 @@ body.resizing-col {
 /* This modal's own category + search controls — without these, narrowing the list down at all
    meant reaching Sidebar/TopBar behind it, which .modal-overlay's own fixed, full-viewport
    backdrop covers entirely (see MultiViewChannelPicker.tsx's own comment on why). */
+.multiview-picker-empty {
+  margin: 12px 2px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
 .multiview-picker-filters {
   display: flex;
   gap: 10px;

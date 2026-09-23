@@ -17,6 +17,7 @@ import { UpdatePrompt } from './UpdatePrompt'
 import { Sidebar } from './Sidebar'
 import { CustomCategoriesModal } from './CustomCategoriesModal'
 import { GuideSettingsPage } from './GuideSettingsPage'
+import { MultiViewChannelPicker } from './MultiViewChannelPicker'
 import { useAppStore, PROVIDER_GUIDE_LABEL } from '../store/useAppStore'
 import { DEFAULT_SETTINGS } from '../lib/types'
 import type { LiveStream } from '../lib/types'
@@ -116,6 +117,69 @@ describe('UpdatePrompt', () => {
     useAppStore.setState({ updateInfo: { version: '9.9.9', releaseNotes: null }, updateDismissed: true })
     render(<UpdatePrompt />)
     expect(screen.queryByText(/9\.9\.9/)).toBeNull()
+  })
+})
+
+describe('MultiViewChannelPicker', () => {
+  // The picker renders EpgGrid, and react-window wants a ResizeObserver that jsdom does not provide
+  // — without this the component throws before anything can be asserted. (Its *rows* still never
+  // render here; anything about a row belongs in the smoke harness. These tests are about the
+  // picker's own controls.)
+  beforeEach(() => {
+    ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+  })
+
+  const stream = (id: number, name: string): LiveStream =>
+    ({
+      num: id,
+      name,
+      stream_type: 'live',
+      stream_id: id,
+      stream_icon: '',
+      epg_channel_id: null,
+      added: '',
+      category_id: '1',
+      custom_sid: null,
+      tv_archive: 0,
+      direct_source: '',
+      tv_archive_duration: 0
+    }) as LiveStream
+
+  it('opens on favourites rather than bulk-loading the browsed category', () => {
+    // The reported problem: it used to open on whatever the sidebar showed ("All" by default,
+    // thousands of rows) and only then offer a way to narrow down.
+    useAppStore.setState({
+      multiViewPickingSlot: 0,
+      liveStreams: [stream(1, 'News HD'), stream(2, 'Sport HD')],
+      favorites: [
+        { kind: 'live', stream: stream(9, 'Sky News') },
+        { kind: 'live', stream: stream(10, 'BBC One') }
+      ],
+      settings: DEFAULT_SETTINGS
+    })
+    render(<MultiViewChannelPicker />)
+
+    const select = document.querySelector('.multiview-picker-card select') as HTMLSelectElement
+    expect(select.value).toBe('favorites')
+    expect(select.textContent).toContain('★ Favourites (2)')
+    // The browsed category is still reachable, just no longer the default.
+    expect(select.textContent).toContain('All categories')
+  })
+
+  it('says what to do when there are no favourites yet, instead of showing an empty grid', () => {
+    useAppStore.setState({
+      multiViewPickingSlot: 1,
+      liveStreams: [stream(1, 'News HD')],
+      favorites: [],
+      settings: DEFAULT_SETTINGS
+    })
+    render(<MultiViewChannelPicker />)
+
+    expect(screen.getByText(/No favourite channels yet/)).toBeTruthy()
   })
 })
 
