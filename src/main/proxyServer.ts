@@ -97,12 +97,15 @@ export interface ProxyServerDeps {
   // Electron's session.defaultSession.clearHostResolverCache() in production.
   clearHostResolverCache: () => Promise<void>
   isVpnConnected: () => boolean
-  getVpnTunneledHost: () => string | null
-  // Called whenever a redirect lands on a host other than getVpnTunneledHost()'s while the VPN
+  // Every provider host this connection's tunnel routes — plural since multi-playlist
+  // (see startVpn): with two playlists connected, routing only one would leave the other's
+  // traffic outside the tunnel with nothing saying so.
+  getVpnTunneledHosts: () => string[]
+  // Called whenever a redirect lands on a host that is not one of getVpnTunneledHosts() while the VPN
   // is connected — the caller owns deciding what to do with that (dedup, logging, IPC to the
   // renderer), this module only ever detects it.
   onOffTunnelRedirect: (tunneledHost: string, redirectHost: string) => void
-  // The IP address actually written into the OS route for getVpnTunneledHost() (see
+  // The addresses actually written into the OS routes for getVpnTunneledHosts() (see
   // writeRouteScript in index.ts) — resolved once, at connect time, independent of Chromium's
   // own DNS resolution for this proxy's actual requests.
   // Every address this connection's routes actually cover — plural, because a panel behind
@@ -239,12 +242,14 @@ export function createProxyServer(deps: ProxyServerDeps): Server {
 
       upstreamReq.on('redirect', (_statusCode, _method, redirectUrl) => {
         if (deps.isVpnConnected()) {
-          const tunneledHost = deps.getVpnTunneledHost()
-          if (tunneledHost) {
+          const tunneledHosts = deps.getVpnTunneledHosts()
+          if (tunneledHosts.length > 0) {
             try {
               const redirectHost = new URL(redirectUrl).hostname.toLowerCase()
-              if (redirectHost !== tunneledHost) {
-                deps.onOffTunnelRedirect(tunneledHost, redirectHost)
+              // Still inside the tunnel if the redirect lands on *any* routed host — with two
+              // playlists connected, provider A redirecting to provider B is not a leak.
+              if (!tunneledHosts.includes(redirectHost)) {
+                deps.onOffTunnelRedirect(tunneledHosts[0], redirectHost)
               }
             } catch {
               // Malformed redirect URL — nothing useful to compare against; let followRedirect()
@@ -290,9 +295,12 @@ export function createProxyServer(deps: ProxyServerDeps): Server {
           // resolving to a *different* address, not a redirect at all. Warning-only, and never
           // lets this delay the retry itself — fire-and-forget, same as the line above.
           if (deps.isVpnConnected()) {
-            const tunneledHost = deps.getVpnTunneledHost()
+            const tunneledHosts = deps.getVpnTunneledHosts()
+            const tunneledHost = tunneledHosts.includes(target.hostname.toLowerCase())
+              ? target.hostname.toLowerCase()
+              : null
             const tunneledIps = deps.getVpnTunneledIps()
-            if (tunneledHost && tunneledIps.length > 0 && target.hostname.toLowerCase() === tunneledHost) {
+            if (tunneledHost && tunneledIps.length > 0) {
               deps
                 .resolveHostIp(target.hostname)
                 .then((resolvedIp) => {

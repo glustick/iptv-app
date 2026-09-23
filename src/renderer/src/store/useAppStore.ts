@@ -2260,7 +2260,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     // specifically to survive deactivation for the VPN dot's toggle-back-on click.
     get().updateSettings({ activeVpnProfileId: id, lastVpnProfileId: id })
     try {
-      await window.api.vpn.connect(profile.configPath, profile.username, profile.password)
+      // Every connected playlist's server, so the tunnel covers all of them — a second playlist left
+      // outside the tunnel would be a silent leak (see startVpn in the main process).
+      const servers = get()
+        .settings.enabledPlaylistIds.map((id) => get().profiles.find((candidate) => candidate.id === id))
+        .filter(
+          (candidate): candidate is XtreamProfile => !!candidate && candidate.kind !== 'm3u' && !!candidate.server
+        )
+        .map((candidate) => candidate.server as string)
+      await window.api.vpn.connect(
+        profile.configPath,
+        profile.username,
+        profile.password,
+        servers.length > 0 ? servers : undefined
+      )
     } catch (err) {
       set({ vpnStatus: 'error', vpnErrorMessage: err instanceof Error ? err.message : 'Failed to connect' })
     }

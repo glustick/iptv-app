@@ -87,8 +87,15 @@ const api = {
   },
   vpn: {
     selectConfigFile: () => ipcRenderer.invoke('vpn:selectConfigFile') as Promise<string | null>,
-    connect: (configPath: string, username: string | null, password: string | null) =>
-      ipcRenderer.invoke('vpn:connect', configPath, username, password) as Promise<void>,
+    // `serverUrls` lists every connected provider, so the tunnel can route all of them — with two
+    // playlists connected, routing only the active one would leave the other outside the tunnel.
+    connect: (
+      configPath: string,
+      username: string | null,
+      password: string | null,
+      serverUrls?: string[]
+    ) =>
+      ipcRenderer.invoke('vpn:connect', configPath, username, password, serverUrls) as Promise<void>,
     disconnect: () => ipcRenderer.invoke('vpn:disconnect') as Promise<void>,
     removeImportedConfig: (configPath: string) =>
       ipcRenderer.invoke('vpn:removeImportedConfig', configPath) as Promise<void>,

@@ -943,9 +943,50 @@ describe('VPN toggle (toggleVpnTunnel) and lastVpnProfileId', () => {
 
     await useAppStore.getState().toggleVpnTunnel()
 
-    expect(window.api.vpn.connect).toHaveBeenCalledWith(profileA.configPath, null, null)
+    expect(window.api.vpn.connect).toHaveBeenCalledWith(profileA.configPath, null, null, undefined)
     expect(useAppStore.getState().settings.activeVpnProfileId).toBe('a')
     expect(useAppStore.getState().settings.lastVpnProfileId).toBe('a')
+  })
+
+  it('hands the tunnel every connected playlist, so a second provider is not left outside it', async () => {
+    // The gap this closes: startVpn used to receive a single server URL, so with two playlists
+    // connected the second provider's streams went out *outside* the tunnel with nothing saying so.
+    const providerA: XtreamProfile = {
+      id: 'a',
+      name: 'First',
+      kind: 'xtream',
+      server: 'https://first.example.com:8080',
+      username: 'u',
+      password: 'p'
+    }
+    const providerB: XtreamProfile = {
+      id: 'b',
+      name: 'Second',
+      kind: 'xtream',
+      server: 'https://second.example.com:8080',
+      username: 'u',
+      password: 'p'
+    }
+    useAppStore.setState({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        vpnProfiles: [profileA],
+        activeVpnProfileId: 'a',
+        lastVpnProfileId: 'a',
+        enabledPlaylistIds: ['a', 'b']
+      },
+      profiles: [providerA, providerB],
+      vpnStatus: 'disconnected'
+    })
+
+    await useAppStore.getState().activateVpnProfile('a')
+
+    expect(window.api.vpn.connect).toHaveBeenCalledWith(
+      profileA.configPath,
+      null,
+      null,
+      ['https://first.example.com:8080', 'https://second.example.com:8080']
+    )
   })
 
   it('reconnectVpnTunnel tears the current tunnel down before re-activating', async () => {
@@ -960,7 +1001,7 @@ describe('VPN toggle (toggleVpnTunnel) and lastVpnProfileId', () => {
     // The main process no-ops a connect while a tunnel is already up, so the disconnect MUST have
     // happened for the reconnect to be anything more than a no-op.
     expect(window.api.vpn.disconnect).toHaveBeenCalled()
-    expect(window.api.vpn.connect).toHaveBeenCalledWith(profileA.configPath, null, null)
+    expect(window.api.vpn.connect).toHaveBeenCalledWith(profileA.configPath, null, null, undefined)
     // ...and the warning that prompted it is cleared once the routes were rebuilt.
     expect(useAppStore.getState().vpnStreamRouteWarning).toBeNull()
   })
@@ -984,7 +1025,7 @@ describe('VPN toggle (toggleVpnTunnel) and lastVpnProfileId', () => {
 
     await useAppStore.getState().toggleVpnTunnel()
 
-    expect(window.api.vpn.connect).toHaveBeenCalledWith(profileB.configPath, null, null)
+    expect(window.api.vpn.connect).toHaveBeenCalledWith(profileB.configPath, null, null, undefined)
     expect(useAppStore.getState().settings.activeVpnProfileId).toBe('b')
   })
 

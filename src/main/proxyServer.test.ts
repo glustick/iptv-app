@@ -126,7 +126,7 @@ function makeDeps(overrides: Partial<ProxyServerDeps> = {}): ProxyServerDeps {
     createUpstreamRequest: createNodeHttpUpstreamRequest,
     clearHostResolverCache: () => Promise.resolve(),
     isVpnConnected: () => false,
-    getVpnTunneledHost: () => null,
+    getVpnTunneledHosts: () => [],
     onOffTunnelRedirect: () => {},
     getVpnTunneledIps: () => [],
     resolveHostIp: () => Promise.resolve(null),
@@ -430,7 +430,7 @@ describe('createProxyServer', () => {
         makeDeps({
           getProxyTargetBase: () => originUrl,
           isVpnConnected: () => true,
-          getVpnTunneledHost: () => '127.0.0.1',
+          getVpnTunneledHosts: () => ['127.0.0.1'],
           onOffTunnelRedirect
         })
       )
@@ -458,7 +458,7 @@ describe('createProxyServer', () => {
         makeDeps({
           getProxyTargetBase: () => originUrl,
           isVpnConnected: () => true,
-          getVpnTunneledHost: () => '127.0.0.1',
+          getVpnTunneledHosts: () => ['127.0.0.1'],
           onOffTunnelRedirect
         })
       )
@@ -484,7 +484,7 @@ describe('createProxyServer', () => {
         makeDeps({
           getProxyTargetBase: () => originUrl,
           isVpnConnected: () => false,
-          getVpnTunneledHost: () => '127.0.0.1',
+          getVpnTunneledHosts: () => ['127.0.0.1'],
           onOffTunnelRedirect
         })
       )
@@ -539,7 +539,7 @@ describe('createProxyServer', () => {
         getProxyTargetBase: () => originUrl,
         upstreamTimeoutMs: 150,
         isVpnConnected: () => true,
-        getVpnTunneledHost: () => '127.0.0.1',
+        getVpnTunneledHosts: () => ['127.0.0.1'],
         getVpnTunneledIps: () => ['127.0.0.1'],
         resolveHostIp: () => Promise.resolve('10.0.0.99'),
         onTunneledHostIpChanged
@@ -569,7 +569,7 @@ describe('createProxyServer', () => {
         getProxyTargetBase: () => originUrl,
         upstreamTimeoutMs: 150,
         isVpnConnected: () => true,
-        getVpnTunneledHost: () => '127.0.0.1',
+        getVpnTunneledHosts: () => ['127.0.0.1'],
         getVpnTunneledIps: () => ['127.0.0.1'],
         resolveHostIp: () => Promise.resolve('127.0.0.1'),
         onTunneledHostIpChanged
@@ -600,7 +600,7 @@ describe('createProxyServer', () => {
         getProxyTargetBase: () => originUrl,
         upstreamTimeoutMs: 150,
         isVpnConnected: () => true,
-        getVpnTunneledHost: () => '127.0.0.1',
+        getVpnTunneledHosts: () => ['127.0.0.1'],
         getVpnTunneledIps: () => ['10.0.0.1', '10.0.0.2'],
         resolveHostIp: () => Promise.resolve('10.0.0.2'),
         onTunneledHostIpChanged
@@ -629,7 +629,7 @@ describe('createProxyServer', () => {
         getProxyTargetBase: () => originUrl,
         upstreamTimeoutMs: 150,
         isVpnConnected: () => false,
-        getVpnTunneledHost: () => '127.0.0.1',
+        getVpnTunneledHosts: () => ['127.0.0.1'],
         getVpnTunneledIps: () => ['127.0.0.1'],
         resolveHostIp,
         onTunneledHostIpChanged

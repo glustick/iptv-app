@@ -182,11 +182,13 @@ interface VpnRuntimeState {
   managementSocket: Socket | null
   managementBuffer: string
   tempDir: string | null
-  // The single host the route-up script actually routes through the tunnel (see startVpn) —
-  // kept here, not just as a local variable inside startVpn, so the proxy's own request
-  // handler can tell whether a given redirect target is one of the hosts this connection
-  // promised to route, without threading it through as a parameter.
-  tunneledHost: string | null
+  // Every host the route-up script routes through the tunnel (see startVpn) — kept here, not just
+  // as a local variable, so the proxy's own request handler can tell whether a given redirect
+  // target is one of the hosts this connection promised to route. Plural since multi-playlist
+  // (0.7.105): the tunnel has to cover *every* connected playlist, or the second provider's streams
+  // leave the machine outside the tunnel with nothing saying so — the exact failure the VPN work
+  // exists to prevent.
+  tunneledHosts: string[]
   // Every IP address actually written into the OS routes (see writeRouteScript) — resolved once,
   // at connect time, via this app's own dns.lookup, entirely independent of Chromium's own DNS
   // resolution for the proxy's actual requests. Plural because a panel behind several A records
@@ -202,7 +204,7 @@ const vpnRuntime: VpnRuntimeState = {
   managementSocket: null,
   managementBuffer: '',
   tempDir: null,
-  tunneledHost: null,
+  tunneledHosts: [],
   tunneledIps: []
 }
 
@@ -219,7 +221,7 @@ function setVpnStatus(status: VpnStatus, errorMessage: string | null = null): vo
   vpnRuntime.status = status
   vpnRuntime.errorMessage = errorMessage
   if (status !== 'connected' && status !== 'connecting') {
-    vpnRuntime.tunneledHost = null
+    vpnRuntime.tunneledHosts = []
     vpnRuntime.tunneledIps = []
     warnedOffTunnelHosts.clear()
     warnedTunnelIpChanges.clear()
@@ -617,22 +619,27 @@ async function startVpn(
   configPath: string,
   username: string | null,
   password: string | null,
-  xtreamServerUrl: string
+  /** Every connected provider's server URL. One is the ordinary case; more is multi-playlist, where
+   * routing only the first would leave the other provider's traffic outside the tunnel. */
+  xtreamServerUrls: string[]
 ): Promise<void> {
   if (vpnRuntime.status === 'connecting' || vpnRuntime.status === 'connected') return
   setVpnStatus('connecting')
   try {
     const openvpnPath = await findOpenvpnBinary()
-    const xtreamHost = new URL(xtreamServerUrl).hostname
-    vpnRuntime.tunneledHost = xtreamHost.toLowerCase()
-    // Every address, not just the first — a panel behind several A records would otherwise have
-    // most of its traffic quietly riding the normal default route while the UI showed the VPN as
-    // on. Failing here is deliberate: connecting without routing the provider would look like it
-    // worked.
-    const xtreamIps = await resolveRouteAddresses(xtreamHost)
+    // Every connected provider's host, each resolved to *every* address it answers with — a panel
+    // behind several A records would otherwise have most of its traffic quietly riding the normal
+    // default route, and with more than one playlist connected the same is true of the second
+    // account entirely. Failing here is deliberate: connecting without routing a provider would
+    // look like it worked.
+    const xtreamHosts = [...new Set(xtreamServerUrls.map((url) => new URL(url).hostname.toLowerCase()))]
+    const resolved: string[] = []
+    for (const host of xtreamHosts) resolved.push(...(await resolveRouteAddresses(host)))
+    const xtreamIps = normalizeRouteIps(resolved)
     if (xtreamIps.length === 0) {
-      throw new Error(`Could not resolve ${xtreamHost} to an address to route through the tunnel`)
+      throw new Error(`Could not resolve ${xtreamHosts.join(' or ')} to an address to route through the tunnel`)
     }
+    vpnRuntime.tunneledHosts = xtreamHosts
     vpnRuntime.tunneledIps = xtreamIps
     const originalGateway = await getDefaultGateway()
     const dir = await mkdtemp(join(tmpdir(), 'allisoniptv-vpn-'))
@@ -772,7 +779,7 @@ function startLocalProxy(): Promise<number> {
         net.request({ method, url, redirect: 'manual' }) as unknown as UpstreamClientRequest,
       clearHostResolverCache: () => session.defaultSession.clearHostResolverCache(),
       isVpnConnected: () => vpnRuntime.status === 'connected',
-      getVpnTunneledHost: () => vpnRuntime.tunneledHost,
+      getVpnTunneledHosts: () => vpnRuntime.tunneledHosts,
       onOffTunnelRedirect: (tunneledHost, redirectHost) => {
         if (warnedOffTunnelHosts.has(redirectHost)) return
         warnedOffTunnelHosts.add(redirectHost)
@@ -1243,8 +1250,17 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle(
     'vpn:connect',
-    async (_event, configPath: string, username: string | null, password: string | null) => {
+    async (
+      _event,
+      configPath: string,
+      username: string | null,
+      password: string | null,
+      serverUrls?: string[]
+    ) => {
       if (!proxyTargetBase) throw new Error('Connect to an Xtream server before enabling the VPN')
+      // The renderer knows every connected playlist, so it supplies the servers to route; falling
+      // back to the proxy's single target keeps older callers (and the tests) working.
+      const servers = serverUrls && serverUrls.length > 0 ? serverUrls : [proxyTargetBase]
       // startVpn reports failure via setVpnStatus (pushed to the renderer as vpn:status-changed)
       // rather than throwing, since most of what it does happens after this call would already
       // need to have returned (the management interface keeps running long after). But that
@@ -1252,7 +1268,7 @@ app.whenReady().then(async () => {
       // succeeded — checking the resulting status and throwing here too keeps the two paths
       // (awaiting this call vs. listening for the status event) in agreement instead of one
       // saying "done" while the other says "failed".
-      await startVpn(configPath, username, password, proxyTargetBase)
+      await startVpn(configPath, username, password, servers)
       if (vpnRuntime.status === 'error') {
         throw new Error(vpnRuntime.errorMessage ?? 'Failed to connect')
       }
