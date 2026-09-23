@@ -59,16 +59,32 @@ beforeEach(() => {
 describe('hidden Live TV channels', () => {
   it('hides and restores a channel while persisting the setting', () => {
     useAppStore.getState().toggleHiddenLiveChannel(42)
-    expect(useAppStore.getState().settings.hiddenLiveStreamIds).toEqual([42])
+    expect(useAppStore.getState().settings.hiddenChannelKeys).toEqual(['42'])
 
     useAppStore.getState().toggleHiddenLiveChannel(42)
-    expect(useAppStore.getState().settings.hiddenLiveStreamIds).toEqual([])
+    expect(useAppStore.getState().settings.hiddenChannelKeys).toEqual([])
+  })
+
+  it('keeps the same id on two playlists as two different channels', () => {
+    // The collision multi-playlist introduced: provider A's 42 is an unrelated channel to B's 42.
+    useAppStore.setState({ primaryPlaylistId: 'primary' })
+
+    useAppStore.getState().toggleHiddenLiveChannel(42, 'primary')
+    useAppStore.getState().toggleHiddenLiveChannel(42, 'second')
+
+    expect(useAppStore.getState().settings.hiddenChannelKeys).toEqual(['42', 'second:42'])
+    expect(useAppStore.getState().isChannelHidden('third', 42)).toBe(false)
+
+    // Unhiding one playlist's channel leaves the other's hidden.
+    useAppStore.getState().toggleHiddenLiveChannel(42, 'primary')
+    expect(useAppStore.getState().isChannelHidden('primary', 42)).toBe(false)
+    expect(useAppStore.getState().isChannelHidden('second', 42)).toBe(true)
   })
 
   it('toggles showing hidden channels independently from the hidden list', () => {
     useAppStore.getState().setShowHiddenLiveChannels(true)
     expect(useAppStore.getState().showHiddenLiveChannels).toBe(true)
-    expect(useAppStore.getState().settings.hiddenLiveStreamIds).toEqual([])
+    expect(useAppStore.getState().settings.hiddenChannelKeys).toEqual([])
   })
 })
 

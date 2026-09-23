@@ -7,6 +7,7 @@ import { useNumericChannelEntry } from '../lib/useNumericChannelEntry'
 import { EpgGrid } from './EpgGrid'
 import { describeChannelHealth } from '../lib/channelHealth'
 import type { LiveStream, ShortEpgProgram } from '../lib/types'
+import { channelKeyBelongsToPlaylist } from '../lib/channelIdentity'
 
 // Docked/full-width chrome (preview video, favorite/close buttons, resize handle) around the
 // shared EpgGrid — see EpgGrid.tsx for the actual Gantt-chart guide, also reused as the
@@ -33,8 +34,16 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
   const detailPanelWidth = useAppStore((s) => s.settings.detailPanelWidth)
   const epgRowDensity = useAppStore((s) => s.settings.epgRowDensity)
   const updateSettings = useAppStore((s) => s.updateSettings)
-  const hiddenLiveStreamIds = useAppStore((s) => s.settings.hiddenLiveStreamIds)
+  const isChannelHidden = useAppStore((s) => s.isChannelHidden)
+  const hiddenChannelKeysForCount = useAppStore((s) => s.settings.hiddenChannelKeys)
   const showHiddenLiveChannels = useAppStore((s) => s.showHiddenLiveChannels)
+  const selectedPlaylistId = useAppStore((s) => s.selectedPlaylistId)
+  const primaryPlaylistId = useAppStore((s) => s.primaryPlaylistId)
+  // Hidden channels belonging to the playlist being browsed (see lib/channelIdentity): a
+  // channel hidden on another playlist is not what this control offers to reveal.
+  const hiddenCount = hiddenChannelKeysForCount.filter((key) =>
+    channelKeyBelongsToPlaylist(key, selectedPlaylistId, primaryPlaylistId)
+  ).length
   const setShowHiddenLiveChannels = useAppStore((s) => s.setShowHiddenLiveChannels)
   const channelHealthByStream = useAppStore((s) => s.channelHealthByStream)
   const showNotLiveChannels = useAppStore((s) => s.showNotLiveChannels)
@@ -69,14 +78,16 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
   const notLiveCount = useMemo(
     () =>
       liveStreams.filter((c) => {
-        if (!showHiddenLiveChannels && hiddenLiveStreamIds.includes(c.stream_id)) return false
+        if (!showHiddenLiveChannels && isChannelHidden(c.playlistId, c.stream_id)) return false
         const health = channelHealthByStream[c.stream_id]?.health
         return health === 'loop' || health === 'unavailable'
       }).length,
-    [liveStreams, channelHealthByStream, showHiddenLiveChannels, hiddenLiveStreamIds]
+    [liveStreams, channelHealthByStream, showHiddenLiveChannels, isChannelHidden]
   )
   const channels = useMemo(() => {
-    let source = showHiddenLiveChannels ? liveStreams : liveStreams.filter((c) => !hiddenLiveStreamIds.includes(c.stream_id))
+    let source = showHiddenLiveChannels
+      ? liveStreams
+      : liveStreams.filter((c) => !isChannelHidden(c.playlistId, c.stream_id))
     if (!showNotLiveChannels) {
       source = source.filter((c) => {
         const health = channelHealthByStream[c.stream_id]?.health
@@ -95,7 +106,7 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
       const listings = shortEpgByStream[c.stream_id]
       return listings?.some((p) => p.title.toLowerCase().includes(needle)) ?? false
     })
-  }, [liveStreams, debouncedSearch, shortEpgByStream, hiddenLiveStreamIds, showHiddenLiveChannels, showNotLiveChannels, channelHealthByStream])
+  }, [liveStreams, debouncedSearch, shortEpgByStream, isChannelHidden, showHiddenLiveChannels, showNotLiveChannels, channelHealthByStream])
 
   // Suppress the small preview's own stream while the fullscreen player has one open for
   // the same account — most Xtream providers cap concurrent connections quite low (often
@@ -248,9 +259,9 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
               >
                 {compact ? '▤ Comfortable' : '▤ Compact'}
               </button>
-              {hiddenLiveStreamIds.length > 0 && (
+              {hiddenCount > 0 && (
                 <button className="epg-density-toggle" onClick={() => setShowHiddenLiveChannels(!showHiddenLiveChannels)}>
-                  {showHiddenLiveChannels ? 'Hide hidden' : `Show hidden (${hiddenLiveStreamIds.length})`}
+                  {showHiddenLiveChannels ? 'Hide hidden' : `Show hidden (${hiddenCount})`}
                 </button>
               )}
               {/* Appears only once something has actually been found, so the control can't be

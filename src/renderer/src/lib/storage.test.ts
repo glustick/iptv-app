@@ -58,15 +58,15 @@ describe('loadSettings', () => {
     expect(loaded.customEpgUrls).toEqual([])
     expect(loaded.epgChannelMappings).toEqual([])
     expect(loaded.vpnProfiles).toEqual([])
-    expect(loaded.hiddenLiveStreamIds).toEqual([])
+    expect(loaded.hiddenChannelKeys).toEqual([])
     expect(loaded.liveAudioFixes).toEqual({})
   })
 
   it('keeps well-shaped values untouched by the hardening pass', async () => {
-    await saveSettings({ ...DEFAULT_SETTINGS, customEpgUrls: ['http://a.xml'], hiddenLiveStreamIds: [7] })
+    await saveSettings({ ...DEFAULT_SETTINGS, customEpgUrls: ['http://a.xml'], hiddenChannelKeys: ['7'] })
     const loaded = await loadSettings()
     expect(loaded.customEpgUrls).toEqual(['http://a.xml'])
-    expect(loaded.hiddenLiveStreamIds).toEqual([7])
+    expect(loaded.hiddenChannelKeys).toEqual(['7'])
   })
 
   it('merges a partial stored settings object over the current defaults', async () => {

@@ -160,10 +160,19 @@ export async function loadSettings(): Promise<AppSettings> {
     console.warn('[settings] vpnProfiles was not an array on disk — resetting it')
     result.vpnProfiles = []
   }
-  if (!Array.isArray(result.hiddenLiveStreamIds)) {
-    console.warn('[settings] hiddenLiveStreamIds was not an array on disk — resetting it')
-    result.hiddenLiveStreamIds = []
+  // Migrated from hiddenLiveStreamIds (numbers) in 0.7.107: those were all the primary playlist's,
+  // and channelIdentity keys a primary channel by its plain id, so each old number becomes its
+  // string form with no reinterpretation — existing hidden channels stay exactly as they were.
+  if (!Array.isArray(result.hiddenChannelKeys)) {
+    const legacy = (result as { hiddenLiveStreamIds?: unknown }).hiddenLiveStreamIds
+    if (Array.isArray(legacy)) {
+      result.hiddenChannelKeys = legacy.filter((id) => typeof id === 'number').map((id) => String(id))
+    } else {
+      console.warn('[settings] hiddenChannelKeys was not an array on disk — resetting it')
+      result.hiddenChannelKeys = []
+    }
   }
+  delete (result as { hiddenLiveStreamIds?: unknown }).hiddenLiveStreamIds
   if (typeof result.liveAudioFixes !== 'object' || result.liveAudioFixes === null || Array.isArray(result.liveAudioFixes)) {
     console.warn('[settings] liveAudioFixes was not an object on disk — resetting it')
     result.liveAudioFixes = {}

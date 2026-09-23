@@ -259,7 +259,10 @@ export interface AppSettings {
   lastVpnProfileId: string | null
   videoScaleMode: VideoScaleMode
   multiViewLayout: MultiViewLayout
-  hiddenLiveStreamIds: number[]
+  // Hidden channels, keyed with lib/channelIdentity so the same id on two playlists stays two
+  // different channels. A channel on the primary playlist keys as its plain id — which is what
+  // everything stored before multi-playlist means — and other playlists' channels are qualified.
+  hiddenChannelKeys: string[]
   // Live channels that needed the ffmpeg AAC-remux fallback (an unsupported audio codec, or a
   // user-picked raw audio track), keyed by live streamId — remembering per channel means the
   // next open skips the silent-audio detection wait entirely and goes straight to the remux.
@@ -268,6 +271,8 @@ export interface AppSettings {
   // stream URL the fix was confirmed against, so provider-side URL changes (token rotation,
   // timeshift variants of the same channel) safely fall back to normal detection instead of
   // remuxing the wrong source.
+  // Keyed the same way (a fix remembered for one provider's channel 42 must not be applied to
+  // another provider's 42) — see lib/channelIdentity.ts.
   liveAudioFixes: Record<string, { audioIndex: number; url: string }>
   // User-added third-party EPG sources (any XMLTV guide URL, e.g. iptv-org country feeds) —
   // fetched through the local proxy on connect alongside the provider's own xmltv.php guide
@@ -312,7 +317,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   lastVpnProfileId: null,
   videoScaleMode: 'contain',
   multiViewLayout: 2,
-  hiddenLiveStreamIds: [],
+  hiddenChannelKeys: [],
   liveAudioFixes: {},
   customEpgUrls: [],
   epgChannelMappings: [],

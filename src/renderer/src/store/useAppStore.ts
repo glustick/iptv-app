@@ -52,6 +52,7 @@ import type {
   MultiViewLayout
 } from '../lib/types'
 import { MAX_GUIDE_XML_CHARS } from '../lib/xmltvSections'
+import { channelKey, channelKeyCandidates } from '../lib/channelIdentity'
 import {
   analyzeMediaPlaylist,
   classifyChannelHealth,
@@ -229,6 +230,10 @@ export interface EpgSourceMatchStats {
 export interface NowPlaying {
   kind: MediaKind
   streamId: number
+  // Which playlist this playback came from. Needed to key per-channel state correctly — the
+  // remembered audio fix — when two providers number their channels independently (the same id on
+  // two playlists is two different channels; see lib/channelIdentity).
+  playbackPlaylistId?: string | null
   name: string
   url: string
   extension: string
@@ -252,6 +257,9 @@ interface AppState {
   // unchanged. Each entry's client routes through the proxy's per-request passthrough (see
   // lib/xtream.ts), which is what lets more than one account be live at once.
   playlists: PlaylistConnection[]
+  // The playlist whose channels keep their bare `stream_id` as their identity in everything stored
+  // per channel — see lib/channelIdentity.ts. The first connected one.
+  primaryPlaylistId: string | null
   status: ConnectionStatus
   error: string | null
   isOnline: boolean
@@ -437,6 +445,9 @@ interface AppState {
   // Which playlist's categories the sidebar is showing, and whose channels the grid lists.
   selectedPlaylistId: string | null
   selectPlaylist: (profileId: string) => void
+  // Whether a channel is hidden — resolved through lib/channelIdentity so the same id on two
+  // playlists is two different channels.
+  isChannelHidden: (playlistId: string | null | undefined, streamId: number) => boolean
   requestCategory: (categoryId: string | null, playlistId?: string | null) => void
   selectCategory: (categoryId: string | null, playlistId?: string | null) => Promise<void>
   // "My Categories" (see CustomCategory): user-made Live TV groupings shown above the provider's
@@ -538,7 +549,7 @@ interface AppState {
   cancelPickingMultiViewSlot: () => void
   assignMultiViewChannel: (slotIndex: number, channel: LiveStream) => void
   clearMultiViewSlot: (slotIndex: number) => void
-  toggleHiddenLiveChannel: (streamId: number) => void
+  toggleHiddenLiveChannel: (streamId: number, playlistId?: string | null) => void
   setShowHiddenLiveChannels: (show: boolean) => void
   // Probes one channel's own playlist for feed health (see lib/channelHealth.ts). Resolves when
   // the queued probe actually ran; a channel already judged this session, or already in flight,
@@ -549,8 +560,8 @@ interface AppState {
   // audio fallback, so the next open skips detection and engages the remux immediately — see
   // the liveAudioFixes field's own comment in lib/types.ts for the shape and why the URL is
   // stored alongside the track index.
-  rememberLiveAudioFix: (streamId: number, audioIndex: number, url: string) => void
-  forgetLiveAudioFix: (streamId: number) => void
+  rememberLiveAudioFix: (streamId: number, audioIndex: number, url: string, playlistId?: string | null) => void
+  forgetLiveAudioFix: (streamId: number, playlistId?: string | null) => void
 
   toggleFavorite: (entry: FavoriteEntry) => void
   isFavorited: (kind: MediaKind, id: number) => boolean
@@ -643,6 +654,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   client: null,
   playlists: [],
   selectedPlaylistId: null,
+  primaryPlaylistId: null,
   status: 'idle',
   error: null,
   isOnline: typeof navigator === 'undefined' ? true : navigator.onLine,
@@ -926,6 +938,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         client,
         playlists: connections,
         selectedPlaylistId: profile.id,
+        primaryPlaylistId: connections[0]?.profileId ?? null,
         status: 'ready',
         singleConnectionAccount: auth.user_info.max_connections === '1',
         // A new connection means a (possibly different) provider's catalog — last profile's
@@ -1888,6 +1901,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       nowPlaying: {
         kind,
         streamId,
+        playbackPlaylistId: playlistId ?? null,
         name,
         extension,
         tvArchive,
@@ -1969,26 +1983,37 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ multiViewSlots: slots })
   },
 
-  toggleHiddenLiveChannel: (streamId) => {
-    const hidden = get().settings.hiddenLiveStreamIds
-    const hiddenLiveStreamIds = hidden.includes(streamId) ? hidden.filter((id) => id !== streamId) : [...hidden, streamId]
-    get().updateSettings({ hiddenLiveStreamIds })
+  toggleHiddenLiveChannel: (streamId, playlistId) => {
+    const { settings, primaryPlaylistId } = get()
+    // Keyed per playlist (see lib/channelIdentity): hiding provider A's channel 42 must not hide
+    // provider B's 42, which is an unrelated channel that happens to share the number.
+    const key = channelKey(playlistId, streamId, primaryPlaylistId)
+    const hidden = settings.hiddenChannelKeys
+    const hiddenChannelKeys = hidden.includes(key) ? hidden.filter((entry) => entry !== key) : [...hidden, key]
+    get().updateSettings({ hiddenChannelKeys })
   },
 
   setShowHiddenLiveChannels: (show) => set({ showHiddenLiveChannels: show }),
 
+  isChannelHidden: (playlistId, streamId) => {
+    const { settings, primaryPlaylistId } = get()
+    return settings.hiddenChannelKeys.includes(channelKey(playlistId, streamId, primaryPlaylistId))
+  },
+
   setShowNotLiveChannels: (show) => set({ showNotLiveChannels: show }),
 
-  rememberLiveAudioFix: (streamId, audioIndex, url) => {
-    const liveAudioFixes = { ...get().settings.liveAudioFixes, [String(streamId)]: { audioIndex, url } }
+  rememberLiveAudioFix: (streamId, audioIndex, url, playlistId) => {
+    const key = channelKey(playlistId, streamId, get().primaryPlaylistId)
+    const liveAudioFixes = { ...get().settings.liveAudioFixes, [key]: { audioIndex, url } }
     get().updateSettings({ liveAudioFixes })
   },
 
-  forgetLiveAudioFix: (streamId) => {
+  forgetLiveAudioFix: (streamId, playlistId) => {
+    const doomed = channelKeyCandidates(playlistId, streamId, get().primaryPlaylistId)
     const current = get().settings.liveAudioFixes
-    if (!(String(streamId) in current)) return
+    if (!doomed.some((key) => key in current)) return
     const liveAudioFixes = { ...current }
-    delete liveAudioFixes[String(streamId)]
+    for (const key of doomed) delete liveAudioFixes[key]
     get().updateSettings({ liveAudioFixes })
   },
 

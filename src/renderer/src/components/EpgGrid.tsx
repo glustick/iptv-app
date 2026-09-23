@@ -255,7 +255,7 @@ export function EpgGrid({
   const epgChannelColumnWidth = useAppStore((s) => s.settings.epgChannelColumnWidth)
   const updateSettings = useAppStore((s) => s.updateSettings)
   const toggleHiddenLiveChannel = useAppStore((s) => s.toggleHiddenLiveChannel)
-  const hiddenLiveStreamIds = useAppStore((s) => s.settings.hiddenLiveStreamIds)
+  const isChannelHidden = useAppStore((s) => s.isChannelHidden)
   const openEpgMatch = useAppStore((s) => s.openEpgMatch)
   const { width: channelColumnWidth, startDrag: startChannelColumnDrag } = useResizableWidth(
     epgChannelColumnWidth,
@@ -573,11 +573,13 @@ export function EpgGrid({
           <button
             role="menuitem"
             onClick={() => {
-              toggleHiddenLiveChannel(contextMenu.channel.stream_id)
+              toggleHiddenLiveChannel(contextMenu.channel.stream_id, contextMenu.channel.playlistId)
               closeChannelMenu()
             }}
           >
-            {hiddenLiveStreamIds.includes(contextMenu.channel.stream_id) ? 'Show channel' : 'Hide channel'}
+            {isChannelHidden(contextMenu.channel.playlistId, contextMenu.channel.stream_id)
+              ? 'Show channel'
+              : 'Hide channel'}
           </button>
           <button
             role="menuitem"

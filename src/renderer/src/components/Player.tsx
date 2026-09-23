@@ -12,6 +12,7 @@ import { useHoverAutoHide } from '../lib/useHoverAutoHide'
 import { isBufferStallError, nextStallAction, playbackSignature } from '../lib/playbackWatchdog'
 import { describeHlsLevel } from '../lib/hlsLevels'
 import type { VideoScaleMode } from '../lib/types'
+import { channelKey } from '../lib/channelIdentity'
 
 const MAX_NETWORK_RETRIES = 4
 // A short pause before actually retrying a failed network load, rather than reloading the
@@ -159,6 +160,7 @@ export function Player(): JSX.Element | null {
   const shortEpgByStream = useAppStore((s) => s.shortEpgByStream)
   const loadShortEpg = useAppStore((s) => s.loadShortEpg)
   const liveAudioFixes = useAppStore((s) => s.settings.liveAudioFixes)
+  const primaryPlaylistId = useAppStore((s) => s.primaryPlaylistId)
   const rememberLiveAudioFix = useAppStore((s) => s.rememberLiveAudioFix)
   const forgetLiveAudioFix = useAppStore((s) => s.forgetLiveAudioFix)
 
@@ -945,7 +947,8 @@ export function Player(): JSX.Element | null {
   useEffect(() => {
     if (!nowPlaying || nowPlaying.kind !== 'live') return
     if (hasFallbackActive || transcoding) return
-    const fix = liveAudioFixes[String(nowPlaying.streamId)]
+    const fix =
+      liveAudioFixes[channelKey(nowPlaying.playbackPlaylistId, nowPlaying.streamId, primaryPlaylistId)]
     if (!fix || fix.url !== nowPlaying.url) return
     switchLiveAudioTrack(
       nowPlaying.url,

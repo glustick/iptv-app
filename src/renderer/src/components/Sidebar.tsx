@@ -3,6 +3,7 @@ import { useAppStore } from '../store/useAppStore'
 import { kindOf } from '../lib/customCategories'
 import type { CustomCategoryKind } from '../lib/types'
 import { useResizableWidth } from '../lib/useResizableWidth'
+import { channelKeyBelongsToPlaylist } from '../lib/channelIdentity'
 
 export function Sidebar(): JSX.Element | null {
   const viewMode = useAppStore((s) => s.viewMode)
@@ -19,7 +20,14 @@ export function Sidebar(): JSX.Element | null {
   const unlockedCategoryIds = useAppStore((s) => s.unlockedCategoryIds)
   const sidebarWidth = useAppStore((s) => s.settings.sidebarWidth)
   const updateSettings = useAppStore((s) => s.updateSettings)
-  const hiddenCount = useAppStore((s) => s.settings.hiddenLiveStreamIds.length)
+  const hiddenChannelKeys = useAppStore((s) => s.settings.hiddenChannelKeys)
+  const selectedPlaylistIdForCount = useAppStore((s) => s.selectedPlaylistId)
+  const primaryPlaylistIdForCount = useAppStore((s) => s.primaryPlaylistId)
+  // Hidden channels belonging to the playlist being browsed (see lib/channelIdentity): a channel
+  // hidden on another playlist is not what this control offers to reveal.
+  const hiddenCount = hiddenChannelKeys.filter((key) =>
+    channelKeyBelongsToPlaylist(key, selectedPlaylistIdForCount, primaryPlaylistIdForCount)
+  ).length
   const showHidden = useAppStore((s) => s.showHiddenLiveChannels)
   const setShowHidden = useAppStore((s) => s.setShowHiddenLiveChannels)
 

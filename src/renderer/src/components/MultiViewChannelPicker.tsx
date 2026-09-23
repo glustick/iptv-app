@@ -4,6 +4,7 @@ import { kindOf } from '../lib/customCategories'
 import { useDebouncedValue } from '../lib/useDebouncedValue'
 import { EpgGrid } from './EpgGrid'
 import type { LiveStream } from '../lib/types'
+import { channelKeyBelongsToPlaylist } from '../lib/channelIdentity'
 
 // A lightweight overlay for picking which channel goes in a Multi-View slot — reuses EpgGrid
 // (the same Gantt-chart guide EpgGridPanel/PlayerChannelBar already render) rather than building
@@ -48,8 +49,16 @@ export function MultiViewChannelPicker(): JSX.Element | null {
   const clockFormat = useAppStore((s) => s.settings.clockFormat)
   const assignMultiViewChannel = useAppStore((s) => s.assignMultiViewChannel)
   const cancelPickingMultiViewSlot = useAppStore((s) => s.cancelPickingMultiViewSlot)
-  const hiddenLiveStreamIds = useAppStore((s) => s.settings.hiddenLiveStreamIds)
+  const isChannelHidden = useAppStore((s) => s.isChannelHidden)
+  const hiddenChannelKeysForCount = useAppStore((s) => s.settings.hiddenChannelKeys)
   const showHiddenLiveChannels = useAppStore((s) => s.showHiddenLiveChannels)
+  const selectedPlaylistId = useAppStore((s) => s.selectedPlaylistId)
+  const primaryPlaylistId = useAppStore((s) => s.primaryPlaylistId)
+  // Hidden channels belonging to the playlist being browsed (see lib/channelIdentity): a
+  // channel hidden on another playlist is not what this control offers to reveal.
+  const hiddenCount = hiddenChannelKeysForCount.filter((key) =>
+    channelKeyBelongsToPlaylist(key, selectedPlaylistId, primaryPlaylistId)
+  ).length
   const setShowHiddenLiveChannels = useAppStore((s) => s.setShowHiddenLiveChannels)
 
   const favorites = useAppStore((s) => s.favorites)
@@ -65,8 +74,8 @@ export function MultiViewChannelPicker(): JSX.Element | null {
 
   const favoriteChannels = useMemo(() => {
     const live = favorites.filter((entry) => entry.kind === 'live').map((entry) => entry.stream)
-    return showHiddenLiveChannels ? live : live.filter((c) => !hiddenLiveStreamIds.includes(c.stream_id))
-  }, [favorites, hiddenLiveStreamIds, showHiddenLiveChannels])
+    return showHiddenLiveChannels ? live : live.filter((c) => !isChannelHidden(c.playlistId, c.stream_id))
+  }, [favorites, isChannelHidden, showHiddenLiveChannels])
 
   const debouncedSearch = useDebouncedValue(searchTerm, 150)
   // Same derivation EpgGridPanel uses for its own channel list — kept in sync deliberately so
@@ -77,7 +86,7 @@ export function MultiViewChannelPicker(): JSX.Element | null {
         ? favoriteChannels
         : showHiddenLiveChannels
           ? liveStreams
-          : liveStreams.filter((c) => !hiddenLiveStreamIds.includes(c.stream_id))
+          : liveStreams.filter((c) => !isChannelHidden(c.playlistId, c.stream_id))
     if (!debouncedSearch.trim()) return source
     const needle = debouncedSearch.toLowerCase()
     return source.filter((c) => {
@@ -85,7 +94,7 @@ export function MultiViewChannelPicker(): JSX.Element | null {
       const listings = shortEpgByStream[c.stream_id]
       return listings?.some((p) => p.title.toLowerCase().includes(needle)) ?? false
     })
-  }, [scope, favoriteChannels, liveStreams, debouncedSearch, shortEpgByStream, hiddenLiveStreamIds, showHiddenLiveChannels])
+  }, [scope, favoriteChannels, liveStreams, debouncedSearch, shortEpgByStream, isChannelHidden, showHiddenLiveChannels])
 
   if (pickingSlot === null) return null
 
@@ -159,9 +168,9 @@ export function MultiViewChannelPicker(): JSX.Element | null {
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
           />
-          {hiddenLiveStreamIds.length > 0 && (
+          {hiddenCount > 0 && (
             <button className="epg-density-toggle" onClick={() => setShowHiddenLiveChannels(!showHiddenLiveChannels)}>
-              {showHiddenLiveChannels ? 'Hide hidden' : `Show hidden (${hiddenLiveStreamIds.length})`}
+              {showHiddenLiveChannels ? 'Hide hidden' : `Show hidden (${hiddenCount})`}
             </button>
           )}
         </div>
