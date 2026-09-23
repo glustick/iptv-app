@@ -268,7 +268,24 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
 
 ### Code, in the order I would take it
 
-- **Bound and unblock the guide load — the top item, and the cause of the reported hang.** Measured
+- **The VPN must cover every connected playlist (found 2026-09-23, while shipping multi-playlist).**
+  `startVpn` takes **one** server URL — the active profile's — so with two playlists connected the
+  tunnel routes only the primary's host and the second provider's streams go out **outside the
+  tunnel, silently**. That is the exact failure shape the VPN work exists to prevent (see the
+  0.7.21 warning and the 0.7.96 route rework), and multi-playlist turned it into a live possibility
+  rather than a hypothetical. The fix is contained, because yesterday's route rework already made the
+  script take a *list* of addresses: resolve the host of every enabled playlist, route all of their
+  addresses, and widen the proxy's fresh-lookup check from one tunneled host to the set. Should be
+  done before anyone relies on the VPN with two playlists, which is very likely exactly how the
+  redundancy feature will be used.
+- **Per-channel state still collides between playlists that share a `stream_id` (0.7.105's known
+  limit).** Hidden channels, per-channel EPG mappings, watch reminders and remembered audio fixes are
+  all keyed by a bare `stream_id`, and two providers number their channels independently — so hiding
+  channel 42 on one playlist can hide channel 42 on the other. Favourites and watch history are
+  already safe, because an entry carries the whole channel (playlist included). The fix is composite
+  keys — `(playlistId, streamId)` — with entries lacking a playlist treated as the primary's, so
+  existing data keeps working.
+- **Bound and unblock the guide load — DONE in 0.7.103, kept here only for the numbers.** — the top item, and the cause of the reported hang.** Measured
   2026-09-22: this provider's full guide is **16.3MB gzipped → 107.4MB of XML**; loading it peaked at
   **~1GB of process memory**, settled around 570MB, and the parse runs **synchronously on the main
   thread** — which is exactly what "hanging the application" feels like while the guide page is open,
