@@ -12,7 +12,7 @@
 // vitest.config.mts). Without it, rendering any component here fails at transform time — the
 // renderer's own JSX is compiled by electron-vite, not by this config.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { UpdatePrompt } from './UpdatePrompt'
 import { Sidebar } from './Sidebar'
 import { CustomCategoriesModal } from './CustomCategoriesModal'
@@ -65,6 +65,13 @@ afterEach(() => {
   cleanup()
 })
 
+/** Stubs just enough of the preload bridge for the update prompt's platform lookup. */
+function stubAppInfo(platform: string): void {
+  ;(window as unknown as { api: unknown }).api = {
+    app: { getInfo: () => Promise.resolve({ name: 'AllisonIPTV', version: '0.0.0', buildNumber: 1, platform }) }
+  }
+}
+
 describe('UpdatePrompt', () => {
   it('shows the release notes, formatted, alongside the version', () => {
     useAppStore.setState({
@@ -78,6 +85,25 @@ describe('UpdatePrompt', () => {
     expect(notes.textContent).toContain('• two')
     // The markdown markers are gone — the prompt renders plain text.
     expect(notes.textContent).not.toContain('**')
+  })
+
+  it('offers the in-app updater on Windows, where an unsigned build updates itself (confirmed)', async () => {
+    stubAppInfo('win32')
+    useAppStore.setState({ updateInfo: { version: '9.9.9', releaseNotes: null } })
+    render(<UpdatePrompt />)
+    await waitFor(() => expect(screen.getByText('Update Now')).toBeTruthy())
+  })
+
+  it('sends a macOS user to the download page instead of offering an update that cannot apply', async () => {
+    // The reported papercut: on macOS the unsigned build could download an update and then fail to
+    // install it, *after* the user had already said yes. The prompt now says what is true there.
+    stubAppInfo('darwin')
+    useAppStore.setState({ updateInfo: { version: '9.9.9', releaseNotes: null } })
+    render(<UpdatePrompt />)
+
+    await waitFor(() => expect(screen.getByText('Open download page')).toBeTruthy())
+    expect(screen.queryByText('Update Now')).toBeNull()
+    expect(screen.getByText(/updates by hand/)).toBeTruthy()
   })
 
   it('renders nothing when dismissed, and no notes block when there are none', () => {

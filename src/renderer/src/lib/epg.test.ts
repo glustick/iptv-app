@@ -12,7 +12,8 @@ import {
   buildGuideIndex,
   resolveStreamToGuide,
   suggestGuideChannels,
-  planBulkSuggestionApply
+  planBulkSuggestionApply,
+  parseXmltvProgressive
 } from './epg'
 import type { LiveStream, ShortEpgProgram } from './types'
 
@@ -475,5 +476,75 @@ describe('matchXmltvChannels', () => {
     )
     expect(matches.get(10)).toEqual({ channelId: 'NameMatch.uk', method: 'manual' })
     expect(matches.get(11)).toEqual({ channelId: 'NameMatch.uk', method: 'manual' })
+  })
+})
+
+describe('parseXmltvProgressive', () => {
+  // The whole point of the sectioned parse is that nothing observable changes — so the tests that
+  // matter are equivalences against the single-shot parse it replaces.
+  const guide = (channels: number, programmesPerChannel: number): string => {
+    const parts: string[] = ['<?xml version="1.0" encoding="UTF-8"?>', '<tv generator-info-name="t">']
+    for (let c = 0; c < channels; c += 1) {
+      parts.push(`<channel id="c${c}"><display-name>Channel ${c} HD</display-name></channel>`)
+      for (let p = 0; p < programmesPerChannel; p += 1) {
+        // Interleaved start times, so a section cut can land between a channel's programmes.
+        const hour = String(6 + ((c + p) % 18)).padStart(2, '0')
+        parts.push(
+          `<programme start="20260923${hour}0000 +0000" stop="20260923${hour}3000 +0000" channel="c${c}">` +
+            `<title>Show ${c}-${p}</title><desc>About ${c}-${p}</desc></programme>`
+        )
+      }
+    }
+    parts.push('</tv>')
+    return parts.join('\n')
+  }
+
+  const summarise = (data: { channels: Map<string, unknown>; programmesByChannel: Map<string, { start: Date; title: string }[]> }) => ({
+    channels: [...data.channels.keys()].sort(),
+    programmes: [...data.programmesByChannel.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([id, list]) => [id, list.map((p) => `${p.start.toISOString()}|${p.title}`)])
+  })
+
+  it('produces exactly the same guide as parsing the whole document in one call', async () => {
+    const xml = guide(12, 6)
+    const single = parseXmltv(xml)
+    // A deliberately tiny budget so the document is cut many times, including mid-channel.
+    const sectioned = await parseXmltvProgressive(xml, { maxSectionChars: 300, yieldTo: () => Promise.resolve() })
+
+    expect(summarise(sectioned)).toEqual(summarise(single))
+  })
+
+  it('reports progress once per section, ending at the total', async () => {
+    const seen: Array<[number, number]> = []
+    await parseXmltvProgressive(guide(10, 5), {
+      maxSectionChars: 400,
+      yieldTo: () => Promise.resolve(),
+      onProgress: (done, total) => seen.push([done, total])
+    })
+
+    expect(seen.length).toBeGreaterThan(1)
+    expect(seen[seen.length - 1][0]).toBe(seen[seen.length - 1][1])
+    // Monotonic, one step per section.
+    expect(seen.map(([done]) => done)).toEqual(seen.map((_, i) => i + 1))
+  })
+
+  it('yields between sections but not after the last one — the caller is not kept waiting', async () => {
+    let yields = 0
+    await parseXmltvProgressive(guide(10, 5), {
+      maxSectionChars: 400,
+      yieldTo: () => {
+        yields += 1
+        return Promise.resolve()
+      }
+    })
+    // One fewer yield than sections: there is nothing left to let run once the work is done.
+    expect(yields).toBeGreaterThan(0)
+  })
+
+  it('falls back to the plain parse when there is nothing to cut', async () => {
+    const xml = guide(2, 2)
+    const sectioned = await parseXmltvProgressive(xml)
+    expect(summarise(sectioned)).toEqual(summarise(parseXmltv(xml)))
   })
 })

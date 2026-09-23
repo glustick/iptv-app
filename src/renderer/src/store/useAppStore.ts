@@ -3,7 +3,7 @@ import { XtreamClient } from '../lib/xtream'
 import { M3uClient } from '../lib/m3uClient'
 import type { IptvClient } from '../lib/iptvClient'
 import {
-  parseXmltv,
+  parseXmltvProgressive,
   matchXmltvChannels,
   mergeShortEpg,
   xmltvProgrammesToShort,
@@ -51,6 +51,7 @@ import type {
   VpnProfile,
   MultiViewLayout
 } from '../lib/types'
+import { MAX_GUIDE_XML_CHARS } from '../lib/xmltvSections'
 import {
   analyzeMediaPlaylist,
   classifyChannelHealth,
@@ -151,6 +152,21 @@ const healthProbeInFlight = new Set<number>()
 // verdicts would be about a different channel entirely.
 const healthProbeSettled = new Set<number>()
 const healthProbeFailedAt = new Map<number, number>()
+
+/**
+ * Sends a diagnostic line to the main process's lifecycle log, if there is a bridge to send it
+ * through. Guarded rather than optional-chained: `window` is *undefined* (not merely missing a
+ * property) when this store is exercised outside a renderer — its own tests run in plain Node — and
+ * an unguarded reference throws a ReferenceError that takes the caller down with it.
+ */
+function logGuideTiming(message: string): void {
+  if (typeof window === 'undefined') return
+  try {
+    void window.api?.app?.logGuideTiming?.(message)
+  } catch {
+    // Diagnostics must never be able to break the thing they are describing.
+  }
+}
 
 function runNextHealthProbe(): void {
   if (activeHealthProbes >= MAX_CONCURRENT_HEALTH_PROBES) return
@@ -267,6 +283,10 @@ interface AppState {
   // M3U profiles (their playlist guide never enters the pool as a separate source).
   providerGuideAvailable: boolean | null
   epgSourcesStatus: 'idle' | 'loading' | 'ready'
+  // Section progress while a large guide is parsed (see parseXmltvProgressive): null when nothing is
+  // being parsed, so the UI can show "section 7 of 12" instead of an inert "Loading…" — which is also
+  // how a user can see that the window is still alive during a load that used to freeze it.
+  epgLoadProgress: { done: number; total: number } | null
   // Per-source matching report for Settings — what each guide matched against the
   // currently-loaded channels, by which join method, and which names found no counterpart.
   epgSourceMatchStats: EpgSourceMatchStats[]
@@ -592,6 +612,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   epgSourceByStream: {},
   providerGuideAvailable: null,
   epgSourcesStatus: 'idle',
+  epgLoadProgress: null,
   epgSourceIssues: {},
   epgSourceMatchStats: [],
   shortEpgByStream: {},
@@ -836,6 +857,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         epgSourceByStream: {},
         providerGuideAvailable: null,
         epgSourcesStatus: 'idle',
+        epgLoadProgress: null,
         epgSourceIssues: {},
         epgSourceMatchStats: [],
         proxyBase
@@ -890,6 +912,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       epgSourceByStream: {},
       providerGuideAvailable: null,
       epgSourcesStatus: 'idle',
+      epgLoadProgress: null,
       epgSourceIssues: {},
       epgSourceMatchStats: [],
       shortEpgByStream: {},
@@ -1005,7 +1028,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { client, activeProfile, proxyBase, settings } = get()
     if (!client) return
     const seq = ++epgSourcesLoadSeq
-    set({ epgSourcesStatus: 'loading' })
+    set({ epgSourcesStatus: 'loading', epgLoadProgress: null })
     const sources: EpgData[] = []
     // Aligned index-for-index with `sources` — applyEpgPool's match report needs to know which
     // label each loaded guide goes with (and whether entry 0 is the provider's own guide).
@@ -1021,7 +1044,30 @@ export const useAppStore = create<AppState>((set, get) => ({
     //    data under a second matching pass.
     if (activeProfile?.kind !== 'm3u') {
       try {
-        sources.push(parseXmltv(await client.getFullEpgXml()))
+        // The provider's own guide is the one that gets big — 16.3MB gzipped / 107.4MB of XML on
+        // this app's own provider, measured 2026-09-22 — so it is parsed in sections, reporting
+        // progress, with the event loop getting a turn between them (see parseXmltvProgressive).
+        // That is what stops the window freezing while it loads. The size check is a safety net
+        // against a pathological document, and sits far above any real guide (MAX_GUIDE_XML_CHARS).
+        const fetchStartedAt = Date.now()
+        const providerXml = await client.getFullEpgXml()
+        const fetchedAt = Date.now()
+        if (providerXml.length > MAX_GUIDE_XML_CHARS) {
+          throw new Error(
+            `guide is ${Math.round(providerXml.length / 1048576)}MB — beyond the ${Math.round(MAX_GUIDE_XML_CHARS / 1048576)}MB safety limit`
+          )
+        }
+        const parsedProvider = await parseXmltvProgressive(providerXml, {
+          onProgress: (done, total) => {
+            // A newer load owns the status once its token has been issued (see the seq guard).
+            if (seq === epgSourcesLoadSeq) set({ epgLoadProgress: { done, total } })
+          }
+        })
+        logGuideTiming(
+          `guide load (provider): fetched ${(providerXml.length / 1048576).toFixed(1)}MB of XML in ` +
+            `${((fetchedAt - fetchStartedAt) / 1000).toFixed(1)}s, parsed in ${((Date.now() - fetchedAt) / 1000).toFixed(1)}s`
+        )
+        sources.push(parsedProvider)
         labels.push(PROVIDER_GUIDE_LABEL)
         providerGuideAvailable = true
       } catch {
@@ -1040,7 +1086,22 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (!proxyBase) throw new Error('Proxy base URL not available')
         const res = await fetch(`${proxyBase}/__fetch/${encodeURIComponent(url)}`)
         if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`)
-        const parsed = parseXmltv(await decodeMaybeGzipBytes(await res.arrayBuffer()))
+        const text = await decodeMaybeGzipBytes(await res.arrayBuffer())
+        if (text.length > MAX_GUIDE_XML_CHARS) {
+          throw new Error(
+            `guide is ${Math.round(text.length / 1048576)}MB — beyond the ${Math.round(MAX_GUIDE_XML_CHARS / 1048576)}MB safety limit`
+          )
+        }
+        const customFetchAt = Date.now()
+        const parsed = await parseXmltvProgressive(text, {
+          onProgress: (done, total) => {
+            if (seq === epgSourcesLoadSeq) set({ epgLoadProgress: { done, total } })
+          }
+        })
+        logGuideTiming(
+          `guide load (${url.slice(0, 60)}): ${(text.length / 1048576).toFixed(1)}MB of XML, parsed in ` +
+            `${((Date.now() - customFetchAt) / 1000).toFixed(1)}s`
+        )
         // A document with no channels or no programmes can't contribute anything (matching
         // needs both) — far and away the most common cause is a plain-text or PDF schedule in
         // a slot meant for a machine-readable XMLTV guide, so say exactly that.
@@ -1059,7 +1120,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     // A newer run superseded this one (a source was added/removed mid-download) — its own
     // completion commits the fresher state; committing here would re-add removed sources.
     if (seq !== epgSourcesLoadSeq) return
-    set({ epgSources: sources, epgSourceLabels: labels, providerGuideAvailable, epgSourcesStatus: 'ready', epgSourceIssues: issues })
+    set({
+      epgSources: sources,
+      epgSourceLabels: labels,
+      providerGuideAvailable,
+      epgSourcesStatus: 'ready',
+      epgSourceIssues: issues,
+      epgLoadProgress: null
+    })
     get().applyEpgPool()
   },
 

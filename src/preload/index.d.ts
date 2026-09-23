@@ -1,7 +1,9 @@
 import type { ElectronAPI } from '@electron-toolkit/preload'
 
 interface AppInfoAPI {
-  getInfo: () => Promise<{ name: string; version: string; buildNumber: number }>
+  getInfo: () => Promise<{ name: string; version: string; buildNumber: number; platform: string }>
+  openExternal: (url: string) => Promise<void>
+  logGuideTiming: (message: string) => Promise<void>
   onOpenAbout: (callback: () => void) => () => void
   isFullScreen: () => Promise<boolean>
   getGpuSummary: () => Promise<{ videoDecode: string | null; devices: string[] } | null>

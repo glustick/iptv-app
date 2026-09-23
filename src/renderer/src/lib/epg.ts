@@ -1,4 +1,5 @@
 import { XMLParser } from 'fast-xml-parser'
+import { DEFAULT_SECTION_CHARS, splitXmltvIntoSections } from './xmltvSections'
 import type { LiveStream, ShortEpgProgram } from './types'
 
 export interface EpgChannel {
@@ -195,6 +196,62 @@ export function mergeShortEpg(primary: ShortEpgProgram[], secondary: ShortEpgPro
  * transparently decoded by fetch before the bytes get here, so there's no double-decompression
  * risk either.
  */
+/**
+ * Parses a whole guide **in sections**, yielding to the event loop between them.
+ *
+ * This is the counterpart to `parseXmltv` for guides too big to parse in one go — see
+ * `lib/xmltvSections.ts` for the measurement that made it necessary (107.4MB of XML on this app's
+ * own provider) and for why cutting at element boundaries keeps the parser's semantics identical.
+ * Two things change relative to a single call: the parser never holds a tree of the whole document
+ * (peak memory drops to one section at a time), and other work — painting, input — gets to run
+ * between sections, so the window does not freeze.
+ *
+ * The result is built to be indistinguishable from `parseXmltv(xml)`: same channels, same
+ * programmes, same per-channel ordering. `xmltvSections.test.ts` and the equivalence test in
+ * `epg.test.ts` pin that.
+ */
+export async function parseXmltvProgressive(
+  xml: string,
+  options: {
+    maxSectionChars?: number
+    onProgress?: (done: number, total: number) => void
+    /** Injected so tests can run the whole thing synchronously; production yields to the macrotask
+     * queue, which is what lets the renderer paint between sections. */
+    yieldTo?: () => Promise<void>
+  } = {}
+): Promise<EpgData> {
+  const plan = splitXmltvIntoSections(xml, options.maxSectionChars ?? DEFAULT_SECTION_CHARS)
+  // Nothing to cut (no <tv> root, or a document small enough to be one section): the plain parse is
+  // both correct and cheaper than the section machinery.
+  if (plan.bodies.length <= 1 && !plan.footer) return parseXmltv(xml)
+
+  const sections = plan.bodies.length > 0 ? plan.bodies : [xml]
+  const yieldTo = options.yieldTo ?? ((): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0)))
+  const channels = new Map<string, EpgChannel>()
+  const programmesByChannel = new Map<string, EpgProgramme[]>()
+
+  for (let i = 0; i < sections.length; i += 1) {
+    const parsed = parseXmltv(plan.header + sections[i] + plan.footer)
+    for (const [id, channel] of parsed.channels) channels.set(id, channel)
+    for (const [channelId, programmes] of parsed.programmesByChannel) {
+      const existing = programmesByChannel.get(channelId)
+      if (existing) existing.push(...programmes)
+      else programmesByChannel.set(channelId, [...programmes])
+    }
+    options.onProgress?.(i + 1, sections.length)
+    // Yield between sections, never after the last one — no point delaying the result.
+    if (i < sections.length - 1) await yieldTo()
+  }
+
+  // Sections arrive in document order, but a channel's programmes can straddle a cut, so the
+  // per-channel ordering `parseXmltv` guarantees has to be re-established across the join.
+  for (const list of programmesByChannel.values()) {
+    list.sort((a, b) => a.start.getTime() - b.start.getTime())
+  }
+
+  return { channels, programmesByChannel }
+}
+
 export async function decodeMaybeGzipBytes(buffer: ArrayBuffer): Promise<string> {
   if (buffer.byteLength < 2) return new TextDecoder().decode(buffer)
   const head = new Uint8Array(buffer, 0, 2)

@@ -4,7 +4,14 @@ import { electronAPI } from '@electron-toolkit/preload'
 const api = {
   app: {
     getInfo: () =>
-      ipcRenderer.invoke('app:info') as Promise<{ name: string; version: string; buildNumber: number }>,
+      ipcRenderer.invoke('app:info') as Promise<{
+        name: string
+        version: string
+        buildNumber: number
+        platform: string
+      }>,
+    openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url) as Promise<void>,
+    logGuideTiming: (message: string) => ipcRenderer.invoke('app:log-guide-timing', message) as Promise<void>,
     // Native *window* fullscreen (macOS's own, not the page's Fullscreen API) — the app never
     // enters it, but the OS can, and without these the player's fullscreen control could not tell
     // the two apart, so it offered no way out of the former.

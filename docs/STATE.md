@@ -1,14 +1,14 @@
 # Project state
 
-_A consolidated handover snapshot, first written 2026-09-14 at v0.7.74 and updated 2026-09-22 at
-v0.7.101. `ROADMAP.md` remains the authoritative, per-release history — this page is the "where are
+_A consolidated handover snapshot, first written 2026-09-14 at v0.7.74 and updated 2026-09-23 at
+v0.7.103. `ROADMAP.md` remains the authoritative, per-release history — this page is the "where are
 we and why" summary for whoever picks this up next (human or agent)._
 
 ## TL;DR
 
 AllisonIPTV is a working desktop IPTV client (Electron + React + TypeScript) in daily use against a
-real Xtream provider with a ~30k-channel catalog. Current release: **v0.7.101** (see ROADMAP for the
-full history). Test suite: **394 passing**. CI (typecheck/lint/test/build) and the three-platform
+real Xtream provider with a ~30k-channel catalog. Current release: **v0.7.103** (see ROADMAP for the
+full history). Test suite: **411 passing**. CI (typecheck/lint/test/build) and the three-platform
 Release workflow are both green on every tagged release.
 
 0.7.65 → 0.7.79 were almost entirely about the **EPG system**, **user-made categories**, and the
@@ -254,9 +254,14 @@ services.** No work is scheduled for this; it is recorded so the choice stays av
   reported by hand. What has still never been clicked through in a running window: My Categories
   drag-and-drop, the bulk-apply button, the preview's guide-source line, and the update prompt's
   notes. Windows itself is never tested by the maintainer's machine — CI builds it, the user runs it.
-- **The guide load is the known self-inflicted hang** (107MB of XML parsed synchronously; see the
-  roadmap's Next up). Until it is reworked, opening the Guide & EPG page on this provider can freeze
-  the window for seconds and is the prime suspect for the blank-screen death reported on 2026-09-22.
+- **The guide load no longer freezes the window (0.7.103).** 107MB of XML is fetched, cut into
+  sections and parsed with yields between them: 8s end to end on this provider, 2.3s of it parsing,
+  worst UI round-trip 74ms. It remains the **prime suspect** for the blank-screen death reported on
+  2026-09-22, but nothing proves it was the cause — and the app now logs guide-load phase timings so
+  the next report says which phase was slow rather than guessing.
+- **Memory is dominated by the app's own baseline, not the guide.** A measured run sat at **847MB
+  before the guide was fetched**, peaking ~1.5GB during the load. If memory ever needs attacking, the
+  baseline is the place to look first, not the parser.
 - `docs/` dates from 2026-09-14.
 
 ## Resolved 2026-09-16: VOD subtitle rendition never reached playback

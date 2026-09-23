@@ -33,6 +33,7 @@ export function GuideSettingsPage(): JSX.Element | null {
   const epgSourceMatchStats = useAppStore((s) => s.epgSourceMatchStats)
   const epgSources = useAppStore((s) => s.epgSources)
   const epgSourceLabels = useAppStore((s) => s.epgSourceLabels)
+  const epgLoadProgress = useAppStore((s) => s.epgLoadProgress)
   const providerGuideAvailable = useAppStore((s) => s.providerGuideAvailable)
   const addCustomEpgUrl = useAppStore((s) => s.addCustomEpgUrl)
   const removeCustomEpgUrl = useAppStore((s) => s.removeCustomEpgUrl)
@@ -344,7 +345,14 @@ export function GuideSettingsPage(): JSX.Element | null {
             </>
           )}
 
-          {epgSourcesStatus === 'loading' && <p className="settings-hint">Loading guide sources…</p>}
+          {epgSourcesStatus === 'loading' && (
+            <p className="settings-hint">
+              Loading guide sources…
+              {/* Section-by-section progress, shown because a large guide takes real time and used
+                  to freeze the window while it did: a moving counter is the honest sign of life. */}
+              {epgLoadProgress ? ` section ${epgLoadProgress.done} of ${epgLoadProgress.total}` : ''}
+            </p>
+          )}
         </section>
 
         {/* The long "how this works" prose, which used to sit permanently open above the source

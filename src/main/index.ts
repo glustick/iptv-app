@@ -1046,6 +1046,13 @@ app.whenReady().then(async () => {
   // macOS's fullscreen mode, it only offers a way out when the OS does.
   // Backs the stats overlay's "GPU decode" row — the one place a user can see whether the GPU is
   // doing the decoding or the CPU is carrying it (see lib/gpuDecode.ts for why that matters).
+  // Guide-load timings, reported from the renderer (see loadEpgSources). Logged because "the guide
+  // takes forever" is indistinguishable from "the guide freezes the app" without knowing whether the
+  // time is the provider's download, the gzip inflate, or the parse — and the fix differs for each.
+  ipcMain.handle('app:log-guide-timing', (_event, message: string) => {
+    logLifecycle(String(message).slice(0, 400))
+  })
+
   ipcMain.handle('app:gpu-summary', async () => {
     try {
       const features = app.getGPUFeatureStatus()
@@ -1076,8 +1083,29 @@ app.whenReady().then(async () => {
   ipcMain.handle('app:info', () => ({
     name: app.getName(),
     version: app.getVersion(),
-    buildNumber: pkgMeta.buildNumber
+    buildNumber: pkgMeta.buildNumber,
+    // The renderer needs this to know how *this platform* gets its updates: an unsigned macOS build
+    // cannot install one in place, so its prompt points at the releases page instead of offering a
+    // download that would fail after the user had already said yes (see lib/updateMode.ts).
+    platform: process.platform
   }))
+
+  // Opening a link in the user's own browser. Allowlisted to this project's GitHub rather than
+  // taking any URL: the only caller is the update prompt's "open the download page", and a general
+  // "open this URL for me" channel is not something this app needs to expose.
+  ipcMain.handle('app:open-external', async (_event, url: string) => {
+    try {
+      const parsed = new URL(String(url))
+      if (parsed.protocol !== 'https:' || parsed.hostname !== 'github.com') {
+        logLifecycle(`refused to open external url: ${parsed.protocol}//${parsed.hostname}`)
+        return
+      }
+      logLifecycle(`opening external url: ${parsed.href}`)
+      await shell.openExternal(parsed.href)
+    } catch (err) {
+      logLifecycle(`failed to open external url: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  })
 
   ipcMain.handle('store:get', (_event, key: string) => store.get(key))
   ipcMain.handle('store:set', (_event, key: string, value: unknown) => store.set(key, value))
