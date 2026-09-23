@@ -7,6 +7,11 @@ import { useResizableWidth } from '../lib/useResizableWidth'
 export function Sidebar(): JSX.Element | null {
   const viewMode = useAppStore((s) => s.viewMode)
   const categories = useAppStore((s) => s.categories)
+  const playlists = useAppStore((s) => s.playlists)
+  const selectedPlaylistId = useAppStore((s) => s.selectedPlaylistId)
+  const profiles = useAppStore((s) => s.profiles)
+  const setPlaylistEnabled = useAppStore((s) => s.setPlaylistEnabled)
+  const settings = useAppStore((s) => s.settings)
   const selectedCategoryId = useAppStore((s) => s.selectedCategoryId)
   const requestCategory = useAppStore((s) => s.requestCategory)
   const lockedCategoryIds = useAppStore((s) => s.settings.lockedCategoryIds)
@@ -152,23 +157,89 @@ export function Sidebar(): JSX.Element | null {
             {showHidden ? 'Hide hidden channels' : `Show hidden channels (${hiddenCount})`}
           </button>
         )}
-        <button
-          className={selectedCategoryId === null && selectedCustomCategoryId === null ? 'category active' : 'category'}
-          onClick={() => requestCategory(null)}
-        >
-          All
-        </button>
-        {categories.map((cat) => (
-          <button
-            key={cat.category_id}
-            className={selectedCategoryId === cat.category_id ? 'category active' : 'category'}
-            onClick={() => requestCategory(cat.category_id)}
-          >
-            {isLocked(cat.category_id) && <span className="category-lock">🔒</span>}
-            {cat.category_name}
-          </button>
-        ))}
+        {/* With more than one playlist connected the categories are grouped per playlist, so it is
+            always clear which account a channel came from and which line-up you are browsing. With
+            one, this collapses to precisely the flat list it has always been. */}
+        {playlists.length > 1
+          ? playlists.map((playlist) => (
+              <div key={playlist.profileId} className="category-group">
+                <div className="category-group-head" title={playlist.name}>
+                  {playlist.name}
+                  {playlist.error && <span className="category-group-error" title={playlist.error}> ⚠</span>}
+                </div>
+                <button
+                  className={
+                    selectedPlaylistId === playlist.profileId && selectedCategoryId === null && selectedCustomCategoryId === null
+                      ? 'category active'
+                      : 'category'
+                  }
+                  onClick={() => requestCategory(null, playlist.profileId)}
+                >
+                  All
+                </button>
+                {playlist.categories.map((cat) => (
+                  <button
+                    key={`${playlist.profileId}:${cat.category_id}`}
+                    className={
+                      selectedPlaylistId === playlist.profileId && selectedCategoryId === cat.category_id
+                        ? 'category active'
+                        : 'category'
+                    }
+                    onClick={() => requestCategory(cat.category_id, playlist.profileId)}
+                  >
+                    {isLocked(cat.category_id) && <span className="category-lock">🔒</span>}
+                    {cat.category_name}
+                  </button>
+                ))}
+                {playlist.categories.length === 0 && (
+                  <div className="category-group-empty">{playlist.error ? 'Not connected' : 'No categories'}</div>
+                )}
+              </div>
+            ))
+          : (
+              <>
+                <button
+                  className={selectedCategoryId === null && selectedCustomCategoryId === null ? 'category active' : 'category'}
+                  onClick={() => requestCategory(null)}
+                >
+                  All
+                </button>
+                {categories.map((cat) => (
+                  <button
+                    key={cat.category_id}
+                    className={selectedCategoryId === cat.category_id ? 'category active' : 'category'}
+                    onClick={() => requestCategory(cat.category_id)}
+                  >
+                    {isLocked(cat.category_id) && <span className="category-lock">🔒</span>}
+                    {cat.category_name}
+                  </button>
+                ))}
+              </>
+            )}
       </nav>
+      {/* Where a playlist is shown or hidden. Hiding is modelled as "not connected" (see
+          AppSettings.enabledPlaylistIds): the point of hiding is to stop carrying a few thousand
+          channels, so its catalogue is not loaded at all — which also means the re-show control
+          cannot live on the group it hides, hence this list. */}
+      {profiles.length > 1 && (
+        <div className="sidebar-playlists">
+          <div className="sidebar-playlists-head">Playlists</div>
+          {profiles.map((profile) => {
+            const enabled = settings.enabledPlaylistIds.includes(profile.id)
+            return (
+              <button
+                key={profile.id}
+                className="sidebar-playlist-toggle"
+                onClick={() => void setPlaylistEnabled(profile.id, !enabled)}
+                title={enabled ? `Hide ${profile.name} (stops loading it)` : `Show ${profile.name}`}
+              >
+                <span aria-hidden="true">{enabled ? '👁' : '⊘'}</span>
+                <span className="sidebar-playlist-name">{profile.name}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
       <div className="resize-handle resize-handle--right" onMouseDown={startDrag} />
     </div>
   )

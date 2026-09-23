@@ -63,6 +63,17 @@ import { addStreamIds, kindOf, moveItem, removeStreamId } from '../lib/customCat
 import { shouldWarnOnVpnDisconnect } from '../lib/vpnStatus'
 import { createReminder, reminderId, splitDueReminders, type EpgReminder } from '../lib/reminders'
 
+/** One connected playlist: the saved profile it came from, its own client, and its own status. */
+export interface PlaylistConnection {
+  profileId: string
+  name: string
+  client: IptvClient
+  /** Per-playlist, so one failing account can be shown as failing without hiding the healthy one. */
+  error: string | null
+  /** This playlist's own category list — the sidebar groups them by playlist. */
+  categories: Category[]
+}
+
 export type ViewMode = 'live' | 'movies' | 'series' | 'favorites' | 'history' | 'multiview'
 export type ConnectionStatus = 'idle' | 'connecting' | 'ready' | 'error'
 
@@ -236,6 +247,11 @@ interface AppState {
   profiles: XtreamProfile[]
   activeProfile: XtreamProfile | null
   client: IptvClient | null
+  // Every connected playlist, in display order — the first is also `client`/`activeProfile` above,
+  // which stay in place so the single-provider surfaces (VOD, series, the guide pool) keep working
+  // unchanged. Each entry's client routes through the proxy's per-request passthrough (see
+  // lib/xtream.ts), which is what lets more than one account be live at once.
+  playlists: PlaylistConnection[]
   status: ConnectionStatus
   error: string | null
   isOnline: boolean
@@ -415,8 +431,14 @@ interface AppState {
   retryConnection: () => Promise<void>
   disconnect: () => void
   setViewMode: (mode: ViewMode) => Promise<void>
-  requestCategory: (categoryId: string | null) => void
-  selectCategory: (categoryId: string | null) => Promise<void>
+  // Connects/disconnects one playlist. Adding re-connects; dropping tears that account's client
+  // down — see AppSettings.enabledPlaylistIds for why hiding is modelled as "not connected".
+  setPlaylistEnabled: (profileId: string, enabled: boolean) => Promise<void>
+  // Which playlist's categories the sidebar is showing, and whose channels the grid lists.
+  selectedPlaylistId: string | null
+  selectPlaylist: (profileId: string) => void
+  requestCategory: (categoryId: string | null, playlistId?: string | null) => void
+  selectCategory: (categoryId: string | null, playlistId?: string | null) => Promise<void>
   // "My Categories" (see CustomCategory): user-made Live TV groupings shown above the provider's
   // own categories. Creating/renaming/removing and adding/reordering channels all persist into
   // settings.customCategories, and a change to the SELECTED category is reflected in the grid
@@ -492,7 +514,8 @@ interface AppState {
     name: string,
     extension: string,
     icon?: string,
-    tvArchive?: number
+    tvArchive?: number,
+    playlistId?: string | null
   ) => void
   playTimeshift: (channel: LiveStream, program: ShortEpgProgram) => void
   stop: () => void
@@ -587,10 +610,39 @@ interface AppState {
   dismissUpdatePrompt: () => void
 }
 
+/**
+ * Builds a client for one saved profile.
+ *
+ * `viaPassthrough` is what makes multiple Xtream accounts possible at once: the proxy's Xtream path
+ * holds a single target base (set with proxy.setTarget), so two accounts sharing it would race each
+ * other, whereas the /__fetch/ passthrough carries its own destination per request. The primary
+ * playlist deliberately keeps the original path — it is the one every existing surface and test
+ * exercises, and there is no reason to move it.
+ */
+function makePlaylistClient(
+  profile: XtreamProfile,
+  proxyBase: string,
+  viaPassthrough: boolean
+): IptvClient {
+  if (profile.kind === 'm3u') {
+    // M3uClient has always routed through the passthrough — a playlist can reference a different
+    // host per channel, so there is no single base for setTarget to resolve against.
+    return new M3uClient(proxyBase, profile.m3uUrl ?? '', profile.epgUrl ?? null)
+  }
+  return new XtreamClient(
+    profile.server ?? '',
+    profile.username ?? '',
+    profile.password ?? '',
+    viaPassthrough ? proxyBase : null
+  )
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   profiles: [],
   activeProfile: null,
   client: null,
+  playlists: [],
+  selectedPlaylistId: null,
   status: 'idle',
   error: null,
   isOnline: typeof navigator === 'undefined' ? true : navigator.onLine,
@@ -822,22 +874,58 @@ export const useAppStore = create<AppState>((set, get) => ({
         throw new Error('This app must run inside Electron to reach Xtream servers.')
       }
       const proxyBase = await window.api.proxy.getBaseUrl()
-      let client: IptvClient
-      if (profile.kind === 'm3u') {
-        // M3uClient routes every request (playlist, EPG, and every channel's own stream URL)
-        // through the proxy's /__fetch/ passthrough itself — unlike Xtream, a playlist can
-        // reference a different host per channel, so there's no single base for setTarget's
-        // path-relative proxying to resolve against.
-        client = new M3uClient(proxyBase, profile.m3uUrl ?? '', profile.epgUrl ?? null)
-      } else {
-        // Route every request through the local CORS-proxy (see src/main/index.ts) instead
-        // of the real server, since Xtream panels don't send CORS headers for browsers.
+      if (profile.kind !== 'm3u') {
+        // Route every request through the local CORS-proxy (see src/main/index.ts) instead of the
+        // real server, since Xtream panels don't send CORS headers for browsers. This is the
+        // *primary* playlist's path — see makePlaylistClient for why the others differ.
         await window.api.proxy.setTarget(profile.server ?? '')
-        client = new XtreamClient(proxyBase, profile.username ?? '', profile.password ?? '')
       }
+      const client = makePlaylistClient(profile, proxyBase, false)
       const auth = await client.authenticate()
+
+      // Additional playlists: whatever else is enabled, in the user's saved order (the profile
+      // being connected goes first, so it is the primary). One failing account must not take the
+      // others down with it — a flaky provider is the whole reason this feature exists — so each
+      // is connected independently and its failure is recorded against it.
+      const connections: PlaylistConnection[] = [
+        { profileId: profile.id, name: profile.name, client, error: null, categories: [] }
+      ]
+      for (const id of get().settings.enabledPlaylistIds) {
+        if (id === profile.id) continue
+        const extra = get().profiles.find((candidate) => candidate.id === id)
+        if (!extra) continue
+        const extraClient = makePlaylistClient(extra, proxyBase, true)
+        try {
+          await extraClient.authenticate()
+          connections.push({ profileId: id, name: extra.name, client: extraClient, error: null, categories: [] })
+        } catch (err) {
+          connections.push({
+            profileId: id,
+            name: extra.name,
+            client: extraClient,
+            error: err instanceof Error ? err.message : 'Failed to connect',
+            categories: []
+          })
+        }
+      }
+
+      // Each playlist's own categories, fetched now so the sidebar can group them without the user
+      // having to select a playlist first. Failures leave an empty list rather than blocking.
+      await Promise.all(
+        connections.map(async (connection) => {
+          if (connection.error) return
+          try {
+            const cats = await connection.client.getLiveCategories()
+            connection.categories = cats.map((c) => ({ ...c, playlistId: connection.profileId }))
+          } catch {
+            // Left empty; the sidebar shows the playlist with no categories rather than a crash.
+          }
+        })
+      )
       set({
         client,
+        playlists: connections,
+        selectedPlaylistId: profile.id,
         status: 'ready',
         singleConnectionAccount: auth.user_info.max_connections === '1',
         // A new connection means a (possibly different) provider's catalog — last profile's
@@ -965,7 +1053,35 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   // Wraps selectCategory with the parental-lock check: a locked category not yet
   // unlocked this session prompts for the PIN instead of loading its content.
-  requestCategory: (categoryId) => {
+  selectPlaylist: (profileId) => {
+    if (!get().playlists.some((playlist) => playlist.profileId === profileId)) return
+    set({ selectedPlaylistId: profileId, selectedCustomCategoryId: null, searchTerm: '' })
+    // Show that playlist's whole line-up: its "All" (a null category) is the default entry.
+    get().requestCategory(null, profileId)
+  },
+
+  setPlaylistEnabled: async (profileId, enabled) => {
+    const current = get().settings.enabledPlaylistIds
+    const next = enabled
+      ? current.includes(profileId)
+        ? current
+        : [...current, profileId]
+      : current.filter((id) => id !== profileId)
+    if (next === current) return
+    get().updateSettings({ enabledPlaylistIds: next })
+    if (next.length === 0) {
+      // Hiding every playlist leaves nothing to browse — the login screen is the honest state.
+      get().disconnect()
+      return
+    }
+    // Reconnecting is what actually loads a newly-shown playlist's catalogue (and what stops a
+    // hidden one being carried), so the toggle goes through the connect flow rather than just
+    // filtering what is rendered.
+    const active = get().activeProfile?.id
+    await get().connect(active && next.includes(active) ? active : next[0])
+  },
+
+  requestCategory: (categoryId, playlistId) => {
     const { settings, unlockedCategoryIds, viewMode } = get()
     // Namespaced by section since Xtream doesn't guarantee category_id uniqueness across
     // Live/Movies/Series — see setCategoryLocked and loadSettings' migration. Multi-View's
@@ -980,7 +1096,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       return
     }
     // selectCategory catches its own errors internally (sets `error` in the store).
-    void get().selectCategory(categoryId)
+    void get().selectCategory(categoryId, playlistId)
   },
 
   findChannelByNumber: async (num) => {
@@ -994,13 +1110,32 @@ export const useAppStore = create<AppState>((set, get) => ({
     return catalog.find((c) => c.num === num) ?? null
   },
 
-  selectCategory: async (categoryId) => {
-    const { client, viewMode } = get()
+  selectCategory: async (categoryId, playlistId) => {
+    const { playlists, viewMode } = get()
+    // Which account's catalogue this selection browses: the one asked for, else the one the sidebar
+    // is showing, else the first. With a single playlist connected this resolves to exactly the
+    // client this action used before, so the single-provider path is unchanged.
+    const chosen =
+      (playlistId ? playlists.find((playlist) => playlist.profileId === playlistId) : undefined) ??
+      playlists.find((playlist) => playlist.profileId === get().selectedPlaylistId) ??
+      playlists[0] ??
+      null
+    const client = chosen?.client ?? get().client
     if (!client) return
-    set({ selectedCategoryId: categoryId, selectedCustomCategoryId: null })
+    set({
+      selectedCategoryId: categoryId,
+      selectedCustomCategoryId: null,
+      ...(playlistId ? { selectedPlaylistId: playlistId } : {})
+    })
     try {
       if (viewMode === 'live' || viewMode === 'multiview') {
-        const liveStreams = await client.getLiveStreams(categoryId ?? undefined)
+        const fetched = await client.getLiveStreams(categoryId ?? undefined)
+        // Tagged with the playlist they came from, but only when there is more than one: with a
+        // single playlist the tag would be noise, and the rows keep the shape they always had.
+        const liveStreams =
+          chosen && playlists.length > 1
+            ? fetched.map((stream) => ({ ...stream, playlistId: chosen.profileId, playlistName: chosen.name }))
+            : fetched
         set({ liveStreams })
         // Matching a guide pool to channels needs the channel list (see applyEpgPool) — a
         // newly-loaded category can contain channels the pool has data for that were never
@@ -1742,9 +1877,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
   },
 
-  play: (kind, streamId, name, extension, icon = '', tvArchive = 0) => {
-    const { client, recentlyWatched } = get()
-    if (!client) return
+  play: (kind, streamId, name, extension, icon = '', tvArchive = 0, playlistId) => {
+    const { client, playlists, recentlyWatched } = get()
+    // With more than one playlist connected the URL has to come from the account this channel
+    // belongs to: stream ids are unique within a playlist, not across them, so using "the" client
+    // would happily play a different channel that happens to share the id.
+    const source = playlistId ? (playlists.find((playlist) => playlist.profileId === playlistId)?.client ?? client) : client
+    if (!source) return
     set({
       nowPlaying: {
         kind,
@@ -1753,7 +1892,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         extension,
         tvArchive,
         icon,
-        url: client.getStreamUrl(kind, streamId, extension)
+        url: source.getStreamUrl(kind, streamId, extension)
       }
     })
 

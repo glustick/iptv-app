@@ -62,6 +62,11 @@ export interface LiveStream {
   tv_archive: number
   direct_source: string
   tv_archive_duration: number
+  // Which playlist this channel came from. Set only when more than one playlist is connected (see
+  // selectCategory), so a single-provider catalogue keeps exactly the shape it always had. stream_id
+  // is unique within a playlist but NOT across playlists, which is what this disambiguates.
+  playlistId?: string
+  playlistName?: string
 }
 
 export interface VodStream {
@@ -276,6 +281,14 @@ export interface AppSettings {
   // EPG-id/name matching wherever auto-matching gets a channel wrong or misses it entirely.
   // Applied in applyEpgPool alongside the automatic joins; see EpgChannelMapping above.
   epgChannelMappings: EpgChannelMapping[]
+  // Which saved profiles are connected *at the same time*, in display order — the multi-playlist
+  // feature. One entry means the single-provider behaviour this app has always had; more means their
+  // catalogues are browsed together, grouped by playlist, each channel carrying the playlist it came
+  // from. Hiding a playlist removes it from here, which also stops it being connected: the point of
+  // hiding is to avoid carrying a few thousand channels you do not want, so not loading them at all
+  // is the honest interpretation. The first entry is the primary — the one that owns the non-live
+  // surfaces (VOD/series) and the app's single `client`.
+  enabledPlaylistIds: string[]
   // Guide sources whose listings are switched off without being deleted — "show/hide its guide".
   // applyEpgPool skips these, so hiding a source immediately stops it supplying any channel, while
   // leaving the URL, its place in the priority order and any manual mappings intact for when it is
@@ -304,6 +317,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   customEpgUrls: [],
   epgChannelMappings: [],
   hiddenEpgSourceUrls: [],
+  enabledPlaylistIds: [],
   customCategories: []
 }
 

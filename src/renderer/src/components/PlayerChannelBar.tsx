@@ -60,7 +60,7 @@ export function PlayerChannelBar(): JSX.Element {
 
   const handleSelect = useCallback(
     (channel: LiveStream) => {
-      play('live', channel.stream_id, channel.name, 'm3u8', channel.stream_icon, channel.tv_archive)
+      play('live', channel.stream_id, channel.name, 'm3u8', channel.stream_icon, channel.tv_archive, channel.playlistId)
       // Keep the EPG grid's preview in sync so it shows this channel (highlighted,
       // ready to resume) rather than whatever was selected before you opened fullscreen.
       openChannelPreview(channel)

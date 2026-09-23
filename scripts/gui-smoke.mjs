@@ -76,6 +76,9 @@ function resetTestMappings() {
     // Guide *visibility* is state too, and the hide/show check asserts a click flips it — so a run
     // that ends with a source hidden would fail the next run's first assertion. Reset it here for
     // the same reason the mappings are reset.
+    // A leftover second playlist would group the sidebar and tag every row, which changes what the
+    // fixture assertions see. The harness runs against exactly one provider.
+    settings.enabledPlaylistIds = ['mock-test-1']
     const hiddenBefore = Array.isArray(settings.hiddenEpgSourceUrls) ? settings.hiddenEpgSourceUrls.length : 0
     settings.hiddenEpgSourceUrls = (settings.hiddenEpgSourceUrls ?? []).filter(
       (url) => !String(url).includes('127.0.0.1:8123')

@@ -124,6 +124,14 @@ function EpgRow({
             <span className="epg-row-channel-icon placeholder" />
           )}
           <span className="epg-row-channel-name">{channel.name}</span>
+          {/* Which playlist this channel belongs to. Rendered only when more than one is connected
+              (the stream is only tagged then — see selectCategory), so with a single provider the
+              row is exactly as it was. Reported as the thing that keeps a merged view unambiguous. */}
+          {channel.playlistName && (
+            <span className="epg-playlist-badge" title={`From ${channel.playlistName}`}>
+              {channel.playlistName}
+            </span>
+          )}
           {/* Only ever shown for a channel we have actually judged and found wanting — 'ok' and
               'unknown' both render nothing, so the normal case stays visually unchanged. */}
           {channelHealth && (channelHealth.health === 'loop' || channelHealth.health === 'unavailable') && (

@@ -140,7 +140,7 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
   const previewHealth = channelHealthByStream[previewChannel.stream_id]
 
   function watchFullscreen(channel: LiveStream = previewChannel!): void {
-    play('live', channel.stream_id, channel.name, 'm3u8', channel.stream_icon, channel.tv_archive)
+    play('live', channel.stream_id, channel.name, 'm3u8', channel.stream_icon, channel.tv_archive, channel.playlistId)
     if (fullWidth) {
       // Keep the grid's state in sync (so it shows this channel highlighted/previewing
       // when fullscreen closes) rather than tearing the whole panel down — its own

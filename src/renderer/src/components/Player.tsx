@@ -1305,7 +1305,7 @@ export function Player(): JSX.Element | null {
 
   const numericEntryDisplay = useNumericChannelEntry((num) => {
     void findChannelByNumber(num).then((channel) => {
-      if (channel) play('live', channel.stream_id, channel.name, 'm3u8', channel.stream_icon, channel.tv_archive)
+      if (channel) play('live', channel.stream_id, channel.name, 'm3u8', channel.stream_icon, channel.tv_archive, channel.playlistId)
       else setNumberNotFound(num)
     })
   }, nowPlaying?.kind === 'live')
