@@ -120,3 +120,27 @@ describe('XtreamClient', () => {
     expect(listings[0].title).toBe('Not Base64 At All!!')
   })
 })
+
+describe('XtreamClient — proxy passthrough (the foundation for multiple playlists)', () => {
+  const server = 'https://panel.example.com:8080'
+
+  it('builds direct URLs when no proxy base is given — the single-provider path, unchanged', () => {
+    const client = new XtreamClient(server, 'user', 'pass')
+    expect(client.getStreamUrl('live', 42, 'm3u8')).toBe(`${server}/live/user/pass/42.m3u8`)
+  })
+
+  it('routes every request through the proxy passthrough when one is given', () => {
+    // Two providers can only be used at once because each request carries its own destination:
+    // the proxy's Xtream path has a single target base, so accounts sharing it would race.
+    const client = new XtreamClient(server, 'user', 'pass', 'http://127.0.0.1:9999')
+    const wrapped = `http://127.0.0.1:9999/__fetch/${encodeURIComponent(`${server}/live/user/pass/42.m3u8`)}`
+    expect(client.getStreamUrl('live', 42, 'm3u8')).toBe(wrapped)
+  })
+
+  it('applies the same wrapping to catch-up URLs and tolerates a trailing slash on the proxy base', () => {
+    const client = new XtreamClient(server, 'user', 'pass', 'http://127.0.0.1:9999/')
+    const timeshift = client.getTimeshiftUrl(42, new Date('2026-09-23T12:00:00Z'), 30)
+    expect(timeshift.startsWith('http://127.0.0.1:9999/__fetch/')).toBe(true)
+    expect(decodeURIComponent(timeshift.slice('http://127.0.0.1:9999/__fetch/'.length))).toContain('/timeshift/user/pass/30/')
+  })
+})

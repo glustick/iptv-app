@@ -25,11 +25,26 @@ export class XtreamClient implements IptvClient {
   private readonly baseUrl: string
   private readonly username: string
   private readonly password: string
+  // When set, every request goes through the local proxy's /__fetch/ passthrough instead of being
+  // fetched directly. That passthrough targets an absolute URL (see lib/m3uClient.ts, which has used
+  // it from the start because an M3U playlist can reference a different host per channel), and it is
+  // what makes **more than one provider usable at once** possible: the proxy's Xtream path holds a
+  // single target base, so two accounts sharing it would race each other, whereas /__fetch/ carries
+  // its own destination per request. Optional and additive: constructed without it, this class
+  // behaves exactly as it always has.
+  private readonly proxyBase: string | null
 
-  constructor(server: string, username: string, password: string) {
+  constructor(server: string, username: string, password: string, proxyBase?: string | null) {
     this.baseUrl = server.trim().replace(/\/+$/, '')
     this.username = username
     this.password = password
+    this.proxyBase = proxyBase ? proxyBase.replace(/\/+$/, '') : null
+  }
+
+  /** Where a request actually goes: direct, or wrapped for the proxy's passthrough. */
+  private resolveUrl(absolute: string): string {
+    if (!this.proxyBase) return absolute
+    return `${this.proxyBase}/__fetch/${encodeURIComponent(absolute)}`
   }
 
   private playerApiUrl(params: Record<string, string> = {}): string {
@@ -39,7 +54,7 @@ export class XtreamClient implements IptvClient {
     for (const [key, value] of Object.entries(params)) {
       url.searchParams.set(key, value)
     }
-    return url.toString()
+    return this.resolveUrl(url.toString())
   }
 
   private async getJson<T>(url: string): Promise<T> {
@@ -111,7 +126,7 @@ export class XtreamClient implements IptvClient {
     const url = new URL(`${this.baseUrl}/xmltv.php`)
     url.searchParams.set('username', this.username)
     url.searchParams.set('password', this.password)
-    const res = await fetch(url.toString())
+    const res = await fetch(this.resolveUrl(url.toString()))
     if (!res.ok) {
       throw new Error(`EPG request failed: ${res.status} ${res.statusText}`)
     }
@@ -123,7 +138,7 @@ export class XtreamClient implements IptvClient {
 
   getStreamUrl(kind: MediaKind, streamId: number, extension: string): string {
     const path = kind === 'live' ? 'live' : kind === 'movie' ? 'movie' : 'series'
-    return `${this.baseUrl}/${path}/${this.username}/${this.password}/${streamId}.${extension}`
+    return this.resolveUrl(`${this.baseUrl}/${path}/${this.username}/${this.password}/${streamId}.${extension}`)
   }
 
   /**
@@ -133,6 +148,8 @@ export class XtreamClient implements IptvClient {
   getTimeshiftUrl(streamId: number, start: Date, durationMinutes: number, extension = 'm3u8'): string {
     const pad = (n: number): string => String(n).padStart(2, '0')
     const startToken = `${start.getFullYear()}-${pad(start.getMonth() + 1)}-${pad(start.getDate())}:${pad(start.getHours())}-${pad(start.getMinutes())}`
-    return `${this.baseUrl}/timeshift/${this.username}/${this.password}/${Math.max(1, Math.round(durationMinutes))}/${startToken}/${streamId}.${extension}`
+    return this.resolveUrl(
+      `${this.baseUrl}/timeshift/${this.username}/${this.password}/${Math.max(1, Math.round(durationMinutes))}/${startToken}/${streamId}.${extension}`
+    )
   }
 }
