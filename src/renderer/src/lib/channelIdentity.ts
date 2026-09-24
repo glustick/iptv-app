@@ -68,3 +68,30 @@ export function channelKeyBelongsToPlaylist(
   if (separatorAt < 0) return !playlistId || !primaryPlaylistId || playlistId === primaryPlaylistId
   return key.slice(0, separatorAt) === playlistId
 }
+
+/**
+ * A custom-category membership entry for one channel: the plain numeric id for a channel on the
+ * primary playlist — byte-for-byte what every entry written before multi-playlist is — and the
+ * qualified key otherwise. Deliberately returns the *number* rather than its string form for the
+ * bare case, so existing membership keeps both its value and its type; a category holding channels
+ * from two playlists therefore holds a mix, which is exactly what the comparison helper below is for.
+ */
+export function channelEntryFor(
+  playlistId: string | null | undefined,
+  streamId: number,
+  primaryPlaylistId: string | null | undefined
+): number | string {
+  const key = channelKey(playlistId, streamId, primaryPlaylistId)
+  return key === String(streamId) ? streamId : key
+}
+
+/** True when a stored membership entry refers to this channel. Compares string forms, because an
+ * entry is legitimately either shape (see channelEntryFor) and `42`/`'42'` must not be two channels. */
+export function isChannelEntryFor(
+  entry: number | string,
+  playlistId: string | null | undefined,
+  streamId: number,
+  primaryPlaylistId: string | null | undefined
+): boolean {
+  return String(entry) === channelKey(playlistId, streamId, primaryPlaylistId)
+}

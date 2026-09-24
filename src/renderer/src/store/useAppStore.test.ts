@@ -2102,3 +2102,67 @@ https://cdn.example/a.ts
     expect(useAppStore.getState().channelHealthByStream[45]).toBeUndefined()
   })
 })
+
+describe('programme reminders across playlists', () => {
+  const programme: ShortEpgProgram = {
+    id: 'programme-1',
+    epg_id: 'epg-1',
+    title: 'Evening News',
+    lang: 'en',
+    start: '',
+    end: '',
+    description: '',
+    channel_id: 'channel-1',
+    start_timestamp: '1100',
+    stop_timestamp: '4700'
+  }
+
+  it('keeps the same channel id on two playlists as two independent reminders', () => {
+    useAppStore.setState({ primaryPlaylistId: 'primary', epgReminders: [] })
+
+    useAppStore.getState().toggleEpgReminder(42, 'B News', programme, 'second')
+    expect(useAppStore.getState().isEpgReminderSet(42, 'programme-1', 'second')).toBe(true)
+    // Provider A's channel 42 is a different channel: no bell of its own, so pressing it there sets
+    // a second reminder rather than clearing provider B's.
+    expect(useAppStore.getState().isEpgReminderSet(42, 'programme-1', 'primary')).toBe(false)
+    useAppStore.getState().toggleEpgReminder(42, 'A News', programme, 'primary')
+    expect(useAppStore.getState().epgReminders).toHaveLength(2)
+    expect(useAppStore.getState().isEpgReminderSet(42, 'programme-1', 'primary')).toBe(true)
+
+    // …and toggling one off leaves the other set.
+    useAppStore.getState().toggleEpgReminder(42, 'A News', programme, 'primary')
+    expect(useAppStore.getState().isEpgReminderSet(42, 'programme-1', 'primary')).toBe(false)
+    expect(useAppStore.getState().isEpgReminderSet(42, 'programme-1', 'second')).toBe(true)
+  })
+
+  it('writes the id a single-playlist install has always written', () => {
+    useAppStore.setState({ primaryPlaylistId: 'primary', epgReminders: [] })
+    useAppStore.getState().toggleEpgReminder(42, 'A News', programme, 'primary')
+    expect(useAppStore.getState().epgReminders[0].id).toBe('42:programme-1')
+  })
+})
+
+describe('custom category membership across playlists', () => {
+  it('keeps the same channel id on two playlists as two members', () => {
+    useAppStore.setState({ primaryPlaylistId: 'primary' })
+    const id = useAppStore.getState().createCustomCategory('Favourites')
+    const entries = () => useAppStore.getState().settings.customCategories.find((c) => c.id === id)!.streamIds
+
+    useAppStore.getState().addChannelsToCustomCategory(id, [42, 'second:42'])
+    expect(entries()).toEqual([42, 'second:42'])
+
+    // Removing the second playlist's channel leaves the primary's in place.
+    useAppStore.getState().removeChannelFromCustomCategory(id, 'second:42')
+    expect(entries()).toEqual([42])
+  })
+
+  it('does not add the same channel twice because it arrived in the other shape', () => {
+    useAppStore.setState({ primaryPlaylistId: 'primary' })
+    const id = useAppStore.getState().createCustomCategory('Mixed')
+    const entries = () => useAppStore.getState().settings.customCategories.find((c) => c.id === id)!.streamIds
+
+    useAppStore.getState().addChannelsToCustomCategory(id, [42])
+    useAppStore.getState().addChannelsToCustomCategory(id, ['42'])
+    expect(entries()).toEqual([42])
+  })
+})

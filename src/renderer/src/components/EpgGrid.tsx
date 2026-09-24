@@ -161,7 +161,7 @@ function EpgRow({
           const isPast = stopMs <= now
           const canCatchUp = isPast && channel.tv_archive === 1
           const isUpcoming = startMs > now
-          const reminderSet = isEpgReminderSet(channel.stream_id, p.id)
+          const reminderSet = isEpgReminderSet(channel.stream_id, p.id, channel.playlistId)
           return (
             <span key={`${p.id}-${i}`}>
               <button
@@ -184,7 +184,7 @@ function EpgRow({
                   aria-label={reminderSet ? `Remove reminder for ${p.title}` : `Set reminder for ${p.title}`}
                   onClick={(e) => {
                     e.stopPropagation()
-                    toggleEpgReminder(channel.stream_id, channel.name, p)
+                    toggleEpgReminder(channel.stream_id, channel.name, p, channel.playlistId)
                   }}
                 >
                   {reminderSet ? '🔔' : '🔕'}

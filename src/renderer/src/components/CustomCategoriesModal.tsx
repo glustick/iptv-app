@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { kindOf } from '../lib/customCategories'
+import { channelEntryFor } from '../lib/channelIdentity'
 import type { CustomCategoryKind, LiveStream, SeriesItem, VodStream } from '../lib/types'
 
 // The manager for "My Categories" (the sidebar's own section above the provider categories).
@@ -25,6 +26,9 @@ export function CustomCategoriesModal(): JSX.Element | null {
   const addChannelsToCustomCategory = useAppStore((s) => s.addChannelsToCustomCategory)
   const removeChannelFromCustomCategory = useAppStore((s) => s.removeChannelFromCustomCategory)
   const reorderCustomCategoryChannels = useAppStore((s) => s.reorderCustomCategoryChannels)
+  // Membership entries are resolved through the playlist they came from, so the catalog's own
+  // channel keys have to be built with the same primary the store uses (see channelEntryFor).
+  const primaryPlaylistId = useAppStore((s) => s.primaryPlaylistId)
   const reorderCustomCategories = useAppStore((s) => s.reorderCustomCategories)
   const ensureCustomCategoryCatalog = useAppStore((s) => s.ensureCustomCategoryCatalog)
   const requestCustomCategory = useAppStore((s) => s.requestCustomCategory)
@@ -78,15 +82,25 @@ export function CustomCategoriesModal(): JSX.Element | null {
   const catalogItems: Array<LiveStream | VodStream | SeriesItem> =
     (tab === 'movie' ? vodCatalog : tab === 'series' ? seriesCatalog : liveCatalog) ?? []
   const itemId = (item: LiveStream | VodStream | SeriesItem): number => ('series_id' in item ? item.series_id : item.stream_id)
+  // What actually gets stored for an item. Live channels are keyed per playlist (a plain id for the
+  // ones on the primary playlist — the shape every entry written before multi-playlist has — and a
+  // qualified key for the rest); movies and series only exist on the primary, so they stay numeric.
+  const itemEntry = (item: LiveStream | VodStream | SeriesItem): number | string =>
+    tab === 'live'
+      ? channelEntryFor((item as LiveStream).playlistId, itemId(item), primaryPlaylistId)
+      : itemId(item)
   const catalogLoaded = catalogItems.length > 0
   const itemNoun = tab === 'live' ? 'channel' : tab === 'movie' ? 'movie' : 'series'
 
-  const byId = new Map(catalogItems.map((item) => [itemId(item), item]))
-  const missingCount = active ? active.streamIds.length - active.streamIds.filter((id) => byId.has(id)).length : 0
+  // String-keyed: a stored entry may be `42` or `'42'`, and the two must be the same channel.
+  const byEntry = new Map(catalogItems.map((item) => [String(itemEntry(item)), item]))
+  const missingCount = active ? active.streamIds.length - active.streamIds.filter((id) => byEntry.has(String(id))).length : 0
 
   const query = search.trim().toLowerCase()
   const candidates = catalogItems.filter(
-    (item) => (active ? !active.streamIds.includes(itemId(item)) : false) && (!query || item.name.toLowerCase().includes(query))
+    (item) =>
+      (active ? !active.streamIds.some((id) => String(id) === String(itemEntry(item))) : false) &&
+      (!query || item.name.toLowerCase().includes(query))
   )
   const shownCandidates = candidates.slice(0, CHANNEL_LIST_CAP)
 
@@ -257,12 +271,12 @@ export function CustomCategoriesModal(): JSX.Element | null {
                   <p className="settings-hint">Nothing here yet — add some from the list below.</p>
                 ) : (
                   <ul className="custom-cat-channels">
-                    {active.streamIds.map((streamId, index) => {
-                      const channel = byId.get(streamId)
+                    {active.streamIds.map((entry, index) => {
+                      const channel = byEntry.get(String(entry))
                       const isMissing = channel === undefined
                       return (
                         <li
-                          key={streamId}
+                          key={String(entry)}
                           draggable
                           onDragStart={(e) => {
                             setDragIndex(index)
@@ -293,7 +307,7 @@ export function CustomCategoriesModal(): JSX.Element | null {
                             ⠿
                           </span>
                           <span className="custom-cat-channel-name">
-                            {channel?.name ?? `Channel #${streamId}`}
+                            {channel?.name ?? `Channel #${entry}`}
                             {isMissing && <span className="custom-cat-missing"> (not in this provider)</span>}
                           </span>
                           <span className="custom-cat-channel-actions">
@@ -301,7 +315,7 @@ export function CustomCategoriesModal(): JSX.Element | null {
                               className="icon-button"
                               disabled={index === 0}
                               onClick={() => move(index, -1)}
-                              aria-label={`Move ${channel?.name ?? streamId} up`}
+                              aria-label={`Move ${channel?.name ?? entry} up`}
                               title="Move up"
                             >
                               ⬆
@@ -310,15 +324,15 @@ export function CustomCategoriesModal(): JSX.Element | null {
                               className="icon-button"
                               disabled={index === active.streamIds.length - 1}
                               onClick={() => move(index, 1)}
-                              aria-label={`Move ${channel?.name ?? streamId} down`}
+                              aria-label={`Move ${channel?.name ?? entry} down`}
                               title="Move down"
                             >
                               ⬇
                             </button>
                             <button
                               className="danger-link"
-                              onClick={() => removeChannelFromCustomCategory(active.id, streamId)}
-                              aria-label={`Remove ${channel?.name ?? streamId} from this category`}
+                              onClick={() => removeChannelFromCustomCategory(active.id, entry)}
+                              aria-label={`Remove ${channel?.name ?? entry} from this category`}
                             >
                               Remove
                             </button>
@@ -340,10 +354,10 @@ export function CustomCategoriesModal(): JSX.Element | null {
                 <div className="epg-mapping-options custom-cat-candidates">
                   {shownCandidates.map((item) => (
                     <button
-                      key={itemId(item)}
+                      key={String(itemEntry(item))}
                       type="button"
                       className="epg-mapping-option"
-                      onClick={() => addChannelsToCustomCategory(active.id, [itemId(item)])}
+                      onClick={() => addChannelsToCustomCategory(active.id, [itemEntry(item)])}
                     >
                       {item.name} <small>#{itemId(item)}</small>
                     </button>

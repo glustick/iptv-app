@@ -60,3 +60,17 @@ describe('kindOf', () => {
     expect(kindOf({ kind: 'nonsense' })).toBe('live')
   })
 })
+
+describe('membership entries across playlists', () => {
+  it('adds a qualified key alongside a plain id, and removes each on its own', () => {
+    const both = addStreamIds([42], ['second:42'])
+    expect(both).toEqual([42, 'second:42'])
+    expect(removeStreamId(both, 'second:42')).toEqual([42])
+    expect(removeStreamId(both, 42)).toEqual(['second:42'])
+  })
+
+  it('treats the number 42 and the string "42" as the same channel', () => {
+    expect(addStreamIds([42], ['42'])).toEqual([42])
+    expect(removeStreamId([42], '42')).toEqual([])
+  })
+})

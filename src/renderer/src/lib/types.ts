@@ -220,6 +220,10 @@ export interface EpgChannelMapping {
 // providers the ids that don't resolve are skipped rather than dropped — the category and its
 // order come back intact the next time that provider is connected. Persisted in settings, so it
 // survives app restarts and upgrades and is included in backup export/import.
+// Entries are mixed by necessity (see StreamEntry): a channel from the primary playlist is stored
+// as its plain numeric id — which is what every entry predating multi-playlist is — and a channel
+// from another playlist as a qualified `playlist:id` key. Compare entries as strings, never with
+// `===` against a number.
 export type CustomCategoryKind = 'live' | 'movie' | 'series'
 
 export interface CustomCategory {
@@ -232,7 +236,8 @@ export interface CustomCategory {
   // Ordered ids of the entities in this category — Live stream_ids, VOD stream_ids, or
   // series_ids depending on `kind`. One field for all three because the ordering, dedup and
   // move semantics are identical; the kind decides which catalog they're resolved against.
-  streamIds: number[]
+  // Live entries from a non-primary playlist are qualified keys, hence the union.
+  streamIds: Array<number | string>
 }
 
 export interface AppSettings {

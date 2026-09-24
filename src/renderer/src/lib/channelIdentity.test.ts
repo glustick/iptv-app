@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import {
+  channelEntryFor,
   channelKey,
   channelKeyBelongsToPlaylist,
   channelKeyCandidates,
+  isChannelEntryFor,
   isChannelKeyFor
 } from './channelIdentity'
 
@@ -52,5 +54,25 @@ describe('channelKeyBelongsToPlaylist', () => {
     expect(channelKeyBelongsToPlaylist('42', 'second', 'primary')).toBe(false)
     expect(channelKeyBelongsToPlaylist('second:42', 'second', 'primary')).toBe(true)
     expect(channelKeyBelongsToPlaylist('second:42', 'primary', 'primary')).toBe(false)
+  })
+})
+
+describe('channelEntryFor', () => {
+  it('stores a primary-playlist channel as its plain number, so existing membership keeps its shape', () => {
+    expect(channelEntryFor('primary', 42, 'primary')).toBe(42)
+    // No playlist known at all is the same thing — it is what every entry written before
+    // multi-playlist means.
+    expect(channelEntryFor(null, 42, 'primary')).toBe(42)
+  })
+
+  it('stores another playlist\'s channel as a qualified key', () => {
+    expect(channelEntryFor('second', 42, 'primary')).toBe('second:42')
+  })
+
+  it('treats the number 42 and the string "42" as the same channel', () => {
+    expect(isChannelEntryFor(42, 'primary', 42, 'primary')).toBe(true)
+    expect(isChannelEntryFor('42', 'primary', 42, 'primary')).toBe(true)
+    expect(isChannelEntryFor('second:42', 'primary', 42, 'primary')).toBe(false)
+    expect(isChannelEntryFor('second:42', 'second', 42, 'primary')).toBe(true)
   })
 })

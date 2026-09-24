@@ -225,7 +225,9 @@ Recommended enhancements for future development, roughly ordered by priority wit
 
 - **0.7.107** gave per-channel state a **playlist-aware identity**, closing the collision 0.7.105 flagged: `stream_id` is unique within a provider but not across them, so hiding a channel, or a remembered audio fix, on one playlist could act on an unrelated channel on another that happened to share the number. The rule (`lib/channelIdentity.ts`) is **additive rather than a migration**: a channel on the **primary** playlist keys exactly as it always did — its plain id — so everything already stored keeps meaning what it meant and nothing had to be rewritten; only other playlists' channels get a qualified `playlist:42` key. Applied to **hidden channels** (the field is now `hiddenChannelKeys`, with `loadSettings` migrating the old numeric list one-for-one, since those were all the primary's) and to **remembered audio fixes**, which now key through the same helper — `nowPlaying` gained the playlist it was played from so the lookup can resolve it. Both list-shaped call sites went through a new `isChannelHidden(playlistId, streamId)` store action and a `channelKeyBelongsToPlaylist` helper for the "how many are hidden in what I am looking at" question, so no component recomputes keys by hand. Verified: 9 new tests (the key rule, its candidates, and the playlist-scoping predicate) plus a store test that hides id 42 on two playlists and asserts each is hidden independently — 426 total, smoke 61/61. **Still bare-id keyed, and therefore still collidable:** per-channel EPG mappings, watch reminders, and custom-category membership — the same treatment is the next piece, and the field already exists to do it with.
 
-What's below is a fresh list, reflecting where things stand after 0.7.107.
+- **0.7.108** carried the playlist-aware identity of 0.7.107 through to the last two per-channel surfaces multi-playlist can actually reach: **watch reminders** and **custom-category membership**. A reminder is now keyed by the channel's key rather than its bare id, so the bell on provider A's channel 42 no longer reads as already set on provider B's — and pressing it there sets a second reminder instead of silently clearing the first. Membership entries in a custom category are the same idea as a union type: a primary-playlist channel stores as its plain numeric id, byte-for-byte what every entry written before multi-playlist is, and another playlist's channel as a qualified `playlist:42` key, with **every comparison done on string forms** so `42` and `'42'` can never be two entries. Both changes are **additive**: a single-playlist install stores nothing new at all, because channels only carry a playlist when more than one is connected — the reminder still has no `playlistId` field and its id is still `42:programme-1`, pinned by test. 11 new tests: the entry helper and its comparison, `reminderId` in both forms, add/remove over mixed-shape entries, and store-level tests proving the same id on two playlists is two reminders and two members. 437 total, smoke 61/61. **Not in this release, and named in Next up:** per-channel EPG mappings and the per-channel caches the guide renders from are still bare-id keyed, and `loadShortEpg`/`probeChannelHealth` still fetch through the primary playlist's client.
+
+What's below is a fresh list, reflecting where things stand after 0.7.108.
 
 ## Next up
 
@@ -272,13 +274,25 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
 
 ### Code, in the order I would take it
 
-- **Per-channel state still collides between playlists that share a `stream_id` (0.7.105's known
-  limit).** Hidden channels, per-channel EPG mappings, watch reminders and remembered audio fixes are
-  all keyed by a bare `stream_id`, and two providers number their channels independently — so hiding
-  channel 42 on one playlist can hide channel 42 on the other. Favourites and watch history are
-  already safe, because an entry carries the whole channel (playlist included). The fix is composite
-  keys — `(playlistId, streamId)` — with entries lacking a playlist treated as the primary's, so
-  existing data keeps working.
+- **Per-channel state: EPG mappings and the per-channel caches are the last bare-id surfaces
+  (0.7.105's known limit, three-quarters closed).** Hidden channels and remembered audio fixes moved
+  to composite keys in 0.7.107, watch reminders and custom-category membership in 0.7.108. Still
+  keyed by a bare `stream_id`:
+  **per-channel EPG mappings** — and the manual-mapping map plus `matchXmltvChannels`'s own result,
+  which is keyed by `stream_id` and *skips* a second channel sharing the id, so provider B's channel
+  42 never gets matched to the guide at all;
+  the **per-channel caches the guide renders from** (`shortEpgByStream`, `shortEpgFetchedAt`,
+  `epgSourceByStream`, `channelHealthByStream`, and the in-flight/failed maps beside them);
+  and, found while doing 0.7.108, **`loadShortEpg` and `probeChannelHealth` fetch through the primary
+  playlist's client** — so a channel browsed from a second playlist asks the wrong provider for its
+  listings, and probes the wrong provider's stream URL.
+  These are one change rather than four: the same key rule, applied to a key type that is currently
+  `number` throughout (`Record<number, …>` becomes `Record<string, …>`, which is free at runtime —
+  a JS object already stringifies its numeric keys, so the single-playlist case is unchanged).
+  Favourites and watch history need nothing: an entry carries the whole channel, playlist included.
+  Custom-category membership itself is done (0.7.108); what remains there is that the catalogue it
+  resolves against is built from the primary playlist alone (`ensureChannelCatalog`), so a channel
+  from another playlist cannot be added to a category yet — the entry format is ready for it.
 - **Bound and unblock the guide load — DONE in 0.7.103, kept here only for the numbers.** — the top item, and the cause of the reported hang.** Measured
   2026-09-22: this provider's full guide is **16.3MB gzipped → 107.4MB of XML**; loading it peaked at
   **~1GB of process memory**, settled around 570MB, and the parse runs **synchronously on the main

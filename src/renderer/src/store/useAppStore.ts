@@ -52,7 +52,7 @@ import type {
   MultiViewLayout
 } from '../lib/types'
 import { MAX_GUIDE_XML_CHARS } from '../lib/xmltvSections'
-import { channelKey, channelKeyCandidates } from '../lib/channelIdentity'
+import { channelEntryFor, channelKey, channelKeyCandidates } from '../lib/channelIdentity'
 import {
   analyzeMediaPlaylist,
   classifyChannelHealth,
@@ -459,8 +459,11 @@ interface AppState {
   createCustomCategory: (name: string, kind?: CustomCategoryKind) => string
   renameCustomCategory: (id: string, name: string) => void
   deleteCustomCategory: (id: string) => void
-  addChannelsToCustomCategory: (id: string, streamIds: number[]) => void
-  removeChannelFromCustomCategory: (id: string, streamId: number) => void
+  // Membership entries are channel keys for a channel belonging to another playlist and plain
+  // ids for the primary's (see channelEntryFor) — so a category can hold the same-looking
+  // channel number from two providers without the two collapsing into one entry.
+  addChannelsToCustomCategory: (id: string, entries: Array<number | string>) => void
+  removeChannelFromCustomCategory: (id: string, entry: number | string) => void
   reorderCustomCategoryChannels: (id: string, fromIndex: number, toIndex: number) => void
   // Reorders the categories themselves — their sequence in settings IS their order in the sidebar.
   reorderCustomCategories: (fromIndex: number, toIndex: number) => void
@@ -577,8 +580,10 @@ interface AppState {
   refreshRecentlyWatched: () => Promise<void>
 
   updateEpisodeProgress: (key: string, positionSeconds: number, durationSeconds: number) => void
-  toggleEpgReminder: (streamId: number, channelName: string, program: ShortEpgProgram) => void
-  isEpgReminderSet: (streamId: number, programId: string) => boolean
+  // playlistId identifies which playlist's channel the programme belongs to — see reminderId and
+  // lib/channelIdentity for why the same stream id on two playlists is not the same reminder.
+  toggleEpgReminder: (streamId: number, channelName: string, program: ShortEpgProgram, playlistId?: string | null) => void
+  isEpgReminderSet: (streamId: number, programId: string, playlistId?: string | null) => boolean
   checkEpgReminders: () => Promise<void>
 
   updateSettings: (patch: Partial<AppSettings>) => void
@@ -1653,19 +1658,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  addChannelsToCustomCategory: (id, streamIds) => {
+  addChannelsToCustomCategory: (id, entries) => {
     get().updateSettings({
       customCategories: get().settings.customCategories.map((c) =>
-        c.id === id ? { ...c, streamIds: addStreamIds(c.streamIds, streamIds) } : c
+        c.id === id ? { ...c, streamIds: addStreamIds(c.streamIds, entries) } : c
       )
     })
     get().refreshCustomCategoryStreams(id)
   },
 
-  removeChannelFromCustomCategory: (id, streamId) => {
+  removeChannelFromCustomCategory: (id, entry) => {
     get().updateSettings({
       customCategories: get().settings.customCategories.map((c) =>
-        c.id === id ? { ...c, streamIds: removeStreamId(c.streamIds, streamId) } : c
+        c.id === id ? { ...c, streamIds: removeStreamId(c.streamIds, entry) } : c
       )
     })
     get().refreshCustomCategoryStreams(id)
@@ -1699,21 +1704,27 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!category) return
     // Each kind rebuilds the list its own surface renders — the grid's liveStreams, or the poster
     // grid's vodStreams/series — from that kind's cached catalog.
+    // Entries are compared as strings throughout: a stored entry is either a plain id (`42`) or a
+    // qualified key (`provider:42`) depending on which playlist the channel came from, and only one
+    // of the two shapes can ever match a given catalog row.
     if (kindOf(category) === 'movie') {
       const catalog = get().vodCatalog
       if (!catalog) return
-      const byId = new Map(catalog.map((s) => [s.stream_id, s]))
-      set({ vodStreams: category.streamIds.map((streamId) => byId.get(streamId)).filter((s): s is VodStream => !!s) })
+      const byId = new Map(catalog.map((s) => [String(s.stream_id), s]))
+      set({ vodStreams: category.streamIds.map((entry) => byId.get(String(entry))).filter((s): s is VodStream => !!s) })
     } else if (kindOf(category) === 'series') {
       const catalog = get().seriesCatalog
       if (!catalog) return
-      const byId = new Map(catalog.map((s) => [s.series_id, s]))
-      set({ series: category.streamIds.map((seriesId) => byId.get(seriesId)).filter((s): s is SeriesItem => !!s) })
+      const byId = new Map(catalog.map((s) => [String(s.series_id), s]))
+      set({ series: category.streamIds.map((entry) => byId.get(String(entry))).filter((s): s is SeriesItem => !!s) })
     } else {
       const catalog = get().numericChannelCatalog
       if (!catalog) return
-      const byId = new Map(catalog.map((s) => [s.stream_id, s]))
-      const streams = category.streamIds.map((streamId) => byId.get(streamId)).filter((s): s is LiveStream => !!s)
+      const { primaryPlaylistId } = get()
+      const byId = new Map(
+        catalog.map((s) => [String(channelEntryFor(s.playlistId, s.stream_id, primaryPlaylistId)), s])
+      )
+      const streams = category.streamIds.map((entry) => byId.get(String(entry))).filter((s): s is LiveStream => !!s)
       set({ liveStreams: streams })
       get().applyEpgPool()
     }
@@ -1739,8 +1750,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           set({ error: 'Could not load your movie list to open that category' })
           return
         }
-        const byId = new Map(catalog.map((s) => [s.stream_id, s]))
-        set({ vodStreams: category.streamIds.map((streamId) => byId.get(streamId)).filter((s): s is VodStream => !!s) })
+        const byId = new Map(catalog.map((s) => [String(s.stream_id), s]))
+        set({ vodStreams: category.streamIds.map((entry) => byId.get(String(entry))).filter((s): s is VodStream => !!s) })
         return
       }
       if (kind === 'series') {
@@ -1749,8 +1760,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           set({ error: 'Could not load your series list to open that category' })
           return
         }
-        const byId = new Map(catalog.map((s) => [s.series_id, s]))
-        set({ series: category.streamIds.map((seriesId) => byId.get(seriesId)).filter((s): s is SeriesItem => !!s) })
+        const byId = new Map(catalog.map((s) => [String(s.series_id), s]))
+        set({ series: category.streamIds.map((entry) => byId.get(String(entry))).filter((s): s is SeriesItem => !!s) })
         return
       }
       const catalog = get().numericChannelCatalog
@@ -1758,8 +1769,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({ error: 'Could not load your channel list to open that category' })
         return
       }
-      const byId = new Map(catalog.map((s) => [s.stream_id, s]))
-      const streams = category.streamIds.map((streamId) => byId.get(streamId)).filter((s): s is LiveStream => !!s)
+      const { primaryPlaylistId } = get()
+      const byId = new Map(
+        catalog.map((s) => [String(channelEntryFor(s.playlistId, s.stream_id, primaryPlaylistId)), s])
+      )
+      const streams = category.streamIds.map((entry) => byId.get(String(entry))).filter((s): s is LiveStream => !!s)
       set({ liveStreams: streams })
       get().applyEpgPool()
       if (streams.length > 0) get().openChannelPreview(streams[0])
@@ -2134,16 +2148,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     saveEpisodeProgress(updated).catch((err) => console.error('[store] failed to save episode progress:', err))
   },
 
-  toggleEpgReminder: (streamId, channelName, program) => {
-    const id = reminderId(streamId, program.id)
+  toggleEpgReminder: (streamId, channelName, program, playlistId) => {
+    // Keyed per playlist (see channelIdentity): the bell on provider A's channel 42 must not read as
+    // already set — nor a second press toggle it off — on provider B's channel that shares the id.
+    const { primaryPlaylistId } = get()
+    const id = reminderId(streamId, program.id, playlistId, primaryPlaylistId)
     const reminders = get().epgReminders.some((reminder) => reminder.id === id)
       ? get().epgReminders.filter((reminder) => reminder.id !== id)
-      : [...get().epgReminders, createReminder(streamId, channelName, program)]
+      : [...get().epgReminders, createReminder(streamId, channelName, program, playlistId, primaryPlaylistId)]
     set({ epgReminders: reminders })
     void saveEpgReminders(reminders)
   },
 
-  isEpgReminderSet: (streamId, programId) => get().epgReminders.some((reminder) => reminder.id === reminderId(streamId, programId)),
+  isEpgReminderSet: (streamId, programId, playlistId) => {
+    const wanted = reminderId(streamId, programId, playlistId, get().primaryPlaylistId)
+    return get().epgReminders.some((reminder) => reminder.id === wanted)
+  },
 
   checkEpgReminders: async () => {
     const now = Date.now()

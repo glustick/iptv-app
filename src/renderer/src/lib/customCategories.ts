@@ -5,6 +5,13 @@
  */
 
 /**
+ * One membership entry in a custom category: a plain stream id, or — for a channel belonging to a
+ * playlist other than the primary — a qualified `playlist:id` key (see lib/channelIdentity).
+ * Movies and series only ever come from the primary playlist, so their entries stay numeric.
+ */
+export type StreamEntry = number | string
+
+/**
  * Moves one item within a list, returning a NEW array. Out-of-range indices are clamped rather
  * than throwing: the drag-and-drop callers derive them from DOM event targets, and a dropped
  * index landing one past the end is normal (dropping below the last row) rather than an error.
@@ -27,12 +34,15 @@ export function moveItem<T>(list: T[], fromIndex: number, toIndex: number): T[] 
  * caller supplied. Deduplication matters because the same channel can be offered by more than one
  * provider category, and adding it twice would render it twice in the grid.
  */
-export function addStreamIds(current: number[], toAdd: number[]): number[] {
-  const seen = new Set(current)
+export function addStreamIds(current: StreamEntry[], toAdd: StreamEntry[]): StreamEntry[] {
+  // Compared as strings: the same channel can be represented as `42` (a primary-playlist channel,
+  // the shape every entry written before multi-playlist has) or `'provider:42'`, and a set keyed by
+  // the raw value would treat `42` and `'42'` as two different channels.
+  const seen = new Set(current.map(String))
   const next = [...current]
   for (const id of toAdd) {
-    if (seen.has(id)) continue
-    seen.add(id)
+    if (seen.has(String(id))) continue
+    seen.add(String(id))
     next.push(id)
   }
   return next
@@ -48,8 +58,10 @@ export function kindOf(category: { kind?: string } | undefined): 'live' | 'movie
   return kind === 'movie' || kind === 'series' ? kind : 'live'
 }
 
-/** Removes one stream id, returning a new array (and the original when it wasn't present). */
-export function removeStreamId(current: number[], streamId: number): number[] {
-  if (!current.includes(streamId)) return current
-  return current.filter((id) => id !== streamId)
+/** Removes one membership entry, returning a new array (and the original when it wasn't
+ * present). String comparison for the same reason as addStreamIds. */
+export function removeStreamId(current: StreamEntry[], entry: StreamEntry): StreamEntry[] {
+  const wanted = String(entry)
+  if (!current.some((id) => String(id) === wanted)) return current
+  return current.filter((id) => String(id) !== wanted)
 }

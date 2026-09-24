@@ -45,3 +45,24 @@ describe('EPG reminders', () => {
     expect(result.active.map((entry) => entry.id)).toEqual(['42:programme-1', 'later'])
   })
 })
+
+describe('reminders across playlists', () => {
+  it('keeps the historical id for a primary-playlist channel', () => {
+    expect(reminderId(42, 'programme-1', 'primary', 'primary')).toBe('42:programme-1')
+    // And for a channel whose playlist isn't known at all — every reminder written before
+    // multi-playlist, which must keep matching.
+    expect(reminderId(42, 'programme-1')).toBe('42:programme-1')
+  })
+
+  it("qualifies another playlist's channel, so the same id there is a different reminder", () => {
+    const other = createReminder(42, 'B News', program, 'second', 'primary')
+    expect(other.id).toBe('second:42:programme-1')
+    expect(other.playlistId).toBe('second')
+    // A single-playlist install passes no playlistId at all — channels are only tagged with one
+    // when more than one playlist is connected — so the reminder it writes is byte-identical to the
+    // one this app has always written: no extra field, and the bare id.
+    const single = createReminder(42, 'A News', program)
+    expect(single.playlistId).toBeUndefined()
+    expect(single.id).toBe('42:programme-1')
+  })
+})
