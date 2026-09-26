@@ -11,7 +11,7 @@ export default tseslint.config(
   // .d.ts files are ambient type declarations only — no runtime code, so nothing in them can
   // ever be a promise handled or mishandled. Excluded outright rather than pointed at a
   // tsconfig, since src/preload/index.d.ts isn't part of either project's own compiled sources.
-  { ignores: ['out/**', 'dist/**', 'build/**', 'node_modules/**', '**/*.d.ts'] },
+  { ignores: ['out/**', 'dist/**', 'build/**', 'node_modules/**', '**/*.d.ts', '**/._*'] },
   {
     files: ['src/main/**/*.ts', 'src/preload/**/*.ts'],
     languageOptions: {

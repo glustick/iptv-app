@@ -75,7 +75,7 @@ export interface PlaylistConnection {
   categories: Category[]
 }
 
-export type ViewMode = 'live' | 'movies' | 'series' | 'favorites' | 'history' | 'multiview'
+export type ViewMode = 'live' | 'movies' | 'series' | 'sports' | 'favorites' | 'history' | 'multiview'
 export type ConnectionStatus = 'idle' | 'connecting' | 'ready' | 'error'
 
 // Both the main EPG grid and the fullscreen channel-swap bar lazy-load per-row short EPG as
@@ -1038,7 +1038,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setViewMode: async (mode) => {
     // Favorites and History are both derived purely from local state (no category fetch,
     // no Sidebar) — same short-circuit as each other.
-    if (mode === 'favorites' || mode === 'history') {
+    if (mode === 'favorites' || mode === 'history' || mode === 'sports') {
       set({ viewMode: mode, selectedCategoryId: null, searchTerm: '' })
       return
     }

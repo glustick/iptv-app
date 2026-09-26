@@ -99,7 +99,17 @@ const LIVE_STREAMS = [
   // No epg_channel_id, and a name carrying a channel-list position and a quality tag: only the
   // relaxed tier can join this one to the guide's "Two" — which is exactly what it's here to prove.
   live(ids.channelMatchedByFuzzyName, '101 Two HD', null, '10'),
-  live(ids.channelUnmatchedByProviderGuide, 'Unmatched Channel', null, '10')
+  live(ids.channelUnmatchedByProviderGuide, 'Unmatched Channel', null, '10'),
+  // Sports fixtures for the Sports tab: one fixture spread across two football categories with
+  // different feed annotations (the real providers' shape — one game, many channels), a
+  // no-separator "TeamA HH:MM TeamB" name, a second sport, and a carrier channel that must
+  // never parse as a game.
+  live(910, 'FBL01: Arsenal vs Chelsea ( Sky Sports Main Event Feed ) @ 3:00 pm', null, '40'),
+  live(911, 'FBL02: Arsenal vs Chelsea (TNT Sports Feed) @ 3:00 pm', null, '40'),
+  live(920, 'FBL-B1: Arsenal vs Chelsea (Backup) @ 3:00 pm', null, '50'),
+  live(930, 'FBL04: Spurs 20:00 Liverpool', null, '40'),
+  live(940, 'NFL01: Chiefs vs Ravens @ 8:15 PM', null, '60'),
+  live(950, '401 Sky Sports Main Event HD', null, '40')
 ]
 
 function live(streamId: number, name: string, epgChannelId: string | null, categoryId: string) {
@@ -289,7 +299,12 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
 
     switch (action) {
       case 'get_live_categories':
-        json([{ category_id: '10', category_name: 'Live News', parent_id: 0 }])
+        json([
+          { category_id: '10', category_name: 'Live News', parent_id: 0 },
+          { category_id: '40', category_name: 'Live | Football', parent_id: 0 },
+          { category_id: '50', category_name: 'Live | Football Backup', parent_id: 0 },
+          { category_id: '60', category_name: 'USA | NFL', parent_id: 0 }
+        ])
         return
       case 'get_live_streams': {
         const categoryId = url.searchParams.get('category_id')

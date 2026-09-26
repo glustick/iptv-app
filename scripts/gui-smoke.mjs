@@ -171,10 +171,53 @@ async function main() {
 
   // The app opens on its login screen even with a saved profile, so the run starts by using it —
   // which exercises the real connect flow rather than assuming an already-connected window.
+  // Some runs instead land on an already-connected window showing the profile-switcher select —
+  // the run must be on the synthetic provider either way, so switch through the select too.
   const onLogin = await evaluate(cdp, '!!document.querySelector("button.profile-connect")')
+  const onSwitcher = await evaluate(cdp, '!!document.querySelector("select.profile-select")')
+  if (!onLogin && onSwitcher) {
+    const switched = await evaluate(cdp, `(() => {
+      const select = document.querySelector('select.profile-select')
+      const option = [...select.options].find((o) => /Synthetic/i.test(o.textContent))
+      if (!option) return 'no-synthetic-profile'
+      if (select.value === option.value) return 'already'
+      select.value = option.value
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+      return 'switched'
+    })()`)
+    console.log('already-connected window; profile state:', switched)
+  }
   if (onLogin) {
+    // Prefer the synthetic-provider profile explicitly: the login screen lists every saved
+    // profile and the first button is whatever was saved most recently — a real account, on
+    // this machine — and a run against the real provider fails every fixture assertion.
     console.log('using the saved profile from the login screen…')
-    await evaluate(cdp, 'document.querySelector("button.profile-connect").click()')
+    await evaluate(
+      cdp,
+      `(() => { const buttons = [...document.querySelectorAll('button.profile-connect')]; const target = buttons.find((b) => /Synthetic/i.test(b.textContent)) ?? buttons[0]; target?.click() })()`
+    )
+  }
+  // The app may auto-connect with its remembered (real) profile before any of the above lands,
+  // so "connected" here means EITHER the mock's data is up OR the switcher exists to force it.
+  for (let i = 0; i < 60; i++) {
+    const settled = await evaluate(
+      cdp,
+      `document.body.innerText.includes("Live News") || !!document.querySelector("select.profile-select")`
+    )
+    if (settled) break
+    await sleep(500)
+  }
+  if (!(await evaluate(cdp, 'document.body.innerText.includes("Live News")'))) {
+    const switched = await evaluate(cdp, `(() => {
+      const select = document.querySelector('select.profile-select')
+      const option = select && [...select.options].find((o) => /Synthetic/i.test(o.textContent))
+      if (!option) return 'no-synthetic-profile'
+      if (select.value === option.value) return 'already-selected-but-not-mock'
+      select.value = option.value
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+      return 'switched'
+    })()`)
+    console.log('forcing the synthetic profile via the switcher:', switched)
     for (let i = 0; i < 60; i++) {
       const connected = await evaluate(cdp, 'document.body.innerText.includes("Live News")')
       if (connected) break
@@ -772,6 +815,51 @@ async function main() {
     20000
   )
 
+  // --- Sports tab: category → day → game → channels drill-down (lib/sports.ts + SportsView) ---
+  // The mock fixture spreads one fixture across two football categories with distinct feed
+  // annotations — exactly the real-provider shape the drill-down collapses. The 3pm kickoffs
+  // roll to "Tomorrow" on late runs, so the finder steps days until it finds the game.
+  await pressEscape()
+  await sleep(800)
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('.tabs .tab')].find((b) => b.textContent.trim() === 'Sports')?.click() || true`
+  )
+  await sleep(1200)
+  await check(
+    'the Sports tab lists Football / Soccer first',
+    `(() => { const first = document.querySelector('.sports-sports .sports-item'); return !!first && first.textContent.includes('Football / Soccer') })()`,
+    8000
+  )
+  await evaluate(cdp, `document.querySelector('.sports-sports .sports-item')?.click() || true`)
+  await sleep(900)
+  const foundGame = await evaluate(cdp, `(async () => {
+    const find = () => [...document.querySelectorAll('.sports-games .sports-item')].find((b) => b.textContent.includes('Arsenal vs Chelsea'))
+    for (let i = 0; i < 3; i++) {
+      const hit = find()
+      if (hit) { hit.click(); return true }
+      document.querySelector('.sports-day-nav button[title="Later"]')?.click()
+      await new Promise((r) => setTimeout(r, 600))
+    }
+    return false
+  })()`)
+  if (!foundGame) throw new Error('Sports: the Arsenal vs Chelsea game was not found within three days')
+  await sleep(900)
+  await check(
+    'the game lists its feeds across both football categories (3 channels)',
+    `[...document.querySelectorAll('.sports-channels .sports-item')].filter((b) => b.textContent.includes('Arsenal vs Chelsea')).length === 3`,
+    8000
+  )
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('.sports-channels .sports-item')].find((b) => b.textContent.includes('FBL01'))?.click() || true`
+  )
+  await check(
+    'clicking a game channel mounts the player and plays',
+    `(() => { const v = document.querySelector('video.player-video'); return !!v && v.readyState >= 2 })()`,
+    30000
+  )
+  await pressEscape()
 
   const finalText = await text()
   if (process.env.SMOKE_VERBOSE) console.log('--- final UI text ---\n' + finalText)

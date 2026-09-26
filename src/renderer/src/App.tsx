@@ -10,6 +10,7 @@ import { PlayerErrorBoundary } from './components/PlayerErrorBoundary'
 import { SeriesModal } from './components/SeriesModal'
 import { EpgGridPanel } from './components/EpgGridPanel'
 import { MultiView } from './components/MultiView'
+import { SportsView } from './components/SportsView'
 import { PinPrompt } from './components/PinPrompt'
 import { SettingsPage } from './components/SettingsPage'
 import { GuideSettingsPage } from './components/GuideSettingsPage'
@@ -168,6 +169,8 @@ function App(): JSX.Element {
           // selected category is what scopes liveStreams for MultiView's own channel picker,
           // the same way it already does for the Live TV tab itself.
           <MultiView />
+        ) : viewMode === 'sports' ? (
+          <SportsView />
         ) : (
           <>
             <main className="content-area">

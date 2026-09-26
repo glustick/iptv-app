@@ -48,11 +48,12 @@ describe('Xtream client + EPG pipeline against a synthetic provider', () => {
 
   it('lists the provider catalogue', async () => {
     const categories = await client.getLiveCategories()
-    expect(categories.map((c) => c.category_name)).toEqual(['Live News'])
+    expect(categories.map((c) => c.category_name)).toEqual(['Live News', 'Live | Football', 'Live | Football Backup', 'USA | NFL'])
 
     const streams = await client.getLiveStreams()
-    // Three guide-covered channels plus the deliberately-unplaceable residue one.
-    expect(streams).toHaveLength(4)
+    // Three guide-covered channels plus the deliberately-unplaceable residue one, plus the
+    // six Sports-tab fixtures (see the fixture's own comment).
+    expect(streams).toHaveLength(10)
     expect(streams.map((s) => s.stream_id)).toContain(mock.ids.channelMatchedById)
 
     // …and the same via a category filter, which is how the store loads a browsed category.
@@ -110,7 +111,8 @@ describe('Xtream client + EPG pipeline against a synthetic provider', () => {
     expect(state.epgSourceMatchStats[0]).toMatchObject({
       source: 'Provider guide (xmltv.php)',
       available: true,
-      loadedChannels: 4,
+      // 4 guide-covered fixture channels + 6 Sports-tab fixtures.
+      loadedChannels: 10,
       matched: 2,
       byId: 1,
       byFuzzy: 1

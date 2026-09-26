@@ -4,6 +4,7 @@ const TABS: { mode: ViewMode; label: string }[] = [
   { mode: 'live', label: 'Live TV' },
   { mode: 'movies', label: 'Movies' },
   { mode: 'series', label: 'Series' },
+  { mode: 'sports', label: 'Sports' },
   { mode: 'favorites', label: 'Favorites' },
   { mode: 'history', label: 'History' },
   { mode: 'multiview', label: 'Multi-View' }

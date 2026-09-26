@@ -66,7 +66,7 @@ export function Sidebar(): JSX.Element | null {
   const categoryKind: CustomCategoryKind = viewMode === 'movies' ? 'movie' : viewMode === 'series' ? 'series' : 'live'
   const myCategories = customCategories.filter((cat) => kindOf(cat) === categoryKind)
 
-  if (viewMode === 'favorites' || viewMode === 'history') return null
+  if (viewMode === 'favorites' || viewMode === 'history' || viewMode === 'sports') return null
 
   // Namespaced by section since Xtream doesn't guarantee category_id uniqueness across
   // Live/Movies/Series — see useAppStore's requestCategory and setCategoryLocked.
