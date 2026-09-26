@@ -15,7 +15,13 @@ const HLS_CONFIG = { enableWorker: true, maxBufferLength: 15, maxMaxBufferLength
  */
 export function useHlsAttach(videoRef: RefObject<HTMLVideoElement>, url: string | null, muted = true): void {
   const lastUrlRef = useRef<string | null>(null)
-  const { getSourceUrl, tryFallback, reset: resetTranscodeFallback, beginRun: beginTranscodeRun } = useTranscodeFallback()
+  const {
+    getSourceUrl,
+    tryFallback,
+    tryFallbackForRawStream,
+    reset: resetTranscodeFallback,
+    beginRun: beginTranscodeRun
+  } = useTranscodeFallback()
 
   useEffect(() => {
     if (url !== lastUrlRef.current) {
@@ -44,11 +50,21 @@ export function useHlsAttach(videoRef: RefObject<HTMLVideoElement>, url: string 
         instance.loadSource(sourceUrl)
         instance.attachMedia(video)
         instance.on(Hls.Events.ERROR, (_event, data) => {
-          tryFallback(data, url!, () => {
+          const reloadViaFallback = (): void => {
             instance.destroy()
             attach(getSourceUrl(url!))
             video.play().catch(() => {})
-          })
+          }
+          // Either remediation accepting ownership means the same reload callback rebuilds
+          // playback once the remux is ready — the audio-codec fix first (the pre-existing
+          // handler), then the raw-TS one (see isRawStreamManifestError): a provider serving
+          // a raw MPEG-TS byte stream where its playlist should be kills the preview just as
+          // dead as any codec problem, and the same local remux fixes it here too (this hook
+          // also drives Multi-View tiles, so they get it automatically).
+          if (tryFallback(data, url!, reloadViaFallback)) return
+          tryFallbackForRawStream(url!, reloadViaFallback, (message) =>
+            console.error('[useHlsAttach] raw-stream remux failed:', message)
+          )
         })
       } else {
         video.src = sourceUrl
@@ -63,5 +79,5 @@ export function useHlsAttach(videoRef: RefObject<HTMLVideoElement>, url: string 
       video.removeAttribute('src')
       video.load()
     }
-  }, [videoRef, url, muted, getSourceUrl, tryFallback, beginTranscodeRun])
+  }, [videoRef, url, muted, getSourceUrl, tryFallback, tryFallbackForRawStream, beginTranscodeRun])
 }

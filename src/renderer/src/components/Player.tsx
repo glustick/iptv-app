@@ -286,7 +286,9 @@ export function Player(): JSX.Element | null {
     transcoding,
     getSourceUrl,
     tryFallback,
+    tryFallbackForRawStream,
     tryFallbackForSilentAudio,
+    transcodeReason,
     reset: resetTranscodeFallback,
     beginRun: beginTranscodeRun,
     hasFallbackActive,
@@ -671,6 +673,33 @@ export function Player(): JSX.Element | null {
               // open re-detects, and re-records only on success).
               if (nowPlaying.kind === 'live') forgetLiveAudioFix(nowPlaying.streamId)
               setPlaybackError(`Audio codec not supported by this player, and automatic transcoding failed: ${message}`)
+            }
+          )
+        ) {
+          setPlaybackError(null)
+          return
+        }
+
+        // The provider's "playlist" wasn't a playlist at all (see isRawStreamManifestError):
+        // confirmed live 2026-09-26, the panel answers every live stream URL with a raw
+        // MPEG-TS byte stream, which hls.js reports as a fatal manifestParsingError and can
+        // never recover from on its own — no playlist exists for its retry ladder to reload.
+        // The local ffmpeg remux is the playback path for such a channel, not an edge-case
+        // fallback. Same one-shot-then-remember shape as the audio fix above: on success the
+        // remux is remembered for this channel so every later open switches straight to it,
+        // skipping the failed-manifest detour entirely.
+        if (
+          data.fatal &&
+          nowPlaying.kind === 'live' &&
+          tryFallbackForRawStream(
+            nowPlaying.url,
+            () => {
+              rememberLiveAudioFix(nowPlaying.streamId, 0, nowPlaying.url)
+              setReloadTick((t) => t + 1)
+            },
+            (message) => {
+              forgetLiveAudioFix(nowPlaying.streamId)
+              setPlaybackError(`This channel's stream could not be remuxed for playback: ${message}`)
             }
           )
         ) {
@@ -1793,13 +1822,22 @@ export function Player(): JSX.Element | null {
           <div className="player-buffering">
             <div className="spinner" />
             <span>
-              {nowPlaying.kind === 'live'
-                ? 'Fixing audio for this channel…'
-                : // "Fixing playback," not "fixing audio" — this same fallback also covers a
-                  // title Chromium's <video> element can't make sense of at all (e.g. an .mkv
-                  // container), not just a silent-audio-only codec problem, and the wording
-                  // shouldn't imply audio is specifically what's wrong for the other case.
-                  `Fixing playback for this title… this can take a minute or two on a slow connection (${formatElapsed(transcodeElapsedSeconds)})`}
+              {nowPlaying.kind === 'live' ? (
+                transcodeReason === 'raw-stream' ? (
+                  // The provider serves this channel as a raw MPEG-TS byte stream with no HLS
+                  // playlist at all (see isRawStreamManifestError) — say what's actually
+                  // happening rather than implying an audio problem.
+                  `This channel is streaming raw MPEG-TS — remuxing it locally… (${formatElapsed(transcodeElapsedSeconds)})`
+                ) : (
+                  'Fixing audio for this channel…'
+                )
+              ) : (
+                // "Fixing playback," not "fixing audio" — this same fallback also covers a
+                // title Chromium's <video> element can't make sense of at all (e.g. an .mkv
+                // container), not just a silent-audio-only codec problem, and the wording
+                // shouldn't imply audio is specifically what's wrong for the other case.
+                `Fixing playback for this title… this can take a minute or two on a slow connection (${formatElapsed(transcodeElapsedSeconds)})`
+              )}
               {nowPlaying.kind !== 'live' &&
                 singleConnectionAccount &&
                 transcodeElapsedSeconds >= SINGLE_CONNECTION_HINT_AFTER_SECONDS && (

@@ -18,6 +18,26 @@ export function isUnsupportedAudioCodecError(data: ErrorData): boolean {
 }
 
 /**
+ * Detects the second real class of hls.js failures: the "playlist" the provider served isn't a
+ * playlist at all. Confirmed live 2026-09-26 — the provider's panel answers every live stream
+ * URL with a raw MPEG-TS byte stream (video/mp2t, no HLS playlist anywhere), which hls.js can
+ * only ever report as a manifest parsing failure (its loaders parse text; TS sync bytes are
+ * garbage to them). Unlike the audio-codec case above, nothing about hls.js's own recovery
+ * applies here: there is no playlist to reconcile or retry, so the only remediation is the
+ * same local ffmpeg remux the audio fallback uses — ffmpeg sniffs and demuxes the raw TS fine
+ * (see transcodeService.ts, whose live output is fragmented MP4 precisely so HEVC channels
+ * survive this path too).
+ *
+ * Deliberately not gated on anything content-shaped (there's no reliable signal beyond the
+ * parse failure itself — hls.js doesn't expose the response's content-type on ErrorData): a
+ * genuinely corrupt playlist gets the same treatment, and ffmpeg remuxing it is a legitimate
+ * recovery there too. Callers scope it to live channels, where this failure mode lives.
+ */
+export function isRawStreamManifestError(data: ErrorData): boolean {
+  return data.details === 'manifestParsingError'
+}
+
+/**
  * Shared remediation for the failure isUnsupportedAudioCodecError detects: spins up a local
  * ffmpeg process (see src/main/index.ts's transcode: IPC handlers) that remuxes just the
  * affected channel's audio to AAC, and falls back to that output. Used by both Player.tsx
@@ -59,6 +79,13 @@ export function useTranscodeFallback(): {
   transcoding: boolean
   getSourceUrl: (originalUrl: string) => string
   tryFallback: (data: ErrorData, originalUrl: string, onReload: () => void, onError?: (message: string) => void) => boolean
+  // The raw-TS counterpart of tryFallback above (see isRawStreamManifestError) — same remux,
+  // different reason, so the UI can say what's actually happening ("this channel is streaming
+  // raw MPEG-TS…") instead of claiming an audio fix.
+  tryFallbackForRawStream: (originalUrl: string, onReload: () => void, onError?: (message: string) => void) => boolean
+  // Why the current/last fallback run started — drives the status wording in Player.tsx. null
+  // while nothing has run (or after reset()).
+  transcodeReason: 'audio' | 'raw-stream' | null
   tryFallbackForSilentAudio: (
     originalUrl: string,
     onReload: () => void,
@@ -124,6 +151,7 @@ export function useTranscodeFallback(): {
   const transcodeSessionIdRef = useRef<string | null>(null)
   const [transcoding, setTranscoding] = useState(false)
   const [hasFallbackActive, setHasFallbackActive] = useState(false)
+  const [transcodeReason, setTranscodeReason] = useState<'audio' | 'raw-stream' | null>(null)
   const [liveAudioTracks, setLiveAudioTracks] = useState<AudioTrackInfo[] | null>(null)
   const [probingLiveAudio, setProbingLiveAudio] = useState(false)
   const [activeLiveAudioTrackIndex, setActiveLiveAudioTrackIndex] = useState<number | null>(null)
@@ -141,6 +169,7 @@ export function useTranscodeFallback(): {
     awaitingTranscodeRef.current = false
     transcodedUrlRef.current = null
     setHasFallbackActive(false)
+    setTranscodeReason(null)
     setLiveAudioTracks(null)
     setProbingLiveAudio(false)
     setActiveLiveAudioTrackIndex(null)
@@ -175,11 +204,13 @@ export function useTranscodeFallback(): {
       subtitleStreamIndex: number,
       onReload: () => void,
       onError?: (message: string) => void,
-      audioStreamIndex = 0
+      audioStreamIndex = 0,
+      reason: 'audio' | 'raw-stream' = 'audio'
     ): void => {
       triedTranscodeRef.current = true
       awaitingTranscodeRef.current = true
       setTranscoding(true)
+      setTranscodeReason(reason)
       // Generated here rather than taken from transcode:start's resolved value — spawning
       // ffmpeg and waiting for it to produce output can take up to several minutes for VOD (see
       // startTranscode's deadline in src/main/index.ts), and reset() needs a sessionId to cancel
@@ -219,6 +250,19 @@ export function useTranscodeFallback(): {
       if (awaitingTranscodeRef.current) return true
       if (!isUnsupportedAudioCodecError(data) || triedTranscodeRef.current) return false
       startFallback(originalUrl, false, 0, onReload, onError)
+      return true
+    },
+    [startFallback]
+  )
+
+  const tryFallbackForRawStream = useCallback(
+    (originalUrl: string, onReload: () => void, onError?: (message: string) => void): boolean => {
+      // Same guard shape as tryFallback above: a fix already in flight owns the outcome, and
+      // one attempt per source is all a broken playlist ever gets (repeating a doomed remux on
+      // every parse error of the still-broken instance would just stack ffmpeg processes).
+      if (awaitingTranscodeRef.current) return true
+      if (triedTranscodeRef.current) return false
+      startFallback(originalUrl, false, 0, onReload, onError, 0, 'raw-stream')
       return true
     },
     [startFallback]
@@ -341,6 +385,8 @@ export function useTranscodeFallback(): {
     transcoding,
     getSourceUrl,
     tryFallback,
+    tryFallbackForRawStream,
+    transcodeReason,
     tryFallbackForSilentAudio,
     reset,
     beginRun,

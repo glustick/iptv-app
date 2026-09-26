@@ -353,6 +353,52 @@ describe('createProxyServer', () => {
       expect(segmentRes.body).toBe('segment-bytes')
     })
 
+    // Confirmed live 2026-09-26 (see proxyServer.ts's own comment at the same branch): this
+    // account's provider answers every live stream URL — .m3u8 extension and all — with a raw
+    // MPEG-TS byte stream. The old behavior buffered the whole body "for rewriting", which for
+    // a live TS stream means forever: no headers, no bytes, every consumer hanging. Piping
+    // through is the fix, so this asserts the response actually *streams* (headers and first
+    // bytes arrive while the origin is deliberately still sending, never having ended) and
+    // arrives byte-identical — there is nothing to rewrite in binary media.
+    it('streams a raw MPEG-TS response to a .m3u8 URL through immediately instead of buffering it as a playlist', async () => {
+      const tsBytes = Buffer.from([0x47, 0x40, 0x00, 0x10, 0x00, 0x00, 0xb0, 0x1a, 0x00, 0xc1, 0x00, 0x00])
+      const { url: originUrl, server: origin } = await startMockOrigin((_req, res) => {
+        res.writeHead(200, { 'content-type': 'video/mp2t' })
+        res.write(tsBytes)
+        // Deliberately no res.end() — a live TS stream has none. The request is torn down by
+        // the test after its assertions.
+      })
+      openServers.push(origin)
+      const proxy = await startProxy(makeDeps({ getProxyTargetBase: () => null }))
+      openServers.push(proxy)
+
+      const { statusCode, contentType, firstData } = await new Promise<{
+        statusCode: number
+        contentType: string | undefined
+        firstData: Buffer
+      }>((resolve, reject) => {
+        const req = httpRequest(
+          `${baseUrl(proxy)}/__fetch/${encodeURIComponent(`${originUrl}/live/glustick/secret/42.m3u8`)}`,
+          (res) => {
+            res.once('data', (c: Buffer) => {
+              resolve({ statusCode: res.statusCode ?? 0, contentType: res.headers['content-type'], firstData: c })
+              req.destroy()
+            })
+          }
+        )
+        req.on('error', reject)
+        // http.request does not send anything by itself — without end() this request never
+        // leaves the process and the test just times out on nothing.
+        req.end()
+      })
+
+      expect(statusCode).toBe(200)
+      // Headers arriving at all is the regression the buffering path failed: it wrote nothing
+      // until the upstream body ended, which a live stream never does.
+      expect(contentType).toBe('video/mp2t')
+      expect(firstData.subarray(0, tsBytes.byteLength).equals(tsBytes)).toBe(true)
+    }, 10000)
+
     it('rewrites an already-absolute reference too, so it still goes through this proxy rather than being fetched directly', async () => {
       const { url: originUrl, server: origin } = await startMockOrigin((req, res) => {
         if (req.url === '/hls/playlist.m3u8') {

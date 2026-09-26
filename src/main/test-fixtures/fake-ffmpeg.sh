@@ -8,6 +8,43 @@ set -u
 last_arg="${@: -1}"
 
 case "${FAKE_FFMPEG_MODE:-}" in
+  capture_argv)
+    # Writes its own argv, one flag per line, to the file the test points at — the only way a
+    # fixture this blind can pin down WHICH argv shape a call built (see the live-fmp4 vs
+    # VOD-MPEG-TS assertions in transcodeService.test.ts).
+    printf '%s\n' "$@" > "${FAKE_FFMPEG_ARGV_FILE:?FAKE_FFMPEG_ARGV_FILE must be set for this mode}"
+    printf '#EXTM3U\n#EXT-X-ENDLIST\n' > "$last_arg"
+    sleep 5
+    ;;
+  capture_argv_hevc)
+    # Simulates the HEVC-restart flow: the first invocation announces an HEVC video stream
+    # (which the service's stderr watcher reacts to by killing this attempt) and lingers; the
+    # second invocation — the respawn with the hvc1 tag — is the one that captures its argv.
+    marker="${FAKE_FFMPEG_ARGV_FILE:?FAKE_FFMPEG_ARGV_FILE must be set for this mode}.hevc-restarted"
+    if [ -f "$marker" ]; then
+      printf '%s\n' "$@" > "${FAKE_FFMPEG_ARGV_FILE}"
+      printf '#EXTM3U\n#EXT-X-ENDLIST\n' > "$last_arg"
+      sleep 5
+    else
+      touch "$marker"
+      echo "Stream #0:0: Video: hevc (Main), yuv420p(tv, bt709), 3840x2160, 50 fps, 50 tbr, 90k tbn" >&2
+      sleep 300
+    fi
+    ;;
+  stall_then_succeed)
+    # Simulates the provider's intermittent new-connection stall (confirmed live 2026-09-26:
+    # a live stream that accepts the connection and delivers nothing): the first invocation
+    # produces nothing at all and lingers until the service's timeout kills it; the retry —
+    # a genuinely fresh attempt on a fresh "connection" — succeeds.
+    marker="${FAKE_FFMPEG_ARGV_FILE:?FAKE_FFMPEG_ARGV_FILE must be set for this mode}.retried"
+    if [ -f "$marker" ]; then
+      printf '#EXTM3U\n#EXT-X-ENDLIST\n' > "$last_arg"
+      sleep 5
+    else
+      touch "$marker"
+      sleep 300
+    fi
+    ;;
   success)
     printf '#EXTM3U\n#EXT-X-ENDLIST\n' > "$last_arg"
     sleep 5

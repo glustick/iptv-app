@@ -224,6 +224,84 @@ describe('startTranscode', () => {
     await service.stopTranscode('s1')
   })
 
+  // Live output is fragmented MP4 (HEVC channels can only reach Chromium's MSE through it —
+  // see startTranscode's own comment and the 2026-09-26 raw-TS provider change); VOD stays
+  // MPEG-TS for its proven webvtt subtitle path. Pinned at the argv level because the
+  // fake-ffmpeg fixture can't tell the two shapes apart otherwise.
+  it('builds a fragmented-MP4 argv for live sessions and an MPEG-TS one for VOD', async () => {
+    const service = track(makeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG) }))
+    const argvFile = join(tmpdir(), `allisoniptv-argv-${process.pid}-${Math.random().toString(16).slice(2)}`)
+    try {
+      await withFakeFfmpegMode('capture_argv', () =>
+        withEnv({ FAKE_FFMPEG_ARGV_FILE: argvFile }, () => service.startTranscode('irrelevant-source', false, 's1'))
+      )
+      const liveArgv = readFileSync(argvFile, 'utf8').split('\n').filter(Boolean)
+      expect(liveArgv).toContain('-hls_segment_type')
+      expect(liveArgv).toContain('fmp4')
+      expect(liveArgv.some((a) => a.endsWith('seg_%05d.m4s'))).toBe(true)
+      expect(liveArgv.join('\n')).toContain('delete_segments+omit_endlist')
+      expect(liveArgv).not.toContain('event')
+      // An H.264 source (no Video: hevc line ever seen) must NOT be tagged: a container that
+      // lies about its codec is worse than an untagged one.
+      expect(liveArgv).not.toContain('-tag:v')
+      expect(liveArgv).not.toContain('hvc1')
+
+      await withFakeFfmpegMode('capture_argv', () =>
+        withEnv({ FAKE_FFMPEG_ARGV_FILE: argvFile }, () => service.startTranscode('irrelevant-source', true, 's2'))
+      )
+      const vodArgv = readFileSync(argvFile, 'utf8').split('\n').filter(Boolean)
+      expect(vodArgv).not.toContain('fmp4')
+      expect(vodArgv.some((a) => a.endsWith('seg_%05d.ts'))).toBe(true)
+      expect(vodArgv).toContain('event')
+    } finally {
+      rmSync(argvFile, { force: true })
+    }
+  })
+
+  // Chromium's MSE accepts fragmented-MP4 HEVC only with the hvc1 sample-entry tag, and
+  // ffmpeg's own default (hev1) produces exactly what Chromium rejects — confirmed live against
+  // a real HEVC channel, whose remux warned "Stream HEVC is not hvc1, you should use tag:v
+  // hvc1". The service learns the codec from ffmpeg's own stream list and respawns with the
+  // tag; this pins both the respawn and the tag landing in the final argv.
+  it('respawns a live session with an hvc1 tag when the source turns out to be HEVC', async () => {
+    const service = track(makeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG) }))
+    const argvFile = join(tmpdir(), `allisoniptv-argv-${process.pid}-${Math.random().toString(16).slice(2)}`)
+    try {
+      const result = await withFakeFfmpegMode('capture_argv_hevc', () =>
+        withEnv({ FAKE_FFMPEG_ARGV_FILE: argvFile }, () => service.startTranscode('irrelevant-source', false, 's1'))
+      )
+      expect(result.playlistPath.endsWith('playlist.m3u8')).toBe(true)
+      const respawnedArgv = readFileSync(argvFile, 'utf8').split('\n').filter(Boolean)
+      expect(respawnedArgv).toContain('-tag:v')
+      expect(respawnedArgv).toContain('hvc1')
+      await service.stopTranscode('s1')
+    } finally {
+      rmSync(argvFile, { force: true })
+      rmSync(`${argvFile}.hevc-restarted`, { force: true })
+    }
+  })
+
+  // Confirmed live 2026-09-26: the provider's live edge intermittently accepts a connection
+  // and then delivers nothing (headers never arrive; the same URL streams fine minutes later).
+  // One starved attempt is therefore not a diagnosis — the service retries once on a fresh
+  // connection before declaring the channel unplayable.
+  it('retries once on a fresh attempt when the first one times out without producing output', async () => {
+    const service = track(
+      makeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG), liveDeadlineMs: 600, pollIntervalMs: 50 })
+    )
+    const markerFile = join(tmpdir(), `allisoniptv-retry-${process.pid}-${Math.random().toString(16).slice(2)}`)
+    try {
+      const result = await withFakeFfmpegMode('stall_then_succeed', () =>
+        withEnv({ FAKE_FFMPEG_ARGV_FILE: markerFile }, () => service.startTranscode('irrelevant-source', false, 's1'))
+      )
+      expect(result.playlistPath.endsWith('playlist.m3u8')).toBe(true)
+      await service.stopTranscode('s1')
+    } finally {
+      rmSync(markerFile, { force: true })
+      rmSync(`${markerFile}.retried`, { force: true })
+    }
+  })
+
   it('cleans up the temp directory once ffmpeg is stopped after producing output', async () => {
     const service = track(makeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG) }))
     const result = await withFakeFfmpegMode('success', () => service.startTranscode('irrelevant-source', false, 's1'))
@@ -516,6 +594,69 @@ describe('real ffmpeg integration', () => {
       rmSync(fixtureDir, { recursive: true, force: true })
     }
   }, 20000)
+
+  // The 2026-09-26 provider change (see proxyServer.ts / isRawStreamManifestError) turns this
+  // remux from the EC-3 audio edge case into the main live playback path — including for HEVC
+  // channels, which Chromium's MSE only accepts through fragmented MP4. Pinned against the real
+  // bundled binary the same way the VOD test above is: a live-shaped remux must genuinely produce
+  // the fMP4 layout (EXT-X-MAP init segment + .m4s media segments), not just claim to in argv.
+  it('produces a fragmented-MP4 live remux (init.mp4 + .m4s + EXT-X-MAP) from a real input', async () => {
+    if (!ffmpegStaticPath) throw new Error('ffmpeg-static did not resolve a binary for this platform')
+
+    const fixtureDir = mkdtempSync(join(tmpdir(), 'allisoniptv-test-fixture-'))
+    const inputPath = join(fixtureDir, 'synthetic-ac3-input.mkv')
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn(ffmpegStaticPath as string, [
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        'testsrc=duration=12:size=320x240:rate=10',
+        '-f',
+        'lavfi',
+        '-i',
+        'sine=frequency=440:duration=12',
+        '-c:v',
+        'libx264',
+        '-preset',
+        'ultrafast',
+        '-g',
+        '10',
+        '-keyint_min',
+        '10',
+        '-c:a',
+        'ac3',
+        inputPath
+      ])
+      proc.on('error', reject)
+      proc.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`fixture build exited ${code}`))))
+    })
+
+    const { url: originUrl, server } = await startSyntheticOrigin(inputPath)
+    try {
+      const service = track(
+        createTranscodeService({
+          resolveFfmpegPath: resolverFor(ffmpegStaticPath as string),
+          liveDeadlineMs: 30000,
+          pollIntervalMs: 200
+        })
+      )
+
+      const result = await service.startTranscode(originUrl, false, 'real-live-1')
+
+      const playlist = readFileSync(result.playlistPath, 'utf8')
+      expect(playlist).toContain('#EXTM3U')
+      expect(playlist).toContain('#EXT-X-MAP')
+      const dir = join(result.playlistPath, '..')
+      expect(existsSync(join(dir, 'init.mp4'))).toBe(true)
+      expect(readFileSync(join(dir, 'seg_00000.m4s')).byteLength).toBeGreaterThan(0)
+
+      await service.stopTranscode('real-live-1')
+    } finally {
+      server.close()
+      rmSync(fixtureDir, { recursive: true, force: true })
+    }
+  }, 30000)
 
   // The subtitle-mapping change this covers was added after a real, if less severe, prior
   // failure in this exact fallback (a deferred-write bug caused by a different ffmpeg command
@@ -870,21 +1011,35 @@ describe('real ffmpeg integration', () => {
       // Default audioStreamIndex (0) — should carry through the silent track.
       const defaultResult = await service.startTranscode(originUrl, false, 'real-audio-default')
       const defaultDir = join(defaultResult.playlistPath, '..')
-      const defaultSegment = readdirSync(defaultDir).find((f) => f.endsWith('.ts'))
-      if (!defaultSegment) throw new Error('no .ts segment was produced')
+      const defaultSegment = readdirSync(defaultDir).find((f) => f.endsWith('.m4s'))
+      if (!defaultSegment) throw new Error('no .m4s segment was produced')
       const defaultSegmentPath = join(defaultDir, defaultSegment)
       await waitForStableFileSize(defaultSegmentPath)
-      const defaultRms = await measureRmsAmplitude(defaultSegmentPath)
+      // A live remux's output is fragmented MP4 now (see startTranscode), and an .m4s media
+      // fragment isn't self-describing — the track boxes live in init.mp4, so the fragment only
+      // decodes with its init segment prepended. (MPEG-TS .ts segments used to be standalone-
+      // decodable, which is why this test never needed anything like this before.)
+      const defaultDecodablePath = `${defaultSegmentPath}.mp4`
+      writeFileSync(
+        defaultDecodablePath,
+        Buffer.concat([readFileSync(join(defaultDir, 'init.mp4')), readFileSync(defaultSegmentPath)])
+      )
+      const defaultRms = await measureRmsAmplitude(defaultDecodablePath)
       await service.stopTranscode('real-audio-default')
 
       // audioStreamIndex: 1 — the second audio stream — should carry through the audible tone.
       const chosenResult = await service.startTranscode(originUrl, false, 'real-audio-1', 0, 1)
       const chosenDir = join(chosenResult.playlistPath, '..')
-      const chosenSegment = readdirSync(chosenDir).find((f) => f.endsWith('.ts'))
-      if (!chosenSegment) throw new Error('no .ts segment was produced')
+      const chosenSegment = readdirSync(chosenDir).find((f) => f.endsWith('.m4s'))
+      if (!chosenSegment) throw new Error('no .m4s segment was produced')
       const chosenSegmentPath = join(chosenDir, chosenSegment)
       await waitForStableFileSize(chosenSegmentPath)
-      const chosenRms = await measureRmsAmplitude(chosenSegmentPath)
+      const chosenDecodablePath = `${chosenSegmentPath}.mp4`
+      writeFileSync(
+        chosenDecodablePath,
+        Buffer.concat([readFileSync(join(chosenDir, 'init.mp4')), readFileSync(chosenSegmentPath)])
+      )
+      const chosenRms = await measureRmsAmplitude(chosenDecodablePath)
       await service.stopTranscode('real-audio-1')
 
       // 16-bit PCM: silence should read as essentially zero (allowing headroom for AAC

@@ -52,6 +52,19 @@ const SUBTITLE_CODEC_INCOMPATIBLE_PATTERN = /Subtitle encoding currently only po
 const AUDIO_STREAM_PATTERN =
   /Stream #\d+:\d+(?:\[[^\]]*\])?(?:\(([a-zA-Z-]+)\))?: Audio: (\S+).*?,\s*\d+\s*Hz,\s*([a-zA-Z0-9.()]+)/
 
+// Same source line as the two patterns above, for video. Exists for one very specific reason:
+// fragmented-MP4 output for an HEVC stream must carry the hvc1 sample-entry tag for Chromium's
+// MSE to accept it — the web sibling's codec-matrix work established isTypeSupported for
+// 'hvc1' in mp4 while 'hev1' (ffmpeg's own default, which it warns about with "Stream HEVC is
+// not hvc1, you should use tag:v hvc1") is not supported in MSE at all. The tag is an OUTPUT
+// option baked into argv before spawn, but which tag is right depends on the SOURCE's codec,
+// which is only known once ffmpeg has probed the input — so the flow is: spawn without the
+// tag, watch this pattern, and if the source turns out to be HEVC, kill and respawn with it
+// (the same self-restart pattern the incompatible-subtitle retry already established). The
+// stream list is logged during input probing, before ffmpeg writes any output, so the restart
+// never discards anything the player actually saw.
+const VIDEO_STREAM_PATTERN = /Stream #\d+:\d+(?:\[[^\]]*\])?(?:\([a-zA-Z-]+\))?: Video: (\S+)/
+
 /**
  * Some providers' live channels carry EC-3/E-AC-3 (Dolby Digital Plus) audio inside their
  * MPEG-TS segments, which hls.js's built-in demuxer cannot parse at all — every fragment
@@ -104,6 +117,16 @@ export interface TranscodeSession {
   // collecting further matches so the output section's own re-description is never mistaken
   // for additional source subtitle streams.
   inputStreamListEnded: boolean
+  // Set when the source's video stream turns out to be HEVC on a Live (fMP4) session spawned
+  // without the hvc1 output tag (see VIDEO_STREAM_PATTERN): the stderr watcher kills that
+  // first attempt and the poll loop respawns it with the tag, discarding only the few hundred
+  // milliseconds of probed-but-unplayed output the first process produced.
+  hvc1RestartPending: boolean
+  // Set once the process has terminated at all, by whatever means. proc.exitCode is NOT a
+  // substitute for this: it stays null for a process killed by a signal (exitCode is only set
+  // on normal termination — confirmed live, a SIGKILLed first attempt's exit event fired with
+  // code null while exitCode stayed null, leaving any exitCode-based check waiting forever).
+  exited: boolean
 }
 
 export interface TranscodeServiceDeps {
@@ -155,6 +178,12 @@ export interface TranscodeService {
 const TRANSCODE_MIME_TYPES: Record<string, string> = {
   '.m3u8': 'application/vnd.apple.mpegurl',
   '.ts': 'video/mp2t',
+  // Live remux output is fragmented MP4 (see startTranscode's argv): init.mp4 carries the
+  // moov/track boxes hls.js needs before any media segment, and each .m4s is one media
+  // fragment. video/iso.segment is the registered-ish content type the web sibling validated
+  // against real Chromium MSE loads (anything Chromium can't sniff delays/breaks appending).
+  '.mp4': 'video/mp4',
+  '.m4s': 'video/iso.segment',
   // ffmpeg's webvtt HLS muxer writes per-segment subtitle cue files (playlistN.vtt) referenced
   // from playlist_vtt.m3u8 — missing this entry 404s every one of them, which a live test
   // against a real subtitle-carrying title showed cascades into hls.js abandoning the whole
@@ -213,7 +242,13 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
     isVod: boolean,
     sessionId: string,
     subtitleStreamIndex = 0,
-    audioStreamIndex = 0
+    audioStreamIndex = 0,
+    // Internal: set by the HEVC self-restart below. Deliberately not part of the public
+    // caller surface — callers never know or care what the source's video codec is.
+    tagHvc1 = false,
+    // Internal: set by the timeout retry below, so a starved first attempt gets exactly one
+    // fresh connection before the channel is declared unplayable.
+    isRetry = false
   ): Promise<{ sessionId: string; playlistPath: string; subtitleTracks: SubtitleTrackInfo[] }> {
     const ffmpegPath = await deps.resolveFfmpegPath()
     if (!ffmpegPath) {
@@ -268,6 +303,11 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
       ...(isVod && subtitleStreamIndex >= 0 ? ['-map', `0:s:${subtitleStreamIndex}?`] : []),
       '-c:v',
       'copy',
+      // Chromium's MSE rejects ffmpeg's default hev1 sample entry for HEVC (see
+      // VIDEO_STREAM_PATTERN) — this tag is what its fMP4 HEVC support actually requires. Only
+      // ever set after the source is KNOWN to be HEVC (the self-restart below): tagging an
+      // H.264 stream hvc1 would produce a file whose container lies about its codec.
+      ...(tagHvc1 ? ['-tag:v', 'hvc1'] : []),
       '-c:a',
       'aac',
       '-b:a',
@@ -279,27 +319,42 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
       'hls',
       '-hls_time',
       '4',
-      // Live's list is deliberately a short, ever-deleting window (there's no fixed end to keep
-      // segments for). VOD is the opposite: a movie/episode has a real duration, and the whole
-      // point is being able to scrub anywhere in it, so every segment has to stick around. This
-      // is *not* `-hls_playlist_type vod`, despite the name fitting — confirmed directly (an
-      // isolated, network-free ffmpeg run, checked mid-encode): `vod` writes nothing to disk at
-      // all until the source hits EOF, per the HLS spec's own definition of a VOD playlist as
-      // "published complete and unchanging." That's exactly backwards for a still-in-progress
-      // remux — every earlier "timeout waiting for ffmpeg" in this feature's development was
-      // actually this, not a network or subtitle problem, and would recur for any file whose
-      // full runtime exceeds startTranscode's deadline. `event` is the type actually meant for
-      // this shape (segments keep appending until the source ends), and does write the playlist
-      // incrementally, confirmed by ffmpeg's own log showing repeated
-      // "Opening playlist.m3u8.tmp for writing" during encode rather than only at exit — hls.js
-      // (which is what actually plays this, once transcoded — see getSourceUrl/isM3u8 in
-      // Player.tsx) already knows to keep reloading an EVENT playlist until it sees
-      // #EXT-X-ENDLIST, so this is a drop-in behavior change, not a player-side one.
       ...(isVod
-        ? ['-hls_list_size', '0', '-hls_playlist_type', 'event']
-        : ['-hls_list_size', '6', '-hls_flags', 'delete_segments+omit_endlist']),
+        ? // Live's list is deliberately a short, ever-deleting window (there's no fixed end to
+          // keep segments for). VOD is the opposite: a movie/episode has a real duration, and
+          // the whole point is being able to scrub anywhere in it, so every segment has to
+          // stick around. This is *not* `-hls_playlist_type vod`, despite the name fitting —
+          // confirmed directly (an isolated, network-free ffmpeg run, checked mid-encode):
+          // `vod` writes nothing to disk at all until the source hits EOF, per the HLS spec's
+          // own definition of a VOD playlist as "published complete and unchanging." That's
+          // exactly backwards for a still-in-progress remux — every earlier "timeout waiting
+          // for ffmpeg" in this feature's development was actually this, not a network or
+          // subtitle problem. `event` is the type actually meant for this shape (segments keep
+          // appending until the source ends), and does write the playlist incrementally —
+          // hls.js already knows to keep reloading an EVENT playlist until #EXT-X-ENDLIST.
+          ['-hls_list_size', '0', '-hls_playlist_type', 'event']
+        : [
+            // Live output is fragmented MP4, not MPEG-TS — this fallback is no longer only the
+            // EC-3 audio fix it started as. Confirmed live 2026-09-26: the provider's panel now
+            // answers EVERY live stream URL with a raw MPEG-TS byte stream (video/mp2t, no
+            // playlist at all), so this remux is the main playback path for every channel, and
+            // several of those channels carry HEVC video. Chromium's MSE cannot accept HEVC
+            // from an MPEG-TS container at all (its demuxer has no HEVC support there) — only
+            // through fragmented MP4 with an hvc1 track, which this same engine (and the web
+            // sibling's relay, which ships the identical flag set) both verified against real
+            // HEVC channels. H.264-in-fMP4 is universally supported, so everything else keeps
+            // playing the same audio-fixed way it always has. VOD stays MPEG-TS deliberately:
+            // its webvtt subtitle rendition's sidecar-file behavior is proven on the TS muxer,
+            // and Chromium decodes VOD's H.264/AAC TS output natively.
+            '-hls_segment_type',
+            'fmp4',
+            '-hls_list_size',
+            '6',
+            '-hls_flags',
+            'delete_segments+omit_endlist'
+          ]),
       '-hls_segment_filename',
-      join(dir, 'seg_%05d.ts'),
+      join(dir, isVod ? 'seg_%05d.ts' : 'seg_%05d.m4s'),
       playlistFile
     ])
 
@@ -313,7 +368,7 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
       await rm(dir, { recursive: true, force: true }).catch(() => {})
       throw new Error('Transcode cancelled')
     }
-    const session: TranscodeSession = { proc, dir, stderrTail: [], subtitleTracks: [], inputStreamListEnded: false }
+    const session: TranscodeSession = { proc, dir, stderrTail: [], subtitleTracks: [], inputStreamListEnded: false, hvc1RestartPending: false, exited: false }
     transcodeSessions.set(sessionId, session)
 
     // A stall-detection scheme keyed on "time since ffmpeg last wrote to stderr" was tried here
@@ -366,6 +421,26 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
             language: match[1] ?? null,
             supported: TEXT_SUBTITLE_CODECS.has(match[2].toLowerCase())
           })
+          continue
+        }
+        // Live/fMP4 sessions spawned without the hvc1 tag (always the first attempt): the
+        // moment the input's video stream is known to be HEVC, kill this attempt — the poll
+        // loop below respawns it with the tag. ffmpeg logs the input stream list before
+        // writing any output, so nothing playback-visible is ever discarded. VOD sessions
+        // (MPEG-TS output) and already-restarted ones skip this entirely.
+        //
+        // SIGKILL, not SIGTERM, deliberately: the poll loop below can only respawn once
+        // `exitCode` is actually set, and a graceful signal is exactly the one a process can
+        // sit on (a wedged stdio write in production; the fixture script's foreground child
+        // in tests — both confirmed by this test timing out with SIGTERM). There is nothing
+        // to shut down cleanly — the output this attempt produced is discarded wholesale —
+        // so escalation is not just acceptable here, it's the point.
+        if (!isVod && !tagHvc1 && !session.hvc1RestartPending) {
+          const videoMatch = VIDEO_STREAM_PATTERN.exec(line)
+          if (videoMatch && videoMatch[1].toLowerCase() === 'hevc') {
+            session.hvc1RestartPending = true
+            proc.kill('SIGKILL')
+          }
         }
       }
     })
@@ -373,6 +448,7 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
       console.error('[transcode] failed to spawn ffmpeg:', err.message)
     })
     proc.on('exit', (code, signal) => {
+      session.exited = true
       if (code !== 0 && code !== null) {
         console.error(`[transcode] ffmpeg exited with code ${code}:`, session.stderrTail.join('\n'))
       }
@@ -461,7 +537,22 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
           return { sessionId, playlistPath: playlistFile, subtitleTracks: session.subtitleTracks }
         }
       }
-      if (proc.exitCode !== null) {
+      if (session.exited) {
+        // A live session the stderr watcher killed for being HEVC (see the
+        // VIDEO_STREAM_PATTERN comment there): respawn with the hvc1 tag. This sits before
+        // the videoReadyAt check — the killed attempt's own partial playlist is stale output
+        // from an untagged process, never something to serve. tagHvc1 is the same one-shot
+        // recursion guard the subtitle retry's -1 uses. session.exited, not proc.exitCode:
+        // the killed attempt died by SIGNAL, and exitCode stays null for those (see the
+        // TranscodeSession field's own comment).
+        if (session.hvc1RestartPending) {
+          transcodeSessions.delete(sessionId)
+          // Same teardown stopTranscode uses — the process is already gone here (SIGKILL from
+          // the watcher), so this only reaps the directory; nothing touches cancelledSessions,
+          // which is what lets the retry below run at all.
+          await rm(dir, { recursive: true, force: true }).catch(() => {})
+          return startTranscode(sourceUrl, isVod, sessionId, subtitleStreamIndex, audioStreamIndex, true)
+        }
         // ffmpeg can legitimately exit clean (code 0, e.g. a very short clip) after writing the
         // video/audio playlist but before the subtitle rendition catches up — that's still a
         // successful transcode, just one that isn't getting subtitles, not a failure.
@@ -513,6 +604,17 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
       return { sessionId, playlistPath: playlistFile, subtitleTracks: session.subtitleTracks }
     }
     await stopTranscode(sessionId)
+    // Confirmed live 2026-09-26: this provider's live-stream edge intermittently stalls a NEW
+    // connection entirely (headers never arrive — the same URL streams megabytes normally,
+    // minutes later, through the identical path; the same intermittency the proxy's own
+    // upstream retry exists for). A first attempt that starves is therefore not a diagnosis,
+    // and the renderer treats a thrown error as terminal for the whole channel — so retry
+    // ONCE on a fresh connection before giving up. stopTranscode marked the session cancelled
+    // (its kill path depends on that), which the retry must undo to be allowed to run.
+    if (!isRetry) {
+      cancelledSessions.delete(sessionId)
+      return startTranscode(sourceUrl, isVod, sessionId, subtitleStreamIndex, audioStreamIndex, tagHvc1, true)
+    }
     throw new Error('Timed out waiting for ffmpeg to produce transcoded output')
   }
 

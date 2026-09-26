@@ -366,8 +366,20 @@ export function createProxyServer(deps: ProxyServerDeps): Server {
         // longer parseable at all. The outer .m3u is deliberately left completely untouched:
         // m3uClient.ts's own parser already resolves everything in it directly against the
         // real playlist URL, with no proxy involvement needed.
-        const isM3u8Fetch = req.url?.startsWith('/__fetch/') && target.pathname.toLowerCase().endsWith('.m3u8')
-        if (isM3u8Fetch) {
+        const isM3u8Url = req.url?.startsWith('/__fetch/') && target.pathname.toLowerCase().endsWith('.m3u8')
+        // The .m3u8 extension used to imply the body is an HLS playlist, which is what
+        // rewriteM3u8ForProxy below needs — but confirmed live 2026-09-26: this account's
+        // provider moved to a panel that answers EVERY live stream URL with a raw MPEG-TS byte
+        // stream (content-type video/mp2t), extension notwithstanding. Buffering one of those
+        // "for rewriting" never finishes at all — a live TS stream has no end, so the playlist
+        // request would hang until the client gave up (this is exactly what a transcode
+        // fallback's ffmpeg, reading the same URL, would otherwise do) — and there are no URI
+        // references to rewrite in binary media anyway. The response's content-type is the
+        // discriminator: video/mp2t pipes through untouched (the consumer — hls.js failing
+        // into its raw-stream fallback, or ffmpeg — sniffs the actual bytes), anything else
+        // keeps the established rewrite behavior.
+        const upstreamIsMpegTs = /^video\/mp2t\b/i.test(String(upstreamRes.headers['content-type'] ?? ''))
+        if (isM3u8Url && !upstreamIsMpegTs) {
           const chunks: Buffer[] = []
           upstreamRes.on('data', (chunk) => chunks.push(chunk))
           upstreamRes.on('end', () => {
