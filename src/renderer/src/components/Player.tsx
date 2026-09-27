@@ -280,6 +280,20 @@ export function Player(): JSX.Element | null {
   // own lastMouseEventRef documents.
   const channelBarLastMouseEvent = useRef<MouseEvent | null>(null)
   const lastStreamKeyRef = useRef<string | null>(null)
+  // The stall watchdog's escalation ladder, hoisted out of the playback effect on purpose: that
+  // effect re-runs on every internal reload (reloadTick) — including the reload the ladder
+  // ITSELF requests — and effect-local counters meant a dead source could loop
+  // nudge→reload→fresh-counters forever without ever reaching the give-up rung (reproduced
+  // live: a frozen remux playlist sat at its last frame indefinitely, no error, no recovery).
+  // Refs reset only when the channel identity changes (see the reset effect below) or on real
+  // playback progress, so a reload buys the stream exactly one fresh look, not a fresh ladder.
+  // ignoreNextProgress: the nudge rung bumps currentTime by 0.1s and a reload repositions the
+  // playhead — both change the playback signature WITHOUT the stream having delivered anything.
+  // Counting either as progress reset the ladder every cycle, so it could never climb past nudge
+  // (reproduced live: a frozen remux playlist nudged forever, no error, no recovery). The first
+  // signature change after our own nudge/reload is swallowed; only a *second*, independent
+  // change — i.e. playback genuinely moving — resets the ladder.
+  const stallLadderRef = useRef({ lastSignature: '', lastProgressAt: 0, recoveries: 0, ignoreNextProgress: false })
   const [transcodeElapsedSeconds, setTranscodeElapsedSeconds] = useState(0)
 
   const {
@@ -287,6 +301,7 @@ export function Player(): JSX.Element | null {
     getSourceUrl,
     tryFallback,
     tryFallbackForRawStream,
+    attemptRemuxRecovery,
     tryFallbackForSilentAudio,
     transcodeReason,
     reset: resetTranscodeFallback,
@@ -317,6 +332,9 @@ export function Player(): JSX.Element | null {
     const streamKey = nowPlaying ? `${nowPlaying.kind}:${nowPlaying.streamId}` : null
     if (streamKey === lastStreamKeyRef.current) return
     lastStreamKeyRef.current = streamKey
+    // A genuinely different channel starts the stall ladder over (see stallLadderRef) — only a
+    // channel change may, which is why this lives here rather than in the playback effect.
+    stallLadderRef.current = { lastSignature: '', lastProgressAt: 0, recoveries: 0, ignoreNextProgress: false }
     resetTranscodeFallback()
   }, [nowPlaying, resetTranscodeFallback])
 
@@ -457,44 +475,86 @@ export function Player(): JSX.Element | null {
     // along, both leave a picture that simply stops with nothing on the console. This is the only
     // thing watching for that, and it is deliberately slow (see STALL_RECOVERY_AFTER_MS) so it
     // can't race the recovery hls.js already does.
-    let lastSignature = playbackSignature(video.readyState, video.currentTime)
-    let lastProgressAt = Date.now()
-    let stallRecoveries = 0
+    const ladder = stallLadderRef.current
+    // First attach only (the reset effect zeroes lastProgressAt on a channel change): a reload
+    // re-run of this effect must leave the ladder's counters alone — re-seeding them here is
+    // exactly the reload-resets-the-ladder bug stallLadderRef exists to fix. A fresh attach's
+    // first signature update happens naturally on the first watchdog tick either way.
+    if (ladder.lastProgressAt === 0) {
+      ladder.lastSignature = playbackSignature(video.readyState, video.currentTime)
+      ladder.lastProgressAt = Date.now()
+    }
+    // Reloads of the SAME source (the ladder's own reload, a network-reconnect reload) must not
+    // reset the ladder — see stallLadderRef. Only a channel change (the reset effect) or real
+    // playback progress may. A fresh attach of a working stream starts progressing within a
+    // couple of seconds and clears it that way; one that doesn't progress keeps climbing, which
+    // is exactly the point.
     watchdogTimer = setInterval(() => {
       const now = Date.now()
       // Anything that legitimately parks playback — a user pause, a seek in flight, the end of
       // the media, or the audio-fix wait (which pauses the element on purpose) — resets the clock
       // rather than counting as a stall.
       if (video.paused || video.seeking || video.ended) {
-        lastSignature = playbackSignature(video.readyState, video.currentTime)
-        lastProgressAt = now
+        ladder.lastSignature = playbackSignature(video.readyState, video.currentTime)
+        ladder.lastProgressAt = now
         return
       }
       const signature = playbackSignature(video.readyState, video.currentTime)
-      if (signature !== lastSignature) {
+      if (signature !== ladder.lastSignature) {
+        // The first movement after our own nudge/reload is not evidence of recovery — it is the
+        // nudge's +0.1s or the reload's reposition (see stallLadderRef's ignoreNextProgress).
+        // Swallow exactly one change; only continued movement resets the ladder.
+        if (ladder.ignoreNextProgress) {
+          ladder.ignoreNextProgress = false
+          ladder.lastSignature = signature
+          ladder.lastProgressAt = now
+          return
+        }
         // Real progress: whatever was wrong has cleared, so the ladder starts over.
-        lastSignature = signature
-        lastProgressAt = now
-        stallRecoveries = 0
+        ladder.lastSignature = signature
+        ladder.lastProgressAt = now
+        ladder.recoveries = 0
         return
       }
-      if (now - lastProgressAt < STALL_RECOVERY_AFTER_MS) return
-      const action = nextStallAction(stallRecoveries)
-      stallRecoveries += 1
-      lastProgressAt = now
+      if (now - ladder.lastProgressAt < STALL_RECOVERY_AFTER_MS) return
+      const action = nextStallAction(ladder.recoveries)
+      ladder.recoveries += 1
+      ladder.lastProgressAt = now
       if (action === 'nudge') {
         // Via the ref, not the local `hls`: this watchdog is registered for every source (a
         // native VOD stream has no instance at all), and hlsRef.current is the live instance
         // whenever there is one.
         hlsRef.current?.startLoad()
+        ladder.ignoreNextProgress = true
         try {
           video.currentTime = video.currentTime + 0.1
         } catch {
           // Not seekable yet — startLoad() above alone still re-arms the loader.
         }
       } else if (action === 'reload') {
+        ladder.ignoreNextProgress = true
         setReloadTick((t) => t + 1)
       } else {
+        // A live channel that froze solid is, on this provider, most often a remux whose ffmpeg
+        // was killed mid-read: the playlist simply stops advancing, hls.js raises nothing (so
+        // the error handler's recovery never runs), and a reload above just re-attaches the same
+        // dead session URL — reproduced live, frozen forever at the playlist's last frame. This
+        // is the only rung that starts a genuinely NEW remux, so spend it before declaring the
+        // stream dead.
+        if (
+          nowPlaying.kind === 'live' &&
+          hlsRef.current &&
+          attemptRemuxRecovery(
+            nowPlaying.url,
+            () => setReloadTick((t) => t + 1),
+            (message) => {
+              if (nowPlaying.kind === 'live') forgetLiveAudioFix(nowPlaying.streamId)
+              setPlaybackError(`This channel's stream could not be remuxed for playback: ${message}`)
+            }
+          )
+        ) {
+          return
+        }
         setPlaybackError('Playback stalled and could not be recovered.')
       }
     }, STALL_CHECK_INTERVAL_MS)
@@ -739,6 +799,28 @@ export function Player(): JSX.Element | null {
               if (networkRetryTimer) clearTimeout(networkRetryTimer)
               networkRetryTimer = setTimeout(() => hls.startLoad(), NETWORK_RETRY_DELAY_MS)
             } else {
+              // The provider this app uses kills live reader connections at unpredictable
+              // intervals (measured live: one remux died 11s in, the same invocation ran 75s+
+              // minutes later) — so a live channel whose stream dies mid-playback, whether that
+              // surfaces as fragment 404s against a frozen remux playlist or a dropped direct
+              // stream, is not a verdict on the channel. Restart the whole remux chain (new
+              // ffmpeg, fresh session) within a bounded budget before believing it; the
+              // still-attached hls instance keeps erroring while the replacement spins up, and
+              // the hook's awaiting flag absorbs those repeats without burning budget.
+              if (
+                nowPlaying.kind === 'live' &&
+                attemptRemuxRecovery(
+                  nowPlaying.url,
+                  () => setReloadTick((t) => t + 1),
+                  (message) => {
+                    if (nowPlaying.kind === 'live') forgetLiveAudioFix(nowPlaying.streamId)
+                    setPlaybackError(`This channel's stream could not be remuxed for playback: ${message}`)
+                  }
+                )
+              ) {
+                setPlaybackError(null)
+                return
+              }
               setPlaybackError(`Playback error: ${data.details} (gave up after ${MAX_NETWORK_RETRIES} retries)`)
               hls.destroy()
             }

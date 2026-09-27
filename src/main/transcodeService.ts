@@ -526,6 +526,20 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
       if (code !== 0 && code !== null) {
         console.error(`[transcode] ffmpeg exited with code ${code}:`, session.stderrTail.join('\n'))
       }
+      // Every live exit lands in the file log, not just failures: a live remux that dies
+      // mid-playback after producing output is invisible everywhere else (the session is kept,
+      // the playlist just freezes) and is exactly what a user on another machine needs to be
+      // able to hand over — measured live, the provider kills paced reader connections at
+      // unpredictable intervals, so "exited after producing output — playlist frozen" is the
+      // line that explains a frozen channel.
+      if (!isVod) {
+        const produced = existsSync(join(dir, 'playlist.m3u8'))
+        log(
+          `[transcode] session ${sessionId}: ffmpeg exited (code ${code ?? 'null'}${signal ? `, signal ${signal}` : ''})` +
+            (produced ? ' after producing output — playlist frozen' : ' before producing output') +
+            (code !== 0 && code !== null && session.stderrTail.length ? `: ${session.stderrTail.slice(-2).join(' | ')}` : '')
+        )
+      }
       // ffmpeg exiting does not mean this session is done with. For VOD/series it is the *normal*
       // end of a successful transcode — the finished file is the deliverable, and playback carries
       // on reading it from here — and for a Live fallback it means the source ended, where the

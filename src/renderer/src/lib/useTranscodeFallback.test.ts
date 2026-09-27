@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { isUnsupportedAudioCodecError, isRawStreamManifestError } from './useTranscodeFallback'
+import {
+  isUnsupportedAudioCodecError,
+  isRawStreamManifestError,
+  shouldRestartRemuxChain,
+  MAX_REMUX_CHAIN_RESTARTS
+} from './useTranscodeFallback'
 import type { ErrorData } from 'hls.js'
 
 // Only the fields these detectors actually read — a real ErrorData carries a lot more, but
@@ -81,5 +86,28 @@ describe('isRawStreamManifestError', () => {
     // left the player with no recovery and a terminal "gave up after N retries" message.
     expect(isRawStreamManifestError(errorData({ details: 'fragLoadError' as never }))).toBe(false)
     expect(isRawStreamManifestError(errorData({ details: 'bufferAddCodecError' as never }))).toBe(false)
+  })
+})
+
+// The bounded-restart decision behind attemptRemuxRecovery: the provider kills paced live
+// reader connections at unpredictable intervals (measured live 2026-09-27, one remux dead at
+// 11s while the identical invocation ran 75s+ minutes later), so a dead remux must be
+// restartable — but never unboundedly, or a genuinely dead channel would spin forever.
+describe('shouldRestartRemuxChain', () => {
+  it('restarts while the budget lasts', () => {
+    expect(shouldRestartRemuxChain(false, 0)).toBe(true)
+    expect(shouldRestartRemuxChain(false, MAX_REMUX_CHAIN_RESTARTS - 1)).toBe(true)
+  })
+
+  it('refuses once the budget is spent', () => {
+    expect(shouldRestartRemuxChain(false, MAX_REMUX_CHAIN_RESTARTS)).toBe(false)
+    expect(shouldRestartRemuxChain(false, MAX_REMUX_CHAIN_RESTARTS + 5)).toBe(false)
+  })
+
+  it('never double-starts while a recovery is already in flight', () => {
+    // The still-attached hls instance keeps raising fatal errors while the replacement remux
+    // spins up; absorbing those without spending budget is what makes the restart survive
+    // its own startup window.
+    expect(shouldRestartRemuxChain(true, 0)).toBe(false)
   })
 })

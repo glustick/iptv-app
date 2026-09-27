@@ -51,6 +51,25 @@ export function isRawStreamManifestError(data: ErrorData): boolean {
   )
 }
 
+// How many times a channel open may restart the whole remux chain (stop the dead session,
+// forget the spent one-shot, remux again from the original URL). The provider this app uses
+// kills paced reader connections at random intervals (measured live: one remux died 11s in,
+// the identical CLI invocation ran fine for 75s+, minutes apart) — so a live remux dying
+// mid-playback is a WHEN, not an IF, and without a restart the channel just freezes forever
+// on a frozen playlist (the renderer's reload re-attaches the same dead session URL in a loop
+// that never escalates — reproduced live in the packaged 0.7.112). Three is enough to ride out
+// an unlucky minute without letting a genuinely dead channel spin forever.
+export const MAX_REMUX_CHAIN_RESTARTS = 3
+
+/**
+ * The decision core of attemptRemuxRecovery (pure so it's unit-testable, matching the rest of
+ * this module's split between decide and act): whether a fatal live failure should restart the
+ * remux chain, given one isn't already in flight and the restart budget isn't spent.
+ */
+export function shouldRestartRemuxChain(awaitingTranscode: boolean, restartsUsed: number): boolean {
+  return !awaitingTranscode && restartsUsed < MAX_REMUX_CHAIN_RESTARTS
+}
+
 /**
  * Shared remediation for the failure isUnsupportedAudioCodecError detects: spins up a local
  * ffmpeg process (see src/main/index.ts's transcode: IPC handlers) that remuxes just the
@@ -103,6 +122,11 @@ export function useTranscodeFallback(): {
     onReload: () => void,
     onError?: (message: string) => void
   ) => boolean
+  // Last-resort recovery for a live channel whose remux ALREADY ran and died mid-playlist (see
+  // MAX_REMUX_CHAIN_RESTARTS): stop the dead session, un-spend the one-shot, remux again.
+  // Returns false when nothing may restart (one in flight, or budget spent) and the caller
+  // should fall through to its terminal error handling.
+  attemptRemuxRecovery: (originalUrl: string, onReload: () => void, onError?: (message: string) => void) => boolean
   // Why the current/last fallback run started — drives the status wording in Player.tsx. null
   // while nothing has run (or after reset()).
   transcodeReason: 'audio' | 'raw-stream' | null
@@ -169,6 +193,8 @@ export function useTranscodeFallback(): {
   const triedTranscodeRef = useRef(false)
   const awaitingTranscodeRef = useRef(false)
   const transcodeSessionIdRef = useRef<string | null>(null)
+  // See MAX_REMUX_CHAIN_RESTARTS — spent restarts for the current channel open, zeroed by reset().
+  const chainRestartsUsedRef = useRef(0)
   const [transcoding, setTranscoding] = useState(false)
   const [hasFallbackActive, setHasFallbackActive] = useState(false)
   const [transcodeReason, setTranscodeReason] = useState<'audio' | 'raw-stream' | null>(null)
@@ -197,6 +223,7 @@ export function useTranscodeFallback(): {
     triedTranscodeRef.current = false
     awaitingTranscodeRef.current = false
     transcodedUrlRef.current = null
+    chainRestartsUsedRef.current = 0
     setHasFallbackActive(false)
     setTranscodeReason(null)
     setLiveAudioTracks(null)
@@ -269,6 +296,38 @@ export function useTranscodeFallback(): {
         .finally(() => setTranscoding(false))
     },
     []
+  )
+
+  // A full restart of the remux chain for a channel whose fallback ALREADY ran: stops the
+  // (dead) session, un-spends the one-shot, and remuxes again from the original URL. The
+  // recovery of last resort for the failure shape measured live against this provider: ffmpeg
+  // reading a paced live connection dies mid-playlist at unpredictable intervals, the session's
+  // playlist freezes, and every existing recovery (hls.js retries, the stall watchdog's reload)
+  // just re-attaches the same dead URL — this is the only thing that ever starts a NEW session.
+  // Returns false when nothing may be restarted (a recovery is already in flight, or the budget
+  // is spent) and the caller should fall through to its terminal error handling.
+  const attemptRemuxRecovery = useCallback(
+    (originalUrl: string, onReload: () => void, onError?: (message: string) => void): boolean => {
+      // A recovery already in flight owns the outcome — true here as well as after an actual
+      // restart, so callers treat repeats the same way (clear the error, wait) instead of
+      // racing a second restart or declaring failure while the replacement is still spinning
+      // up. The stall watchdog can reach its give-up rung during that window.
+      if (awaitingTranscodeRef.current) return true
+      if (!shouldRestartRemuxChain(false, chainRestartsUsedRef.current)) return false
+      chainRestartsUsedRef.current += 1
+      const staleSessionId = transcodeSessionIdRef.current
+      if (staleSessionId) {
+        window.api.transcode
+          .stop(staleSessionId)
+          .catch((err) => console.error('[transcode] failed to stop dead session before restart:', err))
+      }
+      triedTranscodeRef.current = false
+      transcodedUrlRef.current = null
+      setHasFallbackActive(false)
+      startFallback(originalUrl, false, 0, onReload, onError, 0, 'raw-stream')
+      return true
+    },
+    [startFallback]
   )
 
   const tryFallback = useCallback(
@@ -423,6 +482,7 @@ export function useTranscodeFallback(): {
     tryFallback,
     tryFallbackForRawStream,
     transcodeReason,
+    attemptRemuxRecovery,
     tryFallbackForSilentAudio,
     reset,
     beginRun,
