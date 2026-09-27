@@ -89,6 +89,9 @@ export async function fetchFixturesForDate(
     const list = Array.isArray(payload?.response) ? payload.response : []
     return { fixtures: list.map(normalizeFixture), error: null }
   } catch (err) {
-    return { fixtures: [], error: err instanceof Error ? err.message : String(err) }
+    // Electron wraps any IPC handler throw as "Error invoking remote method 'x': Error: …" —
+    // strip that plumbing so the user sees the actual failure ("API-Football request failed (403)").
+    const raw = err instanceof Error ? err.message : String(err)
+    return { fixtures: [], error: raw.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '') }
   }
 }

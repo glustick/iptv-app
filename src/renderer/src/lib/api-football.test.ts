@@ -97,4 +97,11 @@ describe('fetchFixturesForDate', () => {
     expect(result.fixtures).toEqual([])
     expect(result.error).toBe('network down')
   })
+
+  it("strips Electron's IPC plumbing prefix so the user sees the real failure", async () => {
+    const bridge = (): Promise<unknown> =>
+      Promise.reject(new Error("Error invoking remote method 'api-football:fetch': Error: API-Football request failed (403)"))
+    const result = await fetchFixturesForDate(bridge, 'key', new Date())
+    expect(result.error).toBe('API-Football request failed (403)')
+  })
 })
