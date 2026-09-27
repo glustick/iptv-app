@@ -101,6 +101,12 @@ interface UpdaterAPI {
   onError: (callback: (payload: { message: string }) => void) => () => void
 }
 
+// Sports-tab fixture data from api-football.com, proxied through main so the key never needs a
+// CORS-capable direct renderer call and the request target stays pinned (see the main handler).
+interface ApiFootballAPI {
+  fetch: (path: string, key: string) => Promise<unknown>
+}
+
 declare global {
   interface Window {
     electron: ElectronAPI
@@ -115,6 +121,7 @@ declare global {
       safeStorage: SafeStorageAPI
       vpn: VpnAPI
       updater: UpdaterAPI
+      apiFootball: ApiFootballAPI
     }
   }
 }

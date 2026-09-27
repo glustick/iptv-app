@@ -1362,6 +1362,27 @@ app.whenReady().then(async () => {
   // only ever calls this from an explicit "Restart now" click, never automatically.
   ipcMain.handle('update:install', () => autoUpdater.quitAndInstall())
 
+  // api-football.com fixture fetch for the Sports tab. The API key lives in settings (encrypted
+  // at rest via safeStorage, decrypted in the renderer exactly like VPN credentials — see
+  // storage.ts) and arrives per-call here, so main never needs to parse the settings blob. The
+  // base URL is pinned and paths must be relative (starting with '/'), so this can never become
+  // a general-purpose proxy from a compromised renderer; auth uses api-football's documented
+  // x-apisports-key header.
+  ipcMain.handle('api-football:fetch', async (_event, path: string, key: string): Promise<unknown> => {
+    if (!key) throw new Error('API-Football key is not set — add it in Settings first.')
+    if (typeof path !== 'string' || !path.startsWith('/')) {
+      throw new Error('Invalid API-Football request path.')
+    }
+    const res = await net.fetch(`https://v3.football.api-sports.io${path}`, {
+      headers: { 'x-apisports-key': key }
+    })
+    if (!res.ok) {
+      logLifecycle(`api-football ${path} failed: ${res.status} ${res.statusText}`)
+      throw new Error(`API-Football request failed (${res.status})`)
+    }
+    return res.json()
+  })
+
   // The launch-time check is triggered from the renderer's init() now (see useAppStore.ts),
   // not fired from here. Firing it this early, straight from main, raced webContents' own
   // load: if checkForUpdates() resolved (or update-available fired) before the page had

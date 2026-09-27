@@ -141,6 +141,12 @@ const api = {
       ipcRenderer.on('update:error', listener)
       return () => ipcRenderer.removeListener('update:error', listener)
     }
+  },
+  apiFootball: {
+    // The key is passed per call (settings-owned, decrypted renderer-side like VPN credentials)
+    // rather than read from main's store — keeps one source of truth for settings.
+    fetch: (path: string, key: string) =>
+      ipcRenderer.invoke('api-football:fetch', path, key) as Promise<unknown>
   }
 }
 

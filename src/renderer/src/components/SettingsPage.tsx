@@ -29,6 +29,7 @@ export function SettingsPage(): JSX.Element | null {
   const importBackup = useAppStore((s) => s.importBackup)
 
   const [pinDraft, setPinDraft] = useState('')
+  const [apiFootballDraft, setApiFootballDraft] = useState('')
   // Only set when opening the log fails (no active connection, or the file hasn't been written
   // yet) — shell.openPath() handles the success case itself by opening the OS's default viewer,
   // so there's nothing to show here when it works.
@@ -107,6 +108,15 @@ export function SettingsPage(): JSX.Element | null {
 
   function clearPin(): void {
     updateSettings({ parentalPin: null, lockedCategoryIds: [] })
+  }
+
+  function saveApiFootballKey(): void {
+    updateSettings({ apiFootballKey: apiFootballDraft.trim() || null })
+    setApiFootballDraft('')
+  }
+
+  function clearApiFootballKey(): void {
+    updateSettings({ apiFootballKey: null })
   }
 
   async function viewVpnLog(): Promise<void> {
@@ -239,7 +249,41 @@ export function SettingsPage(): JSX.Element | null {
           )}
         </section>
 
-                <section className="settings-section">
+        <section className="settings-section">
+          <h3>Sports data (api-football.com)</h3>
+          {settings.apiFootballKey ? (
+            <>
+              <p className="settings-hint">
+                API key saved — the Sports tab shows live fixtures and scores alongside the
+                provider's channel schedule.
+              </p>
+              <button className="secondary-button" onClick={clearApiFootballKey}>
+                Remove API key
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="settings-hint">
+                Optional: paste an api-football.com API key to add live fixtures and scores to
+                the Sports tab. Without it, the tab keeps using the provider's channel schedule
+                alone.
+              </p>
+              <div className="pin-set-row">
+                <input
+                  type="password"
+                  placeholder="api-football API key"
+                  value={apiFootballDraft}
+                  onChange={(e) => setApiFootballDraft(e.target.value)}
+                />
+                <button onClick={saveApiFootballKey} disabled={!apiFootballDraft.trim()}>
+                  Save key
+                </button>
+              </div>
+            </>
+          )}
+        </section>
+
+        <section className="settings-section">
           <h3>Guide &amp; EPG</h3>
           <p className="settings-hint">
             Guide sources, automatic matching and manual channel maps have their own section now

@@ -304,6 +304,10 @@ export interface AppSettings {
   // leaving the URL, its place in the priority order and any manual mappings intact for when it is
   // switched back on.
   hiddenEpgSourceUrls: string[]
+  // api-football.com API key for the Sports tab's live fixtures panel. Encrypted at rest with
+  // the same safeStorage boundary as the parental PIN; null = feature unconfigured, and the
+  // Sports tab stays on its provider-channel schedule alone.
+  apiFootballKey: string | null
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -328,7 +332,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   epgChannelMappings: [],
   hiddenEpgSourceUrls: [],
   enabledPlaylistIds: [],
-  customCategories: []
+  customCategories: [],
+  apiFootballKey: null
 }
 
 export type VpnStatus = 'disconnected' | 'connecting' | 'connected' | 'error'

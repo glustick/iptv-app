@@ -185,6 +185,12 @@ export async function loadSettings(): Promise<AppSettings> {
     result.parentalPin = await decryptSecret(result.parentalPin, 'parental PIN')
     if (wasLegacyPlaintext && result.parentalPin) needsMigration = true
   }
+  // api-football.com key for the Sports tab — same secret treatment as the PIN.
+  if (result.apiFootballKey) {
+    const wasLegacyPlaintext = !result.apiFootballKey.startsWith(ENCRYPTED_PREFIX)
+    result.apiFootballKey = await decryptSecret(result.apiFootballKey, 'api-football key')
+    if (wasLegacyPlaintext && result.apiFootballKey) needsMigration = true
+  }
   // Each saved VPN profile carries its own optional username/password (some .ovpn files are
   // cert-only and need neither) — decrypted the same way as the PIN, independently per profile,
   // since profiles are added/removed over time and there's no single shared secret to migrate.
@@ -215,6 +221,9 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
   const toSave = { ...settings }
   if (toSave.parentalPin) {
     toSave.parentalPin = await encryptSecret(toSave.parentalPin)
+  }
+  if (toSave.apiFootballKey) {
+    toSave.apiFootballKey = await encryptSecret(toSave.apiFootballKey)
   }
   toSave.vpnProfiles = await Promise.all(
     toSave.vpnProfiles.map(async (profile) => ({

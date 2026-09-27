@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState, type JSX } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { buildSportsSchedule, dayKeyOf, gamesForDay, type SportsGame, type SportsGroup } from '../lib/sports'
+import {
+  fetchFixturesForDate,
+  type ApiFootballFixture,
+  type FixtureFetchResult
+} from '../lib/api-football'
 import type { Category, LiveStream } from '../lib/types'
 
 // The Sports tab: sporting categories (Football / Soccer pinned first) → games for a selected
@@ -29,11 +34,31 @@ function formatKickoff(game: SportsGame): string {
   return game.kickoff.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
+/** One api-football fixture row: score when there is one, kickoff time before it starts. */
+function FixtureRow({ fixture }: { fixture: ApiFootballFixture }): JSX.Element {
+  const right = fixture.live
+    ? 'LIVE'
+    : fixture.finished
+      ? 'FT'
+      : fixture.kickoff
+        ? fixture.kickoff.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : 'TBD'
+  return (
+    <div className="sports-item" title={`${fixture.league} — ${fixture.round} (${fixture.statusLong})`}>
+      <span className="sports-item-label">
+        {fixture.homeTeam} {fixture.homeGoals ?? '–'}–{fixture.awayGoals ?? '–'} {fixture.awayTeam}
+      </span>
+      <span className="sports-item-count">{right}</span>
+    </div>
+  )
+}
+
 export function SportsView(): JSX.Element {
   const client = useAppStore((s) => s.client)
   const catalog = useAppStore((s) => s.numericChannelCatalog)
   const ensureChannelCatalog = useAppStore((s) => s.ensureChannelCatalog)
   const play = useAppStore((s) => s.play)
+  const apiFootballKey = useAppStore((s) => s.settings.apiFootballKey) ?? ''
 
   // The store's categories state belongs to the Live TV browse flow (requestCategory replaces
   // it); Sports classifies its own copy so switching tabs never disturbs that state.
@@ -42,6 +67,43 @@ export function SportsView(): JSX.Element {
   const [selectedSportId, setSelectedSportId] = useState<string | null>(null)
   const [dayOffset, setDayOffset] = useState(0)
   const [selectedGameKey, setSelectedGameKey] = useState<string | null>(null)
+  const [fixtureResult, setFixtureResult] = useState<FixtureFetchResult>({ fixtures: [], error: null })
+
+  // api-football fixtures for the picked day — an independent data source from the provider's
+  // channel schedule below, so its failures are contained: an error renders one line and the
+  // schedule stays fully usable. No key = feature unconfigured; nothing is fetched and nothing
+  // extra renders. The 5-minute refetch keeps live scores honest without burning the free-tier
+  // request quota (100/day on api-football's free plan).
+  useEffect(() => {
+    if (!apiFootballKey) return
+    let active = true
+    const load = (): void => {
+      void fetchFixturesForDate(
+        window.api.apiFootball.fetch,
+        apiFootballKey,
+        new Date(Date.now() + dayOffset * 86_400_000)
+      ).then((result) => {
+        if (active) setFixtureResult(result)
+      })
+    }
+    load()
+    const timer = setInterval(load, 300_000)
+    return () => {
+      active = false
+      clearInterval(timer)
+    }
+  }, [apiFootballKey, dayOffset])
+
+  // Live matches first, then by kickoff — the two questions a sports viewer asks ("what's on
+  // right now", "what's coming up") in one ordering.
+  const orderedFixtures = useMemo(() => {
+    return [...fixtureResult.fixtures].sort((a, b) => {
+      if (a.live !== b.live) return a.live ? -1 : 1
+      const at = a.kickoff?.getTime() ?? Number.POSITIVE_INFINITY
+      const bt = b.kickoff?.getTime() ?? Number.POSITIVE_INFINITY
+      return at - bt
+    })
+  }, [fixtureResult.fixtures])
 
   useEffect(() => {
     let active = true
@@ -119,6 +181,22 @@ export function SportsView(): JSX.Element {
       </div>
 
       <div className="sports-pane sports-games">
+        {apiFootballKey ? (
+          <>
+            <div className="sports-section-label">Fixtures · api-football.com</div>
+            <div className="sports-list sports-fixtures">
+              {fixtureResult.error ? (
+                <div className="sports-empty">{fixtureResult.error}</div>
+              ) : orderedFixtures.length === 0 ? (
+                <div className="sports-empty">No fixtures listed for this day.</div>
+              ) : (
+                orderedFixtures.slice(0, MAX_GAMES_RENDERED).map((fixture) => (
+                  <FixtureRow key={fixture.id} fixture={fixture} />
+                ))
+              )}
+            </div>
+          </>
+        ) : null}
         {selectedSport ? (
           <>
             <div className="sports-pane-title">{selectedSport.label}</div>
