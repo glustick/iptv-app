@@ -1,5 +1,6 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ErrorData } from 'hls.js'
+import { clientCanDecodeHevc } from './hevcSupport'
 
 /**
  * Detects a class of hls.js failures that share one real cause — a Dolby Digital
@@ -32,9 +33,22 @@ export function isUnsupportedAudioCodecError(data: ErrorData): boolean {
  * parse failure itself — hls.js doesn't expose the response's content-type on ErrorData): a
  * genuinely corrupt playlist gets the same treatment, and ffmpeg remuxing it is a legitimate
  * recovery there too. Callers scope it to live channels, where this failure mode lives.
+ *
+ * Widened 2026-09-27 after reproducing both shapes against hls.js 1.7.1 in a real Chromium: a
+ * raw-TS body the panel *ends* surfaces as `manifestParsingError` ("no EXTM3U delimiter"), but
+ * a genuinely live one — which by definition never ends — never reaches the parser at all and
+ * surfaces as `manifestLoadTimeOut` once the manifest load policy's budget is spent. The
+ * original single-detail check therefore never matched the real live case. `manifestLoadError`
+ * and `levelEmptyError` are the same family: "what came back was not a usable playlist, and
+ * hls.js's own retry ladder has nothing to reconcile or retry."
  */
 export function isRawStreamManifestError(data: ErrorData): boolean {
-  return data.details === 'manifestParsingError'
+  return (
+    data.details === 'manifestParsingError' ||
+    data.details === 'manifestLoadTimeOut' ||
+    data.details === 'manifestLoadError' ||
+    data.details === 'levelEmptyError'
+  )
 }
 
 /**
@@ -81,8 +95,14 @@ export function useTranscodeFallback(): {
   tryFallback: (data: ErrorData, originalUrl: string, onReload: () => void, onError?: (message: string) => void) => boolean
   // The raw-TS counterpart of tryFallback above (see isRawStreamManifestError) — same remux,
   // different reason, so the UI can say what's actually happening ("this channel is streaming
-  // raw MPEG-TS…") instead of claiming an audio fix.
-  tryFallbackForRawStream: (originalUrl: string, onReload: () => void, onError?: (message: string) => void) => boolean
+  // raw MPEG-TS…") instead of claiming an audio fix. Takes the ErrorData for the same reason
+  // tryFallback does: only the failure it actually owns may spend the channel's single attempt.
+  tryFallbackForRawStream: (
+    data: ErrorData,
+    originalUrl: string,
+    onReload: () => void,
+    onError?: (message: string) => void
+  ) => boolean
   // Why the current/last fallback run started — drives the status wording in Player.tsx. null
   // while nothing has run (or after reset()).
   transcodeReason: 'audio' | 'raw-stream' | null
@@ -161,6 +181,15 @@ export function useTranscodeFallback(): {
   const [probingVodTracks, setProbingVodTracks] = useState(false)
   const [activeVodAudioIndex, setActiveVodAudioIndex] = useState(0)
   const [activeVodSubtitleIndex, setActiveVodSubtitleIndex] = useState(-1)
+
+  // Tell the main process once whether this machine can decode HEVC, so its live remux knows
+  // whether an HEVC source may be copied (hvc1-tagged) or has to be re-encoded (see
+  // transcodeService's canDecodeHevc). Idempotent, so the several instances of this hook the app
+  // runs at once — the player plus every preview and Multi-View tile — can all send it without
+  // coordinating.
+  useEffect(() => {
+    void window.api.transcode.setHevcSupport(clientCanDecodeHevc())
+  }, [])
 
   // Call when the underlying channel/stream identity changes (a genuinely different source,
   // not just a reload of the same one) — resets fallback state and stops any prior session.
@@ -256,11 +285,18 @@ export function useTranscodeFallback(): {
   )
 
   const tryFallbackForRawStream = useCallback(
-    (originalUrl: string, onReload: () => void, onError?: (message: string) => void): boolean => {
+    (data: ErrorData, originalUrl: string, onReload: () => void, onError?: (message: string) => void): boolean => {
       // Same guard shape as tryFallback above: a fix already in flight owns the outcome, and
       // one attempt per source is all a broken playlist ever gets (repeating a doomed remux on
       // every parse error of the still-broken instance would just stack ffmpeg processes).
       if (awaitingTranscodeRef.current) return true
+      // Only a "that was not a playlist" failure may spend that one attempt. Without this check
+      // the remux was started for *any* fatal live error — including the remux's own playback
+      // failing later (fragLoadError, a codec append error), which then had nothing left to
+      // recover with and surfaced as a terminal "Playback error: … (gave up after N retries)".
+      // The detector existed and was unit-tested, but was never actually consulted by this call
+      // site; this is what makes it real.
+      if (!isRawStreamManifestError(data)) return false
       if (triedTranscodeRef.current) return false
       startFallback(originalUrl, false, 0, onReload, onError, 0, 'raw-stream')
       return true

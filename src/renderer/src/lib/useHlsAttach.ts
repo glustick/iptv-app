@@ -62,7 +62,11 @@ export function useHlsAttach(videoRef: RefObject<HTMLVideoElement>, url: string 
           // dead as any codec problem, and the same local remux fixes it here too (this hook
           // also drives Multi-View tiles, so they get it automatically).
           if (tryFallback(data, url!, reloadViaFallback)) return
-          tryFallbackForRawStream(url!, reloadViaFallback, (message) =>
+          // Same fatal guard Player.tsx applies before its raw-stream branch: this preview has no
+          // retry ladder of its own, and a non-fatal hiccup must not spend the tile's single
+          // remux attempt either.
+          if (!data.fatal) return
+          tryFallbackForRawStream(data, url!, reloadViaFallback, (message) =>
             console.error('[useHlsAttach] raw-stream remux failed:', message)
           )
         })

@@ -65,8 +65,21 @@ describe('isRawStreamManifestError', () => {
     expect(isRawStreamManifestError(errorData({ details: 'bufferAppendError' as never, mimeType: 'audio/mp4' }))).toBe(false)
   })
 
-  it('ignores load/other failures — a failed download is not a broken playlist', () => {
-    expect(isRawStreamManifestError(errorData({ details: 'manifestLoadError' as never }))).toBe(false)
-    expect(isRawStreamManifestError(errorData({ details: 'levelEmptyError' as never }))).toBe(false)
+  it('accepts the whole "that was not a usable playlist" family', () => {
+    // Widened 2026-09-27 after reproducing both shapes in a real Chromium: a raw-TS body the
+    // panel *ends* surfaces as manifestParsingError, but a genuinely live one never reaches the
+    // parser at all and surfaces as manifestLoadTimeOut once the manifest load policy is spent —
+    // which is the shape the original single-detail check could never match.
+    expect(isRawStreamManifestError(errorData({ details: 'manifestLoadTimeOut' as never }))).toBe(true)
+    expect(isRawStreamManifestError(errorData({ details: 'manifestLoadError' as never }))).toBe(true)
+    expect(isRawStreamManifestError(errorData({ details: 'levelEmptyError' as never }))).toBe(true)
+  })
+
+  it('ignores failures that are not about the playlist at all', () => {
+    // These are the ones that must NOT spend the channel's single remux attempt — a failed
+    // *fragment* (or a codec append) is not a missing playlist, and treating it as one is what
+    // left the player with no recovery and a terminal "gave up after N retries" message.
+    expect(isRawStreamManifestError(errorData({ details: 'fragLoadError' as never }))).toBe(false)
+    expect(isRawStreamManifestError(errorData({ details: 'bufferAddCodecError' as never }))).toBe(false)
   })
 })

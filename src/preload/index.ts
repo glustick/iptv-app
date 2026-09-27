@@ -68,6 +68,8 @@ const api = {
         url: string
         subtitleTracks: { index: number; language: string | null; supported: boolean }[]
       }>,
+    setHevcSupport: (canDecode: boolean) =>
+      ipcRenderer.invoke('transcode:setHevcSupport', canDecode) as Promise<void>,
     stop: (sessionId: string) => ipcRenderer.invoke('transcode:stop', sessionId) as Promise<void>,
     probeTracks: (sourceUrl: string) =>
       ipcRenderer.invoke('transcode:probeTracks', sourceUrl) as Promise<{

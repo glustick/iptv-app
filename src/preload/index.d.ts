@@ -53,6 +53,10 @@ interface TranscodeAPI {
     audioStreamIndex?: number
   ) => Promise<{ sessionId: string; url: string; subtitleTracks: SubtitleTrackInfo[] }>
   stop: (sessionId: string) => Promise<void>
+  // One-shot: tells the main process whether this client can decode HEVC from fragmented MP4,
+  // which decides whether an HEVC live remux copies (hvc1-tagged) or re-encodes (see
+  // transcodeService's canDecodeHevc).
+  setHevcSupport: (canDecode: boolean) => Promise<void>
   probeTracks: (sourceUrl: string) => Promise<{ audioTracks: AudioTrackInfo[]; subtitleTracks: SubtitleTrackInfo[] }>
 }
 

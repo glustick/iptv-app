@@ -245,6 +245,10 @@ describe('startTranscode', () => {
       // lies about its codec is worse than an untagged one.
       expect(liveArgv).not.toContain('-tag:v')
       expect(liveArgv).not.toContain('hvc1')
+      // The live window has to outlive the player's live-sync target (see startTranscode's own
+      // comment) — pinned here because shrinking it back to a reasonable-looking small number
+      // is exactly the regression that produced fatal fragLoadError on every channel.
+      expect(liveArgv[liveArgv.indexOf('-hls_list_size') + 1]).toBe('15')
 
       await withFakeFfmpegMode('capture_argv', () =>
         withEnv({ FAKE_FFMPEG_ARGV_FILE: argvFile }, () => service.startTranscode('irrelevant-source', true, 's2'))
@@ -274,6 +278,30 @@ describe('startTranscode', () => {
       const respawnedArgv = readFileSync(argvFile, 'utf8').split('\n').filter(Boolean)
       expect(respawnedArgv).toContain('-tag:v')
       expect(respawnedArgv).toContain('hvc1')
+      await service.stopTranscode('s1')
+    } finally {
+      rmSync(argvFile, { force: true })
+      rmSync(`${argvFile}.hevc-restarted`, { force: true })
+    }
+  })
+
+  // The other half of the same decision: when the client has no HEVC decoder, tagging and
+  // copying produces exactly what Chromium rejects (bufferAddCodecError, confirmed live), so the
+  // respawn has to encode to H.264 instead. canDecodeHevc is injectable for this — see
+  // TranscodeServiceDeps.
+  it('re-encodes video instead of tagging when the client cannot decode HEVC', async () => {
+    const service = track(
+      makeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG), canDecodeHevc: () => false })
+    )
+    const argvFile = join(tmpdir(), `allisoniptv-argv-${process.pid}-${Math.random().toString(16).slice(2)}`)
+    try {
+      const result = await withFakeFfmpegMode('capture_argv_hevc', () =>
+        withEnv({ FAKE_FFMPEG_ARGV_FILE: argvFile }, () => service.startTranscode('irrelevant-source', false, 's1'))
+      )
+      expect(result.playlistPath.endsWith('playlist.m3u8')).toBe(true)
+      const respawnedArgv = readFileSync(argvFile, 'utf8').split('\n').filter(Boolean)
+      expect(respawnedArgv[respawnedArgv.indexOf('-c:v') + 1]).toBe('libx264')
+      expect(respawnedArgv).not.toContain('hvc1')
       await service.stopTranscode('s1')
     } finally {
       rmSync(argvFile, { force: true })

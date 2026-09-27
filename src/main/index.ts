@@ -149,7 +149,15 @@ const resolveFfmpegPath = createFfmpegResolver(bundledFfmpegPath ?? null, {
 // or, for VOD/series, silent audio native <video> gives no error for at all. The actual
 // spawn/poll/cleanup logic lives in transcodeService.ts, decoupled from Electron entirely so it
 // can be tested directly — see transcodeService.test.ts.
-const transcodeService = createTranscodeService({ resolveFfmpegPath })
+// Whether this renderer can decode HEVC from fragmented MP4 (see transcodeService's
+// canDecodeHevc): only the renderer can ask Chromium, so it decides and pushes the answer here
+// once at startup via transcode:setHevcSupport. Defaults to "can decode", which is exactly the
+// behaviour this service had before the setting existed.
+let clientCanDecodeHevc = true
+const transcodeService = createTranscodeService({
+  resolveFfmpegPath,
+  canDecodeHevc: () => clientCanDecodeHevc
+})
 
 // Holds off display sleep while the renderer reports actual playback (see the keepAwake:setEnabled
 // handler + Player.tsx's effect) — the app-level wrapper around powerSaveBlocker, injected here
@@ -1226,6 +1234,9 @@ app.whenReady().then(async () => {
       }
     }
   )
+  ipcMain.handle('transcode:setHevcSupport', (_event, canDecodeHevc: boolean) => {
+    clientCanDecodeHevc = Boolean(canDecodeHevc)
+  })
   ipcMain.handle('transcode:stop', (_event, sessionId: string) => transcodeService.stopTranscode(sessionId))
   ipcMain.handle('transcode:probeTracks', (_event, sourceUrl: string) => transcodeService.probeTracks(sourceUrl))
   // The renderer re-sends its current watching state whenever playback starts, pauses, errors,

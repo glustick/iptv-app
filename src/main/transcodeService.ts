@@ -139,6 +139,16 @@ export interface TranscodeServiceDeps {
   stopGraceMs?: number
   subtitleGraceMs?: number
   probeTimeoutMs?: number
+  // Whether the *client* can decode HEVC from fragmented MP4 in MSE. Injectable rather than a
+  // constant because the answer is per-machine, and it decides which of the two HEVC
+  // remediations the self-restart below applies: a client that can decode gets a lossless video
+  // copy tagged hvc1; one that cannot (Chromium with no HEVC decoder at all — e.g. GPU decode
+  // disabled, this app's own "disabled_software" startup log line) gets a real H.264 encode,
+  // because the copy would be rejected by MSE outright (bufferAddCodecError, confirmed live)
+  // and the channel would never show a picture. Set from the renderer via
+  // transcode:setHevcSupport (see src/main/index.ts); defaults to "can decode" — today's
+  // behaviour.
+  canDecodeHevc?: () => boolean
 }
 
 export interface TranscodeService {
@@ -174,6 +184,24 @@ export interface TranscodeService {
   // audioStreamIndex via startTranscode above is even worth offering.
   probeTracks(sourceUrl: string): Promise<{ audioTracks: AudioTrackInfo[]; subtitleTracks: SubtitleTrackInfo[] }>
 }
+
+// Encode settings for the one case that cannot use `-c:v copy`: a live HEVC source on a client
+// with no HEVC decoder (see TranscodeServiceDeps.canDecodeHevc). Constant-quality `veryfast` is
+// what keeps a single 1080p live stream ahead of realtime on an ordinary machine; the forced
+// keyframes exist because the HLS muxer can only cut a segment at a keyframe, so `-hls_time 4`
+// would otherwise drift with the encoder's own GOP, and `-sc_threshold 0` stops scene-cut
+// keyframes from splitting segments off that same grid. Centralised so the quality/CPU
+// trade-off this path represents is one place to tune.
+const LIVE_H264_REENCODE_ARGS = [
+  '-preset',
+  'veryfast',
+  '-crf',
+  '20',
+  '-sc_threshold',
+  '0',
+  '-force_key_frames',
+  'expr:gte(t,n_forced*4)'
+]
 
 const TRANSCODE_MIME_TYPES: Record<string, string> = {
   '.m3u8': 'application/vnd.apple.mpegurl',
@@ -248,7 +276,10 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
     tagHvc1 = false,
     // Internal: set by the timeout retry below, so a starved first attempt gets exactly one
     // fresh connection before the channel is declared unplayable.
-    isRetry = false
+    isRetry = false,
+    // Internal: set by the HEVC self-restart's re-encode path below (see canDecodeHevc) — this
+    // attempt encodes video to H.264 instead of copying it. Mutually exclusive with tagHvc1.
+    reencodeVideo = false
   ): Promise<{ sessionId: string; playlistPath: string; subtitleTracks: SubtitleTrackInfo[] }> {
     const ffmpegPath = await deps.resolveFfmpegPath()
     if (!ffmpegPath) {
@@ -302,7 +333,10 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
       // when the requested index turns out to be a bitmap codec ffmpeg can't convert.
       ...(isVod && subtitleStreamIndex >= 0 ? ['-map', `0:s:${subtitleStreamIndex}?`] : []),
       '-c:v',
-      'copy',
+      reencodeVideo ? 'libx264' : 'copy',
+      // Only for the HEVC-on-a-client-that-cannot-decode-it case (see canDecodeHevc): a copy
+      // cannot be used there, so the picture exists at all only if the video is re-encoded.
+      ...(reencodeVideo ? LIVE_H264_REENCODE_ARGS : []),
       // Chromium's MSE rejects ffmpeg's default hev1 sample entry for HEVC (see
       // VIDEO_STREAM_PATTERN) — this tag is what its fMP4 HEVC support actually requires. Only
       // ever set after the source is KNOWN to be HEVC (the self-restart below): tagging an
@@ -348,8 +382,20 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
             // and Chromium decodes VOD's H.264/AAC TS output natively.
             '-hls_segment_type',
             'fmp4',
+            // The window has to outlive the *player's* live-sync target, not just look
+            // reasonable: Player.tsx keeps hls.js `liveSyncDurationCount` segments behind the
+            // live edge (5 on the "smooth" profile, 3 by default), so with 4s segments a
+            // 6-segment window left that target sitting on the OLDEST listed segment — one
+            // playlist refresh away from `delete_segments` evicting the very fragment hls.js
+            // was about to fetch. That 404s and surfaces as a fatal `fragLoadError` with no
+            // recovery left, since the channel's single remux attempt is already spent.
+            // 15 segments (~60s) gives a generous margin over the target plus buffer, and is
+            // also what `liveMaxLatencyDurationCount` (10 on "smooth") needs to be satisfiable
+            // at all — it cannot be reached inside a 6-segment window.
+            // Invariant: keep this strictly greater than Player.tsx's largest
+            // liveSyncDurationCount plus the buffer that profile allows.
             '-hls_list_size',
-            '6',
+            '15',
             '-hls_flags',
             'delete_segments+omit_endlist'
           ]),
@@ -435,7 +481,7 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
         // in tests — both confirmed by this test timing out with SIGTERM). There is nothing
         // to shut down cleanly — the output this attempt produced is discarded wholesale —
         // so escalation is not just acceptable here, it's the point.
-        if (!isVod && !tagHvc1 && !session.hvc1RestartPending) {
+        if (!isVod && !tagHvc1 && !reencodeVideo && !session.hvc1RestartPending) {
           const videoMatch = VIDEO_STREAM_PATTERN.exec(line)
           if (videoMatch && videoMatch[1].toLowerCase() === 'hevc') {
             session.hvc1RestartPending = true
@@ -551,7 +597,23 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
           // the watcher), so this only reaps the directory; nothing touches cancelledSessions,
           // which is what lets the retry below run at all.
           await rm(dir, { recursive: true, force: true }).catch(() => {})
-          return startTranscode(sourceUrl, isVod, sessionId, subtitleStreamIndex, audioStreamIndex, true)
+          // Two remediations for the same discovery, chosen by what the *client* can decode
+          // (see canDecodeHevc): the lossless copy + hvc1 tag when it can, and a real H.264
+          // encode when it cannot — where the copy would be rejected by MSE and the channel
+          // would show nothing at all. Either one disarms the watcher above for this second
+          // attempt, so this cannot loop.
+          return (deps.canDecodeHevc?.() ?? true)
+            ? startTranscode(sourceUrl, isVod, sessionId, subtitleStreamIndex, audioStreamIndex, true)
+            : startTranscode(
+                sourceUrl,
+                isVod,
+                sessionId,
+                subtitleStreamIndex,
+                audioStreamIndex,
+                false,
+                false,
+                true
+              )
         }
         // ffmpeg can legitimately exit clean (code 0, e.g. a very short clip) after writing the
         // video/audio playlist but before the subtitle rendition catches up — that's still a
@@ -613,7 +675,18 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
     // (its kill path depends on that), which the retry must undo to be allowed to run.
     if (!isRetry) {
       cancelledSessions.delete(sessionId)
-      return startTranscode(sourceUrl, isVod, sessionId, subtitleStreamIndex, audioStreamIndex, tagHvc1, true)
+      // Carries whichever HEVC remediation this attempt was already using — a retry is a fresh
+      // connection, not a fresh decision about the video codec.
+      return startTranscode(
+        sourceUrl,
+        isVod,
+        sessionId,
+        subtitleStreamIndex,
+        audioStreamIndex,
+        tagHvc1,
+        true,
+        reencodeVideo
+      )
     }
     throw new Error('Timed out waiting for ffmpeg to produce transcoded output')
   }

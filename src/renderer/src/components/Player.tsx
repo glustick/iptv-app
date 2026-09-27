@@ -692,6 +692,7 @@ export function Player(): JSX.Element | null {
           data.fatal &&
           nowPlaying.kind === 'live' &&
           tryFallbackForRawStream(
+            data,
             nowPlaying.url,
             () => {
               rememberLiveAudioFix(nowPlaying.streamId, 0, nowPlaying.url)
