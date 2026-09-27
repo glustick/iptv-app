@@ -149,6 +149,13 @@ export interface TranscodeServiceDeps {
   // transcode:setHevcSupport (see src/main/index.ts); defaults to "can decode" — today's
   // behaviour.
   canDecodeHevc?: () => boolean
+  // Optional lifecycle logger (the app wires this to its file log, logLifecycle in index.ts —
+  // there is deliberately no Electron import here). The transcode path is the one part of
+  // playback whose failures are otherwise invisible: a user on another machine (the 0.7.111
+  // all-channels fragLoadError report arrived from Windows) can hand over allisoniptv.log and
+  // it will now say whether ffmpeg started, paced, restarted for HEVC, or starved — without
+  // needing DevTools open at the exact moment.
+  log?: (message: string) => void
 }
 
 export interface TranscodeService {
@@ -236,6 +243,7 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
   // clicked "check for extra audio tracks" wait out the full 240s VOD deadline for what's
   // supposed to be a quick, no-output probe.
   const probeTimeoutMs = deps.probeTimeoutMs ?? 30000
+  const log = deps.log ?? (() => {})
 
   const transcodeSessions = new Map<string, TranscodeSession>()
 
@@ -296,6 +304,23 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
 
     const proc = spawn(ffmpegPath, [
       '-y',
+      // Live only: pace the input read to native frame rate. Measured live 2026-09-27 against
+      // this app's own provider: the panel's raw-MPEG-TS "live" connections now deliver at a
+      // sustained ~10x realtime (78 segments of 4s media in 30s of wallclock, holding steady
+      // 8+ minutes in — not a finite catch-up buffer, a firehose). Unpaced, the HLS output's
+      // live edge then advances at 10x too, and a 15-segment delete_segments window covers
+      // barely 1.5s of wallclock — segments get evicted between hls.js's playlist refresh and
+      // its fragment fetch, every fragment 404s, and the channel dies with the terminal
+      // fragLoadError no remedy can follow (the raw-stream one-shot is already spent by then).
+      // -re makes ffmpeg read at 1x media time; TCP backpressure flow-controls the provider
+      // (exactly how VLC consumes the same firehose), and the local playlist advances at a
+      // steady 1x like an ordinary live stream, whatever the source's delivery rate. Playback
+      // necessarily starts where the connection opened — the firehose has no throttleable
+      // "live edge" to join nearer — but that delay is inherent to serving a stream faster
+      // than realtime, not a cost this adds. VOD must NOT get this flag: its remux is meant to
+      // race ahead of playback as fast as the connection allows (scrub-anywhere event
+      // playlist), and -re would pin it to 1x, i.e. no scrubbing ahead ever again.
+      ...(isVod ? [] : ['-re']),
       '-i',
       sourceUrl,
       // Movies/series routinely carry an embedded subtitle track alongside the audio this fix
@@ -416,6 +441,9 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
     }
     const session: TranscodeSession = { proc, dir, stderrTail: [], subtitleTracks: [], inputStreamListEnded: false, hvc1RestartPending: false, exited: false }
     transcodeSessions.set(sessionId, session)
+    log(
+      `[transcode] session ${sessionId} started (${isVod ? 'vod' : `live${tagHvc1 ? ', hvc1 copy' : ''}${reencodeVideo ? ', h264 re-encode' : ''}${isRetry ? ', retry' : ''}`}) source=${sourceUrl}`
+    )
 
     // A stall-detection scheme keyed on "time since ffmpeg last wrote to stderr" was tried here
     // and had to be abandoned: ffmpeg's stderr is a pipe, not a tty, and glibc/libSystem's stdio
@@ -537,7 +565,8 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
     // on it and serving video alone. Never lets a broken/slow subtitle rendition hold up or
     // fail a video that's otherwise already playable.
     let videoReadyAt: number | null = null
-    const deadline = Date.now() + (isVod ? vodDeadlineMs : liveDeadlineMs)
+    const startedAt = Date.now()
+    const deadline = startedAt + (isVod ? vodDeadlineMs : liveDeadlineMs)
     while (Date.now() < deadline) {
       if (cancelledSessions.has(sessionId)) {
         cancelledSessions.delete(sessionId)
@@ -554,6 +583,7 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
         // languages) — the source might have fewer tracks than the one asked for.
         const mappedTrackExists = session.subtitleTracks.some((t) => t.index === subtitleStreamIndex && t.supported)
         if (!isVod || !mappedTrackExists) {
+          log(`[transcode] session ${sessionId}: playlist ready after ${Date.now() - startedAt}ms`)
           return { sessionId, playlistPath: playlistFile, subtitleTracks: session.subtitleTracks }
         }
         videoReadyAt = Date.now()
@@ -592,6 +622,7 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
         // the killed attempt died by SIGNAL, and exitCode stays null for those (see the
         // TranscodeSession field's own comment).
         if (session.hvc1RestartPending) {
+          log(`[transcode] session ${sessionId}: source is HEVC, restarting with ${deps.canDecodeHevc?.() ?? true ? 'hvc1 copy' : 'H.264 re-encode'}`)
           transcodeSessions.delete(sessionId)
           // Same teardown stopTranscode uses — the process is already gone here (SIGKILL from
           // the watcher), so this only reaps the directory; nothing touches cancelledSessions,
@@ -658,6 +689,7 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
         if (existsSync(playlistFile)) {
           return { sessionId, playlistPath: playlistFile, subtitleTracks: session.subtitleTracks }
         }
+        log(`[transcode] session ${sessionId}: ffmpeg exited before producing output: ${session.stderrTail.slice(-3).join(' | ')}`)
         throw new Error(`ffmpeg exited before producing output: ${session.stderrTail.slice(-10).join('\n')}`)
       }
       await sleep(pollIntervalMs)
@@ -674,6 +706,7 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
     // ONCE on a fresh connection before giving up. stopTranscode marked the session cancelled
     // (its kill path depends on that), which the retry must undo to be allowed to run.
     if (!isRetry) {
+      log(`[transcode] session ${sessionId}: no output after ${liveDeadlineMs}ms, retrying once on a fresh connection`)
       cancelledSessions.delete(sessionId)
       // Carries whichever HEVC remediation this attempt was already using — a retry is a fresh
       // connection, not a fresh decision about the video codec.
@@ -688,6 +721,7 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
         reencodeVideo
       )
     }
+    log(`[transcode] session ${sessionId}: gave up — no output after retry`)
     throw new Error('Timed out waiting for ffmpeg to produce transcoded output')
   }
 

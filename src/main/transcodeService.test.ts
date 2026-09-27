@@ -249,12 +249,20 @@ describe('startTranscode', () => {
       // comment) — pinned here because shrinking it back to a reasonable-looking small number
       // is exactly the regression that produced fatal fragLoadError on every channel.
       expect(liveArgv[liveArgv.indexOf('-hls_list_size') + 1]).toBe('15')
+      // Live input must be paced to native rate (-re): the provider serves raw TS at a
+      // sustained ~10x realtime (measured 2026-09-27), and an unpaced remux churns the whole
+      // delete_segments window every ~1.5s of wallclock — every fragment fetch 404s and the
+      // channel dies with terminal fragLoadError. Pinned so a future "cleanup" can't quietly
+      // drop the flag that keeps the output playlist advancing at 1x.
+      expect(liveArgv.indexOf('-re')).toBeGreaterThan(-1)
+      expect(liveArgv.indexOf('-re')).toBeLessThan(liveArgv.indexOf('-i'))
 
       await withFakeFfmpegMode('capture_argv', () =>
         withEnv({ FAKE_FFMPEG_ARGV_FILE: argvFile }, () => service.startTranscode('irrelevant-source', true, 's2'))
       )
       const vodArgv = readFileSync(argvFile, 'utf8').split('\n').filter(Boolean)
       expect(vodArgv).not.toContain('fmp4')
+      expect(vodArgv).not.toContain('-re')
       expect(vodArgv.some((a) => a.endsWith('seg_%05d.ts'))).toBe(true)
       expect(vodArgv).toContain('event')
     } finally {

@@ -156,7 +156,8 @@ const resolveFfmpegPath = createFfmpegResolver(bundledFfmpegPath ?? null, {
 let clientCanDecodeHevc = true
 const transcodeService = createTranscodeService({
   resolveFfmpegPath,
-  canDecodeHevc: () => clientCanDecodeHevc
+  canDecodeHevc: () => clientCanDecodeHevc,
+  log: logLifecycle
 })
 
 // Holds off display sleep while the renderer reports actual playback (see the keepAwake:setEnabled
