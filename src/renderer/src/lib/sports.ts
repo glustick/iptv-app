@@ -1,4 +1,5 @@
 import type { Category, LiveStream } from './types'
+import { shortZoneName, zonedWallToUtc } from './gameTimes'
 
 /**
  * Pure sports-schedule logic behind the Sports tab — no window/document/Electron imports, per
@@ -16,11 +17,22 @@ import type { Category, LiveStream } from './types'
 export interface SportsGroup {
   /** Stable slug for state/keys. */
   id: string
+  /** League display name, api-football style ("Premier League", "NFL"). */
   label: string
-  /** True for the Football / Soccer group — always sorted to the top of the list. */
+  /** Where the competition is played ("England", "USA") — the api-football grouping axis. */
+  country: string
+  /** True for football competitions — always sorted to the top of the league list. */
   isFootball: boolean
   categoryIds: string[]
   channelCount: number
+  /** Zone this league's feed quotes bare kickoff wall times in; null = already viewer-local. */
+  venueTz: string | null
+}/** The kickoff wall time exactly as written in the channel name, with its tz suffix if any. */
+export interface VenueTime {
+  hour: number
+  minute: number
+  /** Abbreviation as parsed ("ET", "BST", "GMT+3") — null when the name carried none. */
+  tzLabel: string | null
 }
 
 export interface ParsedEvent {
@@ -31,63 +43,87 @@ export interface ParsedEvent {
   awayKey: string
   /** Local-time kickoff when the name carries a usable date/time; null → "Unscheduled". */
   kickoff: Date | null
+  /** The same kickoff as the venue-side wall clock — kept for the dual-time display. */
+  venueTime: VenueTime | null
 }
 
 export interface SportsGame {
   key: string
-  sportId: string
+  leagueId: string
   homeDisplay: string
   awayDisplay: string
   /** Local calendar day (YYYY-MM-DD) the kickoff lands on, or null when unscheduled. */
   dayKey: string | null
   kickoff: Date | null
+  venueTime: VenueTime | null
   channels: LiveStream[]
 }
 
 export interface SportsSchedule {
-  sports: SportsGroup[]
-  /** sport id → every parsed game for that sport (all days; the view filters by day). */
-  gamesBySport: Record<string, SportsGame[]>
+  leagues: SportsGroup[]
+  /** league id → every parsed game for that league (all days; the view filters by day). */
+  gamesByLeague: Record<string, SportsGame[]>
+  /** Plain carrier channels (Sky Sports Main Event etc.) across every carrier category — the
+   *  left pane's flat channel list; clicking one plays it directly. */
+  channels: LiveStream[]
 }
 
 // --- Category classification -----------------------------------------------------------------
 
-interface SportRule {
+interface LeagueRule {
   id: string
   label: string
+  country: string
+  isFootball: boolean
+  venueTz: string | null
   keywords: string[]
 }
 
-// Order matters: the first matching rule wins, so specific codes (NFL, IPL) must precede the
-// generic terms they'd otherwise be swallowed by ("premier league" would eat "Indian Premier
-// League", "football" would eat "NFL Football").
-const SPORT_RULES: SportRule[] = [
-  { id: 'american-football', label: 'American Football', keywords: ['nfl', 'ncaaf', 'college football', 'gridiron', 'xfl', 'ufl'] },
-  { id: 'cricket', label: 'Cricket', keywords: ['cricket', 'ipl', 'big bash', 't20', 'test match'] },
-  { id: 'basketball', label: 'Basketball', keywords: ['nba', 'basketball', 'ncaab', 'wnba'] },
-  { id: 'ice-hockey', label: 'Ice Hockey', keywords: ['nhl', 'hockey', 'ahl', 'qmjhl', 'ohl', 'whl'] },
-  { id: 'baseball', label: 'Baseball', keywords: ['mlb', 'milb', 'baseball'] },
-  { id: 'fighting', label: 'Fighting', keywords: ['ufc', 'boxing', 'fight', 'wwe', 'wrestl', 'mma', 'bellator', 'pfl'] },
-  { id: 'tennis', label: 'Tennis', keywords: ['tennis', 'atp', 'wta', 'us open', 'wimbledon', 'roland'] },
-  { id: 'motorsport', label: 'Motorsport', keywords: ['f1', 'formula', 'motorsport', 'nascar', 'rally', 'motogp', 'dirtvision', 'speedway'] },
-  { id: 'rugby', label: 'Rugby', keywords: ['rugby', 'nrl', 'super league+', 'ki_option'] },
-  { id: 'aussie-rules', label: 'Aussie Rules', keywords: ['afl'] },
-  { id: 'golf', label: 'Golf', keywords: ['golf', 'pga', 'ryder'] },
-  { id: 'darts-snooker', label: 'Darts & Cue Sports', keywords: ['darts', 'snooker', 'matchroom', 'ultimate pool'] },
+// The Sports tab groups games the way api-football does — by COMPETITION (league), not by the
+// provider's channel-packaging categories. Order matters: the first matching rule wins, so
+// specific competitions precede the generic terms that would otherwise swallow them ("premier
+// league" before the football catch-all; the football catch-all before "nfl football").
+// venueTz is the zone that competition's feed quotes bare wall times in (see parseEventName).
+const LEAGUE_RULES: LeagueRule[] = [
+  { id: 'premier-league', label: 'Premier League', country: 'England', isFootball: true, venueTz: 'Europe/London', keywords: ['epl', 'premier league', 'barclays'] },
+  { id: 'champions-league', label: 'Champions League', country: 'World', isFootball: true, venueTz: 'Europe/London', keywords: ['champions league', 'uefa champions'] },
+  { id: 'europa-league', label: 'Europa League', country: 'World', isFootball: true, venueTz: 'Europe/London', keywords: ['europa league', 'europa'] },
+  { id: 'conference-league', label: 'Conference League', country: 'World', isFootball: true, venueTz: 'Europe/London', keywords: ['conf. league', 'conference league'] },
+  { id: 'la-liga', label: 'La Liga', country: 'Spain', isFootball: true, venueTz: 'Europe/London', keywords: ['laliga', 'la liga'] },
+  { id: 'serie-a', label: 'Serie A', country: 'Italy', isFootball: true, venueTz: 'Europe/London', keywords: ['serie a'] },
+  { id: 'bundesliga', label: 'Bundesliga', country: 'Germany', isFootball: true, venueTz: 'Europe/London', keywords: ['bundesliga'] },
+  { id: 'ligue-1', label: 'Ligue 1', country: 'France', isFootball: true, venueTz: 'Europe/London', keywords: ['ligue 1', 'ligue-1'] },
+  { id: 'championship', label: 'Championship', country: 'England', isFootball: true, venueTz: 'Europe/London', keywords: ['championship'] },
+  { id: 'efl-leagues', label: 'EFL & National League', country: 'England', isFootball: true, venueTz: 'Europe/London', keywords: ['league 1', 'league 2', 'league-1', 'league-2', 'national-league', 'efl'] },
+  { id: 'spfl', label: 'Scottish Football', country: 'Scotland', isFootball: true, venueTz: 'Europe/London', keywords: ['spfl', 'scottish'] },
+  { id: 'fa-cup', label: 'FA & League Cup', country: 'England', isFootball: true, venueTz: 'Europe/London', keywords: ['fa cup', 'league cup', 'carabao'] },
+  { id: 'friendlies', label: 'Friendlies', country: 'World', isFootball: true, venueTz: 'Europe/London', keywords: ['friendly', 'psf'] },
+  { id: 'mls', label: 'MLS', country: 'USA', isFootball: true, venueTz: 'America/New_York', keywords: ['mls'] },
   {
     id: 'football',
-    label: 'Football / Soccer',
-    keywords: [
-      'soccer', 'football', 'epl', 'premier league', 'championship', 'la liga', 'serie a',
-      'bundesliga', 'ligue', 'spfl', 'uefa', 'fifa', 'fa cup', 'league cup', 'efl', 'mls',
-      'a-league', 'world cup', 'nations league', 'copa', 'europa', 'conf. league'
-    ]
-  }
+    label: 'Football',
+    country: 'World',
+    isFootball: true,
+    venueTz: 'Europe/London',
+    keywords: ['soccer', 'football', 'nations league', 'world cup', 'copa', 'a-league', 'fifa', 'liga mx', 'eredivisie', 'primeira']
+  },
+  { id: 'nfl', label: 'NFL', country: 'USA', isFootball: false, venueTz: 'America/New_York', keywords: ['nfl', 'ncaaf', 'college football', 'gridiron', 'xfl', 'ufl'] },
+  { id: 'nba', label: 'NBA', country: 'USA', isFootball: false, venueTz: 'America/New_York', keywords: ['nba', 'ncaab', 'wnba', 'basketball'] },
+  { id: 'nhl', label: 'NHL', country: 'World', isFootball: false, venueTz: 'America/New_York', keywords: ['nhl', 'hockey', 'ahl', 'qmjhl', 'ohl', 'whl'] },
+  { id: 'mlb', label: 'MLB', country: 'USA', isFootball: false, venueTz: 'America/New_York', keywords: ['mlb', 'milb', 'baseball'] },
+  { id: 'fighting', label: 'Fighting', country: 'World', isFootball: false, venueTz: null, keywords: ['ufc', 'boxing', 'wwe', 'wrestl', 'mma', 'bellator', 'pfl', 'fight'] },
+  { id: 'tennis', label: 'Tennis', country: 'World', isFootball: false, venueTz: 'America/New_York', keywords: ['tennis', 'atp', 'wta', 'us open', 'wimbledon', 'roland'] },
+  { id: 'cricket', label: 'Cricket', country: 'World', isFootball: false, venueTz: null, keywords: ['cricket', 'ipl', 'big bash', 't20', 'test match'] },
+  { id: 'rugby', label: 'Rugby', country: 'World', isFootball: false, venueTz: 'Australia/Sydney', keywords: ['rugby', 'nrl', 'super league+'] },
+  { id: 'motorsport', label: 'Motorsport', country: 'World', isFootball: false, venueTz: null, keywords: ['f1', 'formula', 'motorsport', 'nascar', 'rally', 'motogp', 'dirtvision', 'speedway'] },
+  { id: 'aussie-rules', label: 'Aussie Rules', country: 'Australia', isFootball: false, venueTz: 'Australia/Sydney', keywords: ['aussie rules', 'afl'] },
+  { id: 'golf', label: 'Golf', country: 'World', isFootball: false, venueTz: null, keywords: ['golf', 'pga', 'ryder'] },
+  { id: 'darts-snooker', label: 'Darts & Cue Sports', country: 'World', isFootball: false, venueTz: null, keywords: ['darts', 'snooker', 'matchroom', 'ultimate pool'] }
 ]
 
-// Categories that exist to carry broadcast channels rather than one event each (every Sky
-// Sports/TNT/ESPN-style channel lives here). They still surface in Sports — as their own
-// browse group — but under a cleaned-up name rather than a sport label.
+// Categories that exist to carry broadcast channels rather than one competition's events.
+// They no longer become browse groups — their channels go to the left pane's flat Channels
+// list instead (the request: fewer categories, channels listed directly).
 const CARRIER_CATEGORY_KEYWORDS = ['sky sports', 'tnt sports', 'espn', 'dazn', 'kayo', 'bar tv', 'flo', 'peacock', 'paramount', 'stan sport', 'fanatiz', 'nfhs', 'setanta', 'dstv', 'supersports', 'tennis channel', 'premier sports', 'now hk', 'astro sports', 'hub sports', 'gaago', 'clubber', 'trillertv', 'fight pass', 'apple tv', 'monomax', 'tod ', 'crowd']
 
 /** Strips the provider's region/live prefixes ("USA | ", "Live | ", "EN✦ ") for display. */
@@ -99,18 +135,22 @@ export function cleanCategoryLabel(categoryName: string): string {
     .trim() || categoryName.trim()
 }
 
-/** Which sport a category belongs to, or null when it is not a sports category at all. */
-export function classifyCategory(categoryName: string): { id: string; label: string } | null {
+/** A category's classification: a competition group, a carrier (channels only), or not sports. */
+export type CategoryClass =
+  | { kind: 'league'; rule: LeagueRule }
+  | { kind: 'carrier' }
+
+/**
+ * Which competition a category belongs to (api-football-style leagues), whether it merely
+ * carries broadcast channels, or null when it is not a sports category at all.
+ */
+export function classifyCategory(categoryName: string): CategoryClass | null {
   const name = categoryName.toLowerCase()
-  for (const rule of SPORT_RULES) {
-    if (rule.keywords.some((k) => name.includes(k))) return { id: rule.id, label: rule.label }
+  for (const rule of LEAGUE_RULES) {
+    if (rule.keywords.some((k) => name.includes(k))) return { kind: 'league', rule }
   }
-  if (CARRIER_CATEGORY_KEYWORDS.some((k) => name.includes(k))) {
-    return { id: `carrier:${cleanCategoryLabel(categoryName).toLowerCase()}`, label: cleanCategoryLabel(categoryName) }
-  }
-  if (/\bsports?\b/.test(name)) {
-    return { id: `carrier:${cleanCategoryLabel(categoryName).toLowerCase()}`, label: cleanCategoryLabel(categoryName) }
-  }
+  if (CARRIER_CATEGORY_KEYWORDS.some((k) => name.includes(k))) return { kind: 'carrier' }
+  if (/\bsports?\b/.test(name)) return { kind: 'carrier' }
   return null
 }
 
@@ -167,7 +207,12 @@ function cleanTeam(side: string): { display: string; key: string } {
   return { display, key: keyTokens.join(' ') }
 }
 
-function parseTimeToken(timeToken: string, base: Date, tzText?: string): Date | null {
+function parseTimeToken(
+  timeToken: string,
+  base: Date,
+  tzText?: string,
+  venueHintTz?: string | null
+): Date | null {
   const t = timeToken.match(TIME)
   if (!t) return null
   const h12 = t[1] !== undefined
@@ -187,10 +232,37 @@ function parseTimeToken(timeToken: string, base: Date, tzText?: string): Date | 
     const asUtc = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate(), hour, minute) - offsetMinutes * 60_000
     return new Date(asUtc)
   }
+  if (venueHintTz) {
+    // Suffix-less time on a feed whose quoting zone is known from the category — interpret
+    // the wall time there (DST-correct) instead of as viewer-local.
+    return new Date(zonedWallToUtc(base.getFullYear(), base.getMonth(), base.getDate(), hour, minute, venueHintTz))
+  }
   return date
 }
 
-function extractKickoff(text: string, now: Date): Date | null {
+/**
+ * The venue-side wall time from the same text segment that produced a kickoff — the numbers as
+ * written plus the tz suffix when the name carried one ("3:00 pm ET" → 15:00, "ET"). Mirrors
+ * parseTimeToken's reading of the TIME/TZ patterns so the two can never disagree.
+ */
+function extractVenueTime(text: string): VenueTime | null {
+  const t = text.match(TIME)
+  if (!t) return null
+  const h12 = t[1] !== undefined
+  let hour = h12 ? Number(t[1]) : Number(t[4])
+  const minute = h12 ? Number(t[2]) : Number(t[5])
+  if (h12) {
+    const isPm = t[3].toLowerCase() === 'p'
+    if (isPm && hour < 12) hour += 12
+    if (!isPm && hour === 12) hour = 0
+  }
+  if (hour > 23 || minute > 59) return null
+  const tz = text.match(TZ)
+  const tzLabel = tz ? tz[1].toUpperCase() + (tz[2] ? `${tz[2]}${tz[3]}` : '') : null
+  return { hour, minute, tzLabel }
+}
+
+function extractKickoff(text: string, now: Date, venueHintTz?: string | null): Date | null {
   let day: { year: number; month: number; date: number; hadYear: boolean } | null = null
   const numeric = text.match(NUMERIC_DATE)
   if (numeric) {
@@ -222,7 +294,7 @@ function extractKickoff(text: string, now: Date): Date | null {
     if (!timeToken) return null
     // Time only ("@ 3:00 pm") — the provider lists current fixtures, so that is today; a
     // kickoff already several hours gone is tomorrow's fixture in this naming style.
-    const today = parseTimeToken(timeToken, now, text)
+    const today = parseTimeToken(timeToken, now, text, venueHintTz)
     if (!today) return null
     return today.getTime() < now.getTime() - 6 * 3_600_000 ? new Date(today.getTime() + 86_400_000) : today
   }
@@ -232,15 +304,21 @@ function extractKickoff(text: string, now: Date): Date | null {
   if (!day.hadYear && candidate.getTime() < now.getTime() - 45 * 86_400_000) {
     candidate = new Date(day.year + 1, day.month, day.date)
   }
-  const withTime = timeToken ? parseTimeToken(timeToken, candidate, text) : null
+  const withTime = timeToken ? parseTimeToken(timeToken, candidate, text, venueHintTz) : null
   return withTime ?? new Date(candidate.getFullYear(), candidate.getMonth(), candidate.getDate(), 12)
 }
 
 /**
  * Parses one channel name into a matchup, or null when the channel is a carrier ("Sky Sports
- * Main Event UHD", "NRL : NEWCASTLE KNIGHTS") rather than a specific event.
+ * Main Event UHD", "NRL : NEWCASTLE KNIGHTS") rather than a specific event. `venueHintTz` is
+ * the quoting zone of the category this channel lives in (see classifyCategory) — it governs
+ * suffix-less kickoff times and names the venue side of the dual-time display.
  */
-export function parseEventName(rawName: string, now: Date = new Date()): ParsedEvent | null {
+export function parseEventName(
+  rawName: string,
+  now: Date = new Date(),
+  venueHintTz?: string | null
+): ParsedEvent | null {
   const body = rawName.replace(INDEX_PREFIX, '')
   const separatorMatch = body.match(SEPARATOR)
   let left: string
@@ -290,22 +368,43 @@ export function parseEventName(rawName: string, now: Date = new Date()): ParsedE
   // ("Brentford 20:00 Chelsea"), which the separator-less form uses. The pipe form carries
   // its time on the LEFT ("PSF 03 | 16:00 Newcastle United vs Strasbourg"), so the left side
   // is the fallback when the right yields nothing.
-  let kickoff = extractKickoff(right, now)
-  if (!kickoff && separatorMatch) kickoff = extractKickoff(left, now)
+  let kickoff = extractKickoff(right, now, venueHintTz)
+  let venueTime: VenueTime | null = kickoff ? extractVenueTime(right) : null
+  if (!kickoff && separatorMatch) {
+    kickoff = extractKickoff(left, now, venueHintTz)
+    venueTime = kickoff ? extractVenueTime(left) : null
+  }
   if (!kickoff) {
     const bareTime = left.match(/\b(\d{1,2}[:.]\d{2})\s*$/)
     const bareRight = right.match(/^\s*(\d{1,2}[:.]\d{2})\b/)
     if (bareTime) {
-      const timeDate = parseTimeToken(`${bareTime[1]} ${now.getFullYear()}`, new Date(now.getFullYear(), now.getMonth(), now.getDate()))
+      const timeDate = parseTimeToken(
+        `${bareTime[1]} ${now.getFullYear()}`,
+        new Date(now.getFullYear(), now.getMonth(), now.getDate()),
+        undefined,
+        venueHintTz
+      )
       if (timeDate) {
         // A kickoff already several hours gone is tomorrow's fixture in this naming style.
         kickoff = timeDate.getTime() < now.getTime() - 6 * 3_600_000
           ? new Date(timeDate.getTime() + 86_400_000)
           : timeDate
+        venueTime = extractVenueTime(bareTime[1])
       }
     } else if (bareRight) {
-      kickoff = parseTimeToken(bareRight[1], new Date(now.getFullYear(), now.getMonth(), now.getDate()))
+      kickoff = parseTimeToken(
+        bareRight[1],
+        new Date(now.getFullYear(), now.getMonth(), now.getDate()),
+        undefined,
+        venueHintTz
+      )
+      venueTime = extractVenueTime(bareRight[1])
     }
+  }
+  // A suffix-less wall time interpreted via the category's zone gets that zone's name (at the
+  // actual kickoff instant, so BST vs GMT is right) on the venue side of the display.
+  if (kickoff && venueTime && !venueTime.tzLabel && venueHintTz) {
+    venueTime = { ...venueTime, tzLabel: shortZoneName(kickoff.getTime(), venueHintTz) }
   }
 
   return {
@@ -313,7 +412,8 @@ export function parseEventName(rawName: string, now: Date = new Date()): ParsedE
     awayDisplay: away.display,
     homeKey: home.key,
     awayKey: away.key,
-    kickoff
+    kickoff,
+    venueTime
   }
 }
 
@@ -325,48 +425,62 @@ export function dayKeyOf(date: Date): string {
 }
 
 /**
- * Builds the full sports schedule from the whole live catalog. Categories classify into sport
- * groups (Football / Soccer pinned first, then by channel count); event-named channels group
- * into games by normalized team pair + local day, across every category that carries them.
+ * Builds the sports schedule from the whole live catalog: categories classify into api-football
+ * style competitions (Premier League, La Liga, NFL…), event-named channels group into games by
+ * normalized team pair + local day across every category carrying them, and carrier categories
+ * contribute their channels to one flat list for the left pane.
  */
 export function buildSportsSchedule(streams: LiveStream[], categories: Category[], now: Date = new Date()): SportsSchedule {
-  const categoryToSport = new Map<string, { id: string; label: string }>()
+  const categoryClass = new Map<string, CategoryClass>()
   for (const category of categories) {
-    const sport = classifyCategory(category.category_name)
-    if (sport) categoryToSport.set(category.category_id, sport)
+    const cls = classifyCategory(category.category_name)
+    if (cls) categoryClass.set(category.category_id, cls)
   }
 
   const groupsById = new Map<string, SportsGroup>()
-  for (const [categoryId, sport] of categoryToSport) {
-    let group = groupsById.get(sport.id)
-    if (!group) {
-      group = { id: sport.id, label: sport.label, isFootball: sport.id === 'football', categoryIds: [], channelCount: 0 }
-      groupsById.set(sport.id, group)
-    }
-    if (!group.categoryIds.includes(categoryId)) group.categoryIds.push(categoryId)
-  }
-
+  const carrierChannels: LiveStream[] = []
   const gamesByKey = new Map<string, SportsGame>()
   for (const stream of streams) {
-    const sport = categoryToSport.get(stream.category_id)
-    if (!sport) continue
-    const group = groupsById.get(sport.id)
-    if (group) group.channelCount += 1
+    const cls = categoryClass.get(stream.category_id)
+    if (!cls) continue
 
-    const event = parseEventName(stream.name, now)
+    if (cls.kind === 'carrier') {
+      carrierChannels.push(stream)
+      continue
+    }
+
+    const rule = cls.rule
+    let group = groupsById.get(rule.id)
+    if (!group) {
+      group = {
+        id: rule.id,
+        label: rule.label,
+        country: rule.country,
+        isFootball: rule.isFootball,
+        categoryIds: [],
+        channelCount: 0,
+        venueTz: rule.venueTz
+      }
+      groupsById.set(rule.id, group)
+    }
+    if (!group.categoryIds.includes(stream.category_id)) group.categoryIds.push(stream.category_id)
+    group.channelCount += 1
+
+    const event = parseEventName(stream.name, now, rule.venueTz)
     if (!event) continue
     const dayKey = event.kickoff ? dayKeyOf(event.kickoff) : null
     const pair = [event.homeKey, event.awayKey].sort().join(' vs ')
-    const key = `${sport.id}|${dayKey ?? 'unscheduled'}|${pair}`
+    const key = `${rule.id}|${dayKey ?? 'unscheduled'}|${pair}`
     let game = gamesByKey.get(key)
     if (!game) {
       game = {
         key,
-        sportId: sport.id,
+        leagueId: rule.id,
         homeDisplay: event.homeDisplay,
         awayDisplay: event.awayDisplay,
         dayKey,
         kickoff: event.kickoff,
+        venueTime: event.venueTime,
         channels: []
       }
       gamesByKey.set(key, game)
@@ -374,14 +488,14 @@ export function buildSportsSchedule(streams: LiveStream[], categories: Category[
     game.channels.push(stream)
   }
 
-  const gamesBySport: Record<string, SportsGame[]> = {}
+  const gamesByLeague: Record<string, SportsGame[]> = {}
   for (const game of gamesByKey.values()) {
     game.channels.sort((a, b) => a.num - b.num)
-    const list = gamesBySport[game.sportId] ?? []
+    const list = gamesByLeague[game.leagueId] ?? []
     list.push(game)
-    gamesBySport[game.sportId] = list
+    gamesByLeague[game.leagueId] = list
   }
-  for (const list of Object.values(gamesBySport)) {
+  for (const list of Object.values(gamesByLeague)) {
     // Scheduled games first (earliest kickoff at top), unscheduled after, alphabetically.
     list.sort((a, b) => {
       if (a.kickoff && b.kickoff) return a.kickoff.getTime() - b.kickoff.getTime()
@@ -391,13 +505,14 @@ export function buildSportsSchedule(streams: LiveStream[], categories: Category[
     })
   }
 
-  const sports = [...groupsById.values()].sort((a, b) => {
+  const leagues = [...groupsById.values()].sort((a, b) => {
     if (a.isFootball !== b.isFootball) return a.isFootball ? -1 : 1
     if (b.channelCount !== a.channelCount) return b.channelCount - a.channelCount
     return a.label.localeCompare(b.label)
   })
+  carrierChannels.sort((a, b) => a.num - b.num)
 
-  return { sports, gamesBySport }
+  return { leagues, gamesByLeague, channels: carrierChannels }
 }
 
 /** Games for one local day (dayKey from dayKeyOf), kickoff-ordered. */

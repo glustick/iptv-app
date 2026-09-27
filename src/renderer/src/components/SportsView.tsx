@@ -6,13 +6,20 @@ import {
   type ApiFootballFixture,
   type FixtureFetchResult
 } from '../lib/api-football'
+import {
+  dualTimeLabel,
+  formatDualFromInstant,
+  formatDualFromWall,
+  venueTimezoneForCountry
+} from '../lib/gameTimes'
+import { useResizableWidth } from '../lib/useResizableWidth'
 import type { Category, LiveStream } from '../lib/types'
 
 // The Sports tab: sporting categories (Football / Soccer pinned first) → games for a selected
 // day → the channels carrying that game → the existing full player. All data comes from the
 // one bulk catalog fetch (ensureChannelCatalog) filtered through the pure lib/sports.ts —
 // no extra provider requests, and the channel click reuses the exact play() path the rest of
-// the app uses, so player wiring, history and escape handling come for free.
+// the app uses, so player wiring, history and Escape handling come for free.
 
 const DAY_RANGE = 7
 // A handful of high-school/regional categories parse into thousands of games; rendering them
@@ -29,26 +36,44 @@ function formatDayLabel(dayKey: string): string {
   return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
 }
 
-function formatKickoff(game: SportsGame): string {
+/**
+ * Kickoff times show BOTH sides: the venue's wall clock and the viewer's local one
+ * ("15:00 ET · 03:00 +1d"). When both read the same numbers only one is shown — a repeated
+ * identical time is noise, not information.
+ */
+function formatKickoff(game: SportsGame, hour12: boolean): string {
   if (!game.kickoff) return 'Time TBD'
+  if (game.venueTime) {
+    return dualTimeLabel(
+      formatDualFromWall(
+        game.venueTime.hour,
+        game.venueTime.minute,
+        game.venueTime.tzLabel,
+        game.kickoff.getTime(),
+        hour12
+      )
+    )
+  }
+  // Date-only names default to a midday placeholder — no real wall time to dual-display.
   return game.kickoff.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-/** One api-football fixture row: score when there is one, kickoff time before it starts. */
-function FixtureRow({ fixture }: { fixture: ApiFootballFixture }): JSX.Element {
-  const right = fixture.live
-    ? 'LIVE'
-    : fixture.finished
-      ? 'FT'
-      : fixture.kickoff
-        ? fixture.kickoff.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        : 'TBD'
+/** One api-football fixture row: score when there is one, dual kickoff time before it starts. */
+function FixtureRow({ fixture, hour12 }: { fixture: ApiFootballFixture; hour12: boolean }): JSX.Element {
+  const right = fixture.live ? 'LIVE' : fixture.finished ? 'FT' : null
+  const time = fixture.kickoff
+    ? dualTimeLabel(formatDualFromInstant(fixture.kickoff.getTime(), venueTimezoneForCountry(fixture.country), hour12))
+    : 'TBD'
   return (
-    <div className="sports-item" title={`${fixture.league} — ${fixture.round} (${fixture.statusLong})`}>
+    <div
+      className="sports-item"
+      title={`${fixture.league} — ${fixture.round} (${fixture.statusLong}) · ${fixture.country}`}
+    >
       <span className="sports-item-label">
+        {right === null ? `${time} · ` : ''}
         {fixture.homeTeam} {fixture.homeGoals ?? '–'}–{fixture.awayGoals ?? '–'} {fixture.awayTeam}
       </span>
-      <span className="sports-item-count">{right}</span>
+      <span className="sports-item-count">{right ?? '·'}</span>
     </div>
   )
 }
@@ -64,7 +89,7 @@ export function SportsView(): JSX.Element {
   // it); Sports classifies its own copy so switching tabs never disturbs that state.
   const [categories, setCategories] = useState<Category[]>([])
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [selectedSportId, setSelectedSportId] = useState<string | null>(null)
+  const [selectedLeagueId, setSelectedLeagueId] = useState<string | null>(null)
   const [dayOffset, setDayOffset] = useState(0)
   const [selectedGameKey, setSelectedGameKey] = useState<string | null>(null)
   const [fixtureResult, setFixtureResult] = useState<FixtureFetchResult>({ fixtures: [], error: null })
@@ -128,22 +153,37 @@ export function SportsView(): JSX.Element {
     [catalog, categories]
   )
 
-  const selectedSport = schedule?.sports.find((s) => s.id === selectedSportId) ?? null
-  const games = selectedSport ? (schedule?.gamesBySport[selectedSport.id] ?? []) : []
+  const selectedLeague = schedule?.leagues.find((l) => l.id === selectedLeagueId) ?? null
+  const games = selectedLeague ? (schedule?.gamesByLeague[selectedLeague.id] ?? []) : []
   const dayKey = dayKeyOf(new Date(Date.now() + dayOffset * 86_400_000))
   const dayGames = gamesForDay(games, dayKey)
   const unscheduled = games.filter((g) => g.dayKey === null)
   const selectedGame = games.find((g) => g.key === selectedGameKey) ?? null
-  // Channels of the selected sport that carry no event name (Sky Sports Main Event UHD etc.)
-  // — reachable here so the drill-down never hides the plain broadcast channels.
+  // Channels of the selected league that carry no event name (plain broadcast feeds of that
+  // competition) — the right pane's fallback listing when no game is selected.
   const carrierChannels = useMemo(() => {
-    if (!selectedSport || !catalog) return []
-    const ids = new Set(selectedSport.categoryIds)
+    if (!selectedLeague || !catalog) return []
+    const ids = new Set(selectedLeague.categoryIds)
     return catalog
       .filter((c) => ids.has(c.category_id))
       .filter((c) => !games.some((g) => g.channels.some((ch) => ch.stream_id === c.stream_id && ch.playlistId === c.playlistId)))
       .sort((a, b) => a.num - b.num)
-  }, [selectedSport, catalog, games])
+  }, [selectedLeague, catalog, games])
+
+  const hour12 = useAppStore((s) => s.settings.clockFormat) === '12h'
+  const updateSettings = useAppStore((s) => s.updateSettings)
+  // All three panes are drag-resizable; left and middle persist their width, the right pane
+  // flexes to fill the remainder — same mechanics as the app's sidebar and EPG panel.
+  const left = useResizableWidth(useAppStore((s) => s.settings.sportsLeftWidth), 1, {
+    min: 170,
+    max: 520,
+    onCommit: (w) => updateSettings({ sportsLeftWidth: w })
+  })
+  const middle = useResizableWidth(useAppStore((s) => s.settings.sportsMiddleWidth), 1, {
+    min: 240,
+    max: 900,
+    onCommit: (w) => updateSettings({ sportsMiddleWidth: w })
+  })
 
   function playChannel(channel: LiveStream): void {
     play('live', channel.stream_id, channel.name, 'm3u8', channel.stream_icon, channel.tv_archive, channel.playlistId)
@@ -155,32 +195,50 @@ export function SportsView(): JSX.Element {
   if (!schedule) {
     return <div className="sports-view"><div className="sports-status">Loading sports…</div></div>
   }
-  if (schedule.sports.length === 0) {
+  if (schedule.leagues.length === 0 && schedule.channels.length === 0) {
     return <div className="sports-view"><div className="sports-status">No sports categories on this provider.</div></div>
   }
 
   return (
     <div className="sports-view">
-      <div className="sports-pane sports-sports">
-        <div className="sports-pane-title">Sports</div>
+      <div className="sports-pane sports-sports" style={{ flex: `0 0 ${left.width}px` }}>
+        <div className="resize-handle resize-handle--right" onMouseDown={left.startDrag} />
+        <div className="sports-pane-title">Leagues</div>
         <div className="sports-list">
-          {schedule.sports.map((sport: SportsGroup) => (
+          {schedule.leagues.map((league: SportsGroup) => (
             <button
-              key={sport.id}
-              className={sport.id === selectedSportId ? 'sports-item active' : 'sports-item'}
+              key={league.id}
+              className={league.id === selectedLeagueId ? 'sports-item active' : 'sports-item'}
               onClick={() => {
-                setSelectedSportId(sport.id)
+                setSelectedLeagueId(league.id)
                 setSelectedGameKey(null)
               }}
+              title={`${league.label} — ${league.country}`}
             >
-              <span className="sports-item-label">{sport.isFootball ? '⚽ ' : ''}{sport.label}</span>
-              <span className="sports-item-count">{sport.channelCount}</span>
+              <span className="sports-item-label">{league.isFootball ? '⚽ ' : ''}{league.label}</span>
+              <span className="sports-item-count">{league.channelCount}</span>
             </button>
           ))}
+          {schedule.channels.length > 0 && (
+            <>
+              <div className="sports-section-label">Channels</div>
+              {schedule.channels.slice(0, MAX_GAMES_RENDERED).map((channel) => (
+                <button
+                  key={`${channel.playlistId ?? ''}:${channel.stream_id}`}
+                  className="sports-item"
+                  onClick={() => playChannel(channel)}
+                >
+                  <span className="sports-item-label">{channel.name}</span>
+                  {channel.stream_icon ? <img className="sports-channel-icon" src={channel.stream_icon} alt="" loading="lazy" /> : null}
+                </button>
+              ))}
+            </>
+          )}
         </div>
       </div>
 
-      <div className="sports-pane sports-games">
+      <div className="sports-pane sports-games" style={{ flex: `0 0 ${middle.width}px` }}>
+        <div className="resize-handle resize-handle--right" onMouseDown={middle.startDrag} />
         {apiFootballKey ? (
           <>
             <div className="sports-section-label">Fixtures · api-football.com</div>
@@ -191,15 +249,15 @@ export function SportsView(): JSX.Element {
                 <div className="sports-empty">No fixtures listed for this day.</div>
               ) : (
                 orderedFixtures.slice(0, MAX_GAMES_RENDERED).map((fixture) => (
-                  <FixtureRow key={fixture.id} fixture={fixture} />
+                  <FixtureRow key={fixture.id} fixture={fixture} hour12={hour12} />
                 ))
               )}
             </div>
           </>
         ) : null}
-        {selectedSport ? (
+        {selectedLeague ? (
           <>
-            <div className="sports-pane-title">{selectedSport.label}</div>
+            <div className="sports-pane-title">{selectedLeague.label}</div>
             <div className="sports-day-nav">
               <button onClick={() => setDayOffset((o) => Math.max(-DAY_RANGE, o - 1))} title="Earlier">◀</button>
               <span className="sports-day-label">{formatDayLabel(dayKey)}</span>
@@ -212,11 +270,12 @@ export function SportsView(): JSX.Element {
                   key={game.key}
                   className={game.key === selectedGameKey ? 'sports-item active' : 'sports-item'}
                   onClick={() => setSelectedGameKey(game.key === selectedGameKey ? null : game.key)}
+                  title={`${game.channels.length} channel${game.channels.length === 1 ? '' : 's'} carry this game`}
                 >
                   <span className="sports-item-label">
-                    {formatKickoff(game)} · {game.homeDisplay} vs {game.awayDisplay}
+                    {formatKickoff(game, hour12)} · {game.homeDisplay} vs {game.awayDisplay}
                   </span>
-                  <span className="sports-item-count">{game.channels.length}</span>
+                  <span className="sports-item-count">{game.channels.length} feed{game.channels.length === 1 ? '' : 's'}</span>
                 </button>
               ))}
               {dayGames.length > MAX_GAMES_RENDERED && (
@@ -234,7 +293,7 @@ export function SportsView(): JSX.Element {
                       <span className="sports-item-label">
                         {game.homeDisplay} vs {game.awayDisplay}
                       </span>
-                      <span className="sports-item-count">{game.channels.length}</span>
+                      <span className="sports-item-count">{game.channels.length} feed{game.channels.length === 1 ? '' : 's'}</span>
                     </button>
                   ))}
                 </>
@@ -251,7 +310,7 @@ export function SportsView(): JSX.Element {
           <>
             <div className="sports-pane-title">
               {selectedGame.homeDisplay} vs {selectedGame.awayDisplay}
-              <span className="sports-pane-sub">{formatKickoff(selectedGame)}</span>
+              <span className="sports-pane-sub">{formatKickoff(selectedGame, hour12)}</span>
             </div>
             <div className="sports-list">
               {selectedGame.channels.map((channel) => (
@@ -262,9 +321,9 @@ export function SportsView(): JSX.Element {
               ))}
             </div>
           </>
-        ) : selectedSport ? (
+        ) : selectedLeague ? (
           <>
-            <div className="sports-pane-title">All {selectedSport.label} channels</div>
+            <div className="sports-pane-title">All {selectedLeague.label} channels</div>
             <div className="sports-list">
               {carrierChannels.length === 0 && <div className="sports-empty">Select a game to list its channels.</div>}
               {carrierChannels.slice(0, MAX_GAMES_RENDERED).map((channel) => (

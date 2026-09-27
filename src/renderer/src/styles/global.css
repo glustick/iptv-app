@@ -3469,11 +3469,13 @@ body.resizing-col {
   border: 1px solid var(--panel-border, #23262f);
   border-radius: 10px;
   padding: 10px;
+  /* Anchors the pane-edge resize handles (absolute, ±4px outside the border). */
+  position: relative;
 }
 
 .sports-sports { flex: 0 0 260px; }
-.sports-games { flex: 1 1 46%; }
-.sports-channels { flex: 1 1 54%; }
+.sports-games { flex: 0 0 460px; }
+.sports-channels { flex: 1 1 auto; }
 
 .sports-pane-title {
   font-size: 14px;

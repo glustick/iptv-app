@@ -308,6 +308,10 @@ export interface AppSettings {
   // the same safeStorage boundary as the parental PIN; null = feature unconfigured, and the
   // Sports tab stays on its provider-channel schedule alone.
   apiFootballKey: string | null
+  // Sports tab pane widths (drag-resizable, persisted). The left/middle panes store their own
+  // width; the right pane flexes to fill whatever remains.
+  sportsLeftWidth: number
+  sportsMiddleWidth: number
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -333,7 +337,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   hiddenEpgSourceUrls: [],
   enabledPlaylistIds: [],
   customCategories: [],
-  apiFootballKey: null
+  apiFootballKey: null,
+  sportsLeftWidth: 260,
+  sportsMiddleWidth: 460
 }
 
 export type VpnStatus = 'disconnected' | 'connecting' | 'connected' | 'error'

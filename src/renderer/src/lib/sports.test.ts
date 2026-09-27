@@ -44,19 +44,36 @@ describe('cleanCategoryLabel', () => {
 })
 
 describe('classifyCategory', () => {
-  it('maps the real category names to sports, football included', () => {
-    expect(classifyCategory('Live | English Premier League - EPL ⚽')).toEqual({ id: 'football', label: 'Football / Soccer' })
-    expect(classifyCategory('Live | EPL Teams')).toEqual({ id: 'football', label: 'Football / Soccer' })
-    expect(classifyCategory('Live | Serie A 🇮🇹')).toEqual({ id: 'football', label: 'Football / Soccer' })
-    expect(classifyCategory('USA | NFL 🏈')).toEqual({ id: 'american-football', label: 'American Football' })
-    expect(classifyCategory('USA | NBA 🏀')).toEqual({ id: 'basketball', label: 'Basketball' })
-    expect(classifyCategory('Fight Club 🥊')).toEqual({ id: 'fighting', label: 'Fighting' })
-    expect(classifyCategory('Live | UFC Fight Pass')).toEqual({ id: 'fighting', label: 'Fighting' })
+
+  it('maps the real category names to api-football style competitions', () => {
+    const leagueOf = (name: string) => {
+      const cls = classifyCategory(name)
+      return cls?.kind === 'league' ? cls.rule : null
+    }
+    expect(leagueOf('Live | English Premier League - EPL ⚽')).toMatchObject({
+      id: 'premier-league', label: 'Premier League', country: 'England', isFootball: true, venueTz: 'Europe/London'
+    })
+    expect(leagueOf('Live | Serie A 🇮🇹')?.id).toBe('serie-a')
+    expect(leagueOf('USA | NFL 🏈')?.id).toBe('nfl')
+    expect(leagueOf('USA | NBA 🏀')?.id).toBe('nba')
+    expect(leagueOf('Live | Football Friendly Matches')?.id).toBe('friendlies')
+    expect(leagueOf('Fight Club 🥊')?.id).toBe('fighting')
   })
 
-  it('maps carrier categories to their own browse group', () => {
-    expect(classifyCategory('UK | Sky Sports')).toEqual({ id: 'carrier:sky sports', label: 'Sky Sports' })
-    expect(classifyCategory('USA | ESPN+')).toEqual({ id: 'carrier:espn+', label: 'ESPN+' })
+  it('classifies carrier categories as channels-only, not browse groups', () => {
+    expect(classifyCategory('UK | Sky Sports')).toEqual({ kind: 'carrier' })
+    expect(classifyCategory('USA | ESPN+')).toEqual({ kind: 'carrier' })
+    expect(classifyCategory('NFHS Network')).toEqual({ kind: 'carrier' })
+    expect(classifyCategory('Sport e calcio ⚽')).toEqual({ kind: 'carrier' })
+  })
+
+  it('carries the venue timezone on the league rule', () => {
+    const leagueOf = (name: string) => {
+      const cls = classifyCategory(name)
+      return cls?.kind === 'league' ? cls.rule : null
+    }
+    expect(leagueOf('USA | MLS Soccer')?.venueTz).toBe('America/New_York')
+    expect(leagueOf('Fight Club 🥊')?.venueTz).toBeNull()
   })
 
   it('returns null for non-sports categories', () => {
@@ -74,6 +91,35 @@ describe('parseEventName', () => {
     expect(event?.awayDisplay).toBe('Chelsea')
     // 3:00 pm local (no tz suffix) on the current day.
     expect(event?.kickoff?.getHours()).toBe(15)
+  })
+
+  it('retains the venue wall time and tz label for the dual-time display', () => {
+    const suffixed = parseEventName("US Open 10: (1) Zverev vs. Khachanov @ Sep 11 2:00PM ET", NOW)
+    expect(suffixed?.venueTime).toEqual({ hour: 14, minute: 0, tzLabel: 'ET' })
+
+    const bare = parseEventName('Soccer01: Brentford vs Chelsea @ 3:00 pm', NOW)
+    expect(bare?.venueTime).toEqual({ hour: 15, minute: 0, tzLabel: null })
+
+    const noTime = parseEventName('EPL 05: Newcastle United vs. Hull City AFC | Saturday', NOW)
+    expect(noTime?.venueTime).toBeNull()
+  })
+
+  it('interprets suffix-less wall times in the category hint zone, DST-correct', () => {
+    // "15:00" on a UK-quoted feed = 15:00 London. In September that is BST (UTC+1); in the
+    // depth of January the same wall time is GMT (UTC+0).
+    const summer = parseEventName('EPL 05: Newcastle United vs. Hull City AFC | Sunday, 27 September 2026 15:00', NOW, 'Europe/London')
+    expect((summer?.kickoff as Date).toISOString()).toBe('2026-09-27T14:00:00.000Z')
+    expect(summer?.venueTime?.hour).toBe(15)
+    expect(summer?.venueTime?.tzLabel).toMatch(/^(BST|GMT\+1)$/)
+
+    const winter = parseEventName('EPL 05: Newcastle United vs. Hull City AFC | Friday, 16 January 2026 15:00', NOW, 'Europe/London')
+    expect((winter?.kickoff as Date).toISOString()).toBe('2026-01-16T15:00:00.000Z')
+    expect(winter?.venueTime?.tzLabel).toMatch(/^(GMT|UTC|GMT\+0)$/)
+
+    // Without a hint the historic reading (already viewer-local) is unchanged.
+    const unhinted = parseEventName('EPL 05: Newcastle United vs. Hull City AFC | Sunday, 27 September 2026 15:00', NOW)
+    expect(unhinted?.kickoff?.getHours()).toBe(15)
+    expect(unhinted?.venueTime?.tzLabel).toBeNull()
   })
 
   it('parses the "TeamA HH:MM TeamB" form with no separator', () => {
@@ -169,27 +215,29 @@ describe('buildSportsSchedule', () => {
     return buildSportsSchedule(streams, categories, NOW)
   }
 
-  it('pins Football / Soccer first and excludes non-sports categories', () => {
-    const { sports } = schedule()
-    expect(sports[0].id).toBe('football')
-    expect(sports.map((s) => s.id)).toContain('carrier:sky sports')
-    expect(sports.map((s) => s.id)).not.toContain('carrier:usa | movies 🍿')
-    expect(sports[0].categoryIds).toEqual(['100', '101'])
+  it('groups by competition with football leagues first, and lists carrier channels flat', () => {
+    const s = schedule()
+    expect(s.leagues.map((l) => l.id)).toEqual(['premier-league'])
+    expect(s.leagues[0].label).toBe('Premier League')
+    expect(s.leagues[0].country).toBe('England')
+    expect(s.leagues[0].categoryIds).toEqual(['100', '101'])
+    expect(s.channels.map((c) => c.name)).toEqual(['401 Sky Sports Main Event HD'])
   })
 
   it('collapses one fixture across categories into a single game with all its feeds', () => {
-    const { gamesBySport } = schedule()
-    const games = gamesBySport['football'] ?? []
+    const { gamesByLeague } = schedule()
+    const games = gamesByLeague['premier-league'] ?? []
     const brentford = games.find((g) => g.homeDisplay === 'Brentford')
     expect(brentford).toBeDefined()
+    expect(brentford?.leagueId).toBe('premier-league')
     expect(brentford?.channels).toHaveLength(3)
     expect(brentford?.channels.map((c) => c.stream_id)).toEqual([11, 12, 21])
     expect(brentford?.dayKey).toBe(dayKeyOf(NOW))
   })
 
   it('buckets games by their kickoff day and sorts earliest first', () => {
-    const { gamesBySport } = schedule()
-    const games = gamesBySport['football'] ?? []
+    const { gamesByLeague } = schedule()
+    const games = gamesByLeague['premier-league'] ?? []
     expect(games).toHaveLength(2)
     const sep19 = gamesForDay(games, '2026-09-19')
     expect(sep19).toHaveLength(1)
@@ -199,8 +247,8 @@ describe('buildSportsSchedule', () => {
 
   it('keeps unscheduled events in a null-day bucket instead of dropping them', () => {
     const streams = [stream('TOD 55: Union Berlin vs Mainz 05 (time TBD)', '100', 61)]
-    const { gamesBySport } = buildSportsSchedule(streams, categories, NOW)
-    const games = gamesBySport['football'] ?? []
+    const { gamesByLeague } = buildSportsSchedule(streams, categories, NOW)
+    const games = gamesByLeague['premier-league'] ?? []
     expect(games).toHaveLength(1)
     expect(games[0].dayKey).toBeNull()
     expect(games[0].channels).toHaveLength(1)
