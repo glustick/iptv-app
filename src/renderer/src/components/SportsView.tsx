@@ -64,6 +64,12 @@ function FixtureRow({ fixture, hour12 }: { fixture: ApiFootballFixture; hour12: 
   const time = fixture.kickoff
     ? dualTimeLabel(formatDualFromInstant(fixture.kickoff.getTime(), venueTimezoneForCountry(fixture.country), hour12))
     : 'TBD'
+  // Null goals mean "not kicked off" on both sides — show a plain "v" rather than a fake
+  // scoreline of dashes. A number on either side renders the real scoreline.
+  const hasScore = fixture.homeGoals !== null || fixture.awayGoals !== null
+  const matchup = hasScore
+    ? `${fixture.homeTeam} ${fixture.homeGoals ?? 0}–${fixture.awayGoals ?? 0} ${fixture.awayTeam}`
+    : `${fixture.homeTeam} v ${fixture.awayTeam}`
   return (
     <div
       className="sports-item"
@@ -71,7 +77,7 @@ function FixtureRow({ fixture, hour12 }: { fixture: ApiFootballFixture; hour12: 
     >
       <span className="sports-item-label">
         {right === null ? `${time} · ` : ''}
-        {fixture.homeTeam} {fixture.homeGoals ?? '–'}–{fixture.awayGoals ?? '–'} {fixture.awayTeam}
+        {matchup}
       </span>
       <span className="sports-item-count">{right ?? '·'}</span>
     </div>
