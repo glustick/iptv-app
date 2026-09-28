@@ -246,6 +246,32 @@ export interface CustomCategory {
   streamIds: Array<number | string>
 }
 
+// What transcoding a channel/title turned out to need the last time it played — remembered per
+// key (see lib/transcodeMemory.ts for the key rule and source matching) so the next open can go
+// straight to the outcome that was confirmed working, instead of repeating detection that will
+// only come out the same way (the silent-audio probe wait above all). One entry holds the whole
+// decision; the union below is every outcome the playback/fallback pipeline can settle on:
+//   'direct' — played as-is, no transcode needed.
+//   'audio'  — AAC audio remux; `audioIndex` is the raw MPEG-TS audio stream to map (0 =
+//              first/default, same convention as liveAudioFixes.audioIndex above; higher = a
+//              track picked via "Check Audio Tracks").
+//   'video'  — the source is HEVC and this client cannot decode it, so the live remux must
+//              re-encode H.264 instead of copying (transcodeService's reencodeVideo).
+//   'rawTs'  — the source is a raw MPEG-TS byte stream (no HLS playlist anywhere), so the
+//              same ffmpeg remux is the only way it plays at all.
+// `url` is the source the outcome was confirmed against, matched via sameSourceUrl (host +
+// pathname) rather than string equality: provider URLs rotate their token between opens, and an
+// exact-only match would silently stop applying — the one failure a memory like this cannot
+// afford. `confirmedAt` is epoch-ms of when the outcome was last seen.
+//
+// Deliberately parallel to liveAudioFixes, not a replacement: that field predates this record,
+// keeps its own job untouched, and whether the two eventually unify is a separate decision.
+export type TranscodeMemoryEntry =
+  | { kind: 'direct'; url: string; confirmedAt: number }
+  | { kind: 'audio'; audioIndex: number; url: string; confirmedAt: number }
+  | { kind: 'video'; url: string; confirmedAt: number }
+  | { kind: 'rawTs'; url: string; confirmedAt: number }
+
 export interface AppSettings {
   bufferProfile: BufferProfile
   clockFormat: ClockFormat
@@ -285,6 +311,12 @@ export interface AppSettings {
   // Keyed the same way (a fix remembered for one provider's channel 42 must not be applied to
   // another provider's 42) — see lib/channelIdentity.ts.
   liveAudioFixes: Record<string, { audioIndex: number; url: string }>
+  // The remembered transcoding outcome for channels/titles, keyed by lib/transcodeMemory.ts —
+  // live channels share liveAudioFixes' playlist-aware key rule; movies and series episodes get
+  // their own namespaces in the same Record. Companion to liveAudioFixes above, not a
+  // migration: that field stays exactly as it is. See TranscodeMemoryEntry for what an entry
+  // holds and when it still applies.
+  transcodeMemory: Record<string, TranscodeMemoryEntry>
   // User-added third-party EPG sources (any XMLTV guide URL, e.g. iptv-org country feeds) —
   // fetched through the local proxy on connect alongside the provider's own xmltv.php guide
   // (when allowed) and merged into the EPG grid per channel, filling the multi-day gap the
@@ -338,6 +370,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   multiViewLayout: 2,
   hiddenChannelKeys: [],
   liveAudioFixes: {},
+  transcodeMemory: {},
   customEpgUrls: [],
   epgChannelMappings: [],
   hiddenEpgSourceUrls: [],

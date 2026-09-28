@@ -177,6 +177,10 @@ export async function loadSettings(): Promise<AppSettings> {
     console.warn('[settings] liveAudioFixes was not an object on disk — resetting it')
     result.liveAudioFixes = {}
   }
+  if (typeof result.transcodeMemory !== 'object' || result.transcodeMemory === null || Array.isArray(result.transcodeMemory)) {
+    console.warn('[settings] transcodeMemory was not an object on disk — resetting it')
+    result.transcodeMemory = {}
+  }
   // Namespaced lock IDs — drop legacy bare ones rather than guessing which section they meant.
   result.lockedCategoryIds = result.lockedCategoryIds.filter((id) => id.includes(':'))
   let needsMigration = false
