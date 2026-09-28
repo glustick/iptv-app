@@ -2224,6 +2224,38 @@ describe('per-channel EPG state across playlists', () => {
     // what would otherwise have been one shared (and wrong) cache slot.
     expect(Object.keys(useAppStore.getState().shortEpgByStream).sort()).toEqual(['91001', 'second:91001'])
   })
+
+  it('refreshShortEpg fetches again straight away, ignoring the freshness window', async () => {
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    const now = Math.floor(Date.now() / 1000)
+    const calls: number[] = []
+    vi.spyOn(client, 'getShortEpg').mockImplementation(async (streamId: number) => {
+      calls.push(streamId)
+      return [
+        {
+          id: 'x',
+          epg_id: '',
+          title: 'Now',
+          lang: '',
+          start: '',
+          end: '',
+          description: '',
+          channel_id: '',
+          start_timestamp: String(now),
+          stop_timestamp: String(now + 3600)
+        }
+      ]
+    })
+    useAppStore.setState({ client, primaryPlaylistId: 'primary', shortEpgByStream: {}, shortEpgFetchedAt: {} })
+
+    await useAppStore.getState().loadShortEpg(91002, 'primary')
+    // A second ordinary load is suppressed by the (fresh, still-current) cache entry …
+    await useAppStore.getState().loadShortEpg(91002, 'primary')
+    expect(calls).toHaveLength(1)
+    // … while the explicit per-channel refresh asks the provider again.
+    await useAppStore.getState().refreshShortEpg(91002, 'primary')
+    expect(calls).toHaveLength(2)
+  })
 })
 
 describe('the full catalogue across playlists (ensureChannelCatalog)', () => {

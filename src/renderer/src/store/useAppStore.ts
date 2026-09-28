@@ -552,6 +552,10 @@ interface AppState {
   // account that actually serves it AND cached under that channel's playlist-aware key — the same
   // numeric id on two playlists is two different channels (see lib/channelIdentity).
   loadShortEpg: (streamId: number, playlistId?: string | null) => Promise<void>
+  // Forces a fresh fetch for one channel — bypasses BOTH the freshness TTL and the failure
+  // cooldown that loadShortEpg's own guards apply. This is the grid's per-channel refresh button:
+  // an explicit user action is allowed to ask the provider again immediately.
+  refreshShortEpg: (streamId: number, playlistId?: string | null) => Promise<void>
   play: (
     kind: MediaKind,
     streamId: number,
@@ -1964,6 +1968,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       })
       runNextShortEpgFetch()
     })
+  },
+
+  refreshShortEpg: (streamId, playlistId) => {
+    const { primaryPlaylistId } = get()
+    const key = channelKey(playlistId, streamId, primaryPlaylistId)
+    // Drop this channel's failure cooldown and stale its freshness stamp, then reuse loadShortEpg
+    // so the queue, the in-flight dedupe and the provider/pool merge behave exactly as they always
+    // do. A fetch already in flight makes this a no-op, which is the honest outcome.
+    shortEpgFailedAt.delete(key)
+    set({ shortEpgFetchedAt: { ...get().shortEpgFetchedAt, [key]: 0 } })
+    return get().loadShortEpg(streamId, playlistId)
   },
 
   probeChannelHealth: (streamId, playlistId) => {

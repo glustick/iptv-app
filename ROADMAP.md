@@ -309,9 +309,11 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
   - **Sports** — cache the normalized fixtures per selected day. Refetch when that day's cache is
     stale, keeping the existing live-first refetch only while a cached day actually has live
     fixtures (a day-old "live" strip is worse than none). A refresh button on the Sports tab.
-  - **Per channel** — the grid row's lazy `loadShortEpg` keeps its TTL, but gains a user-visible
-    **refresh this channel** action that bypasses the cooldown: the request's own "button per
-    channel".
+  - **Per channel** — DONE (2026-09-28). `EpgGridPanel`'s preview now carries a **↻ Refresh
+    listings** button backed by a new `refreshShortEpg` action, which drops that channel's failure
+    cooldown, stales its freshness stamp and then reuses `loadShortEpg` — so the fetch queue, the
+    in-flight dedupe and the provider/pool merge all behave exactly as before; only the explicit
+    button bypasses the guards. The grid row's own lazy load keeps its TTL.
   - **Where it is stored** — sports fixtures are small JSON and belong in the electron-store the app
     already persists to (`store:get/set` — the "application database" on the installed machine).
     **The guide must not go there**: electron-store rewrites its whole file on every `set`, so a

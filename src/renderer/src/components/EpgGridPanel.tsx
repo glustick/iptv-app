@@ -51,6 +51,7 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
   const openChannelPreview = useAppStore((s) => s.openChannelPreview)
   const epgSourceByStream = useAppStore((s) => s.epgSourceByStream)
   const openGuide = useAppStore((s) => s.openGuide)
+  const refreshShortEpg = useAppStore((s) => s.refreshShortEpg)
   const findChannelByNumber = useAppStore((s) => s.findChannelByNumber)
   const compact = epgRowDensity === 'compact'
 
@@ -226,6 +227,17 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
             </div>
             <button className="watch-now-button watch-now-button--compact" onClick={() => watchFullscreen()}>
               ⛶ Watch fullscreen
+            </button>
+            {/* The per-channel manual refresh: this channel's listings, fetched again right now,
+                ignoring both the freshness window and the failure back-off that the lazy row-load
+                otherwise respects (see refreshShortEpg). */}
+            <button
+              className="epg-density-toggle"
+              style={{ marginTop: 8 }}
+              onClick={() => void refreshShortEpg(previewChannel.stream_id, previewChannel.playlistId)}
+              title="Fetch this channel's listings again now, ignoring the usual cache and cooldowns"
+            >
+              ↻ Refresh listings
             </button>
             {/* Why this channel behaves oddly — the one place a user is already looking at the
                 channel itself. Only rendered for a judged-and-wanting channel; nothing at all for
