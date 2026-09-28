@@ -337,11 +337,15 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
   should instead say what is true on that platform — download the `.dmg` from the releases page —
   while Windows keeps doing the full download/apply/restart cycle it is already verified to do.
   Needs the platform known in the renderer.
-- **Remove the release-workflow race.** Three platform jobs each ask GitHub to create the same
-  release, and the losers get `422 already_exists` — which is what failed the mac job on v0.7.98
+- **Remove the release-workflow race — DONE (2026-09-28).** Three platform jobs each asked GitHub to create the same
+  release, and the losers got `422 already_exists` — which is what failed the mac job on v0.7.98
   (fixed by re-running it, and the notes job was skipped as collateral). The fix is structural:
   create the release in a first job, make the three platform jobs `needs:` it, and let them upload
-  into an existing release instead of racing to create one.
+  into an existing release instead of racing to create one. Shipped as a new `create-release` job
+  in `release.yml` (`gh release view "$GITHUB_REF_NAME" || gh release create …`, idempotent on a
+  re-run) with `mac`/`windows`/`linux` each carrying `needs: create-release`; electron-builder then
+  finds the release by tag and uploads into it. Workflow-only change — no app build, no version
+  bump. Not yet exercised by a real tagged release; the next `v*` tag is the first live run.
 - **Channel health: distinguish "checked and live" from "not yet checked".** As shipped in 0.7.95 a
   channel with no badge means *either* of those two things, and they look identical to a user. The
   cheapest honest fix is a positive tick (or a "checked 12 of 18" count) for channels the probe has

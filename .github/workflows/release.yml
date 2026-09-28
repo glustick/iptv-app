@@ -20,7 +20,29 @@ permissions:
 # fails trying to open it — which is what broke the first version of this workflow on macOS and
 # Windows while Linux (which ignores CSC_LINK) passed.
 jobs:
+  # Creates the GitHub Release exactly once, before any platform job publishes. Without this the
+  # three platform jobs each ran `electron-builder --publish always`, which asks GitHub to create
+  # the same release for the same tag — the first to land wins and the others get 422
+  # already_exists, which is what failed the mac job on v0.7.98. With the release pre-created,
+  # electron-builder finds it by tag and uploads into it instead of racing to create one. Idempotent
+  # on re-runs: an existing release is left as-is and the three platform jobs upload into it.
+  create-release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Create the release if it does not already exist
+        run: |
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || \
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "${GITHUB_REF_NAME}" \
+              --notes "Release ${GITHUB_REF_NAME}" \
+              --latest
+
   mac:
+    needs: create-release
     runs-on: macos-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -54,6 +76,7 @@ jobs:
         run: npx electron-builder --publish always
 
   windows:
+    needs: create-release
     runs-on: windows-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -104,6 +127,7 @@ jobs:
       - run: gh release edit "${GITHUB_REF_NAME}" --notes-file build/release-notes.md
 
   linux:
+    needs: create-release
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
