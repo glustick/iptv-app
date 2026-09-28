@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ErrorData } from 'hls.js'
 import { clientCanDecodeHevc } from './hevcSupport'
+import { rememberedAudioIndex, pruneTranscodeMemory, transcodeMemoryKey } from './transcodeMemory'
+import { useAppStore } from '../store/useAppStore'
+import type { TranscodeMemoryEntry } from './types'
 
 /**
  * Detects a class of hls.js failures that share one real cause — a Dolby Digital
@@ -68,6 +71,24 @@ export const MAX_REMUX_CHAIN_RESTARTS = 3
  */
 export function shouldRestartRemuxChain(awaitingTranscode: boolean, restartsUsed: number): boolean {
   return !awaitingTranscode && restartsUsed < MAX_REMUX_CHAIN_RESTARTS
+}
+
+/**
+ * The transcode-memory key for whatever movie or episode is playing right now, or null for
+ * live content (this memory is deliberately VOD/series-only — live keeps its own
+ * liveAudioFixes) and for nothing playing at all. Read from the store rather than passed in by
+ * callers, because every call point here is the playback of the title the player just opened:
+ * the store's nowPlaying is that identity, and taking it from one place keeps the read and the
+ * writes from ever disagreeing about a key. The series form uses String(streamId): an episode
+ * is played with exactly Number(episode.id) (see SeriesModal's play call), so this round-trips
+ * the same id the episode-progress store already round-trips the same way.
+ */
+function nowPlayingVodMemoryKey(): string | null {
+  const { nowPlaying } = useAppStore.getState()
+  if (!nowPlaying || (nowPlaying.kind !== 'movie' && nowPlaying.kind !== 'series')) return null
+  return nowPlaying.kind === 'movie'
+    ? transcodeMemoryKey({ kind: 'movie', streamId: nowPlaying.streamId })
+    : transcodeMemoryKey({ kind: 'series', episodeId: String(nowPlaying.streamId) })
 }
 
 /**
@@ -139,6 +160,24 @@ export function useTranscodeFallback(): {
     // defaults to true since the original, VOD-only caller never says otherwise.
     isVod?: boolean
   ) => boolean
+  // The remembered-outcome read for movies/series (settings.transcodeMemory — see
+  // lib/transcodeMemory.ts for the key and source-matching rules): when this title's last
+  // confirmed outcome was the audio remux and the source still matches it, starts that remux
+  // immediately and returns true — call it before registering silent-audio detection and skip
+  // the detection when it returns true, since the wait it replaces is the entire point of the
+  // memory. Returns false when there is nothing actionable (no entry, one confirmed against a
+  // different source, or a 'direct' record — see the implementation for why 'direct' is
+  // deliberately not acted on).
+  tryFallbackForRememberedAudio: (
+    originalUrl: string,
+    onReload: () => void,
+    onError?: (message: string) => void
+  ) => boolean
+  // The write half for the detection poll's other conclusion: the caller's poll ran its course
+  // without confirming the silent-audio symptom, so record { kind: 'direct' } for the current
+  // title (a no-op for anything that isn't a movie/series). Records only — nothing reads it
+  // back as a reason to skip detection.
+  rememberDirectOutcome: (originalUrl: string) => void
   reset: () => void
   beginRun: () => void
   // True once any fallback session — the automatic codec fix above, or a user-chosen
@@ -253,6 +292,15 @@ export function useTranscodeFallback(): {
 
   const getSourceUrl = useCallback((originalUrl: string) => transcodedUrlRef.current ?? originalUrl, [])
 
+  // Writes one remembered outcome into settings, pruning on the way through: every write is a
+  // chance for the shared record to have outgrown its cap, and this is its only writer — there
+  // is no later sweep, so the bound has to hold here. Goes through the store action like every
+  // other setting, so the write rides the normal save/backup paths unchanged.
+  const rememberTranscodeOutcome = useCallback((key: string, entry: TranscodeMemoryEntry) => {
+    const { settings, updateSettings } = useAppStore.getState()
+    updateSettings({ transcodeMemory: pruneTranscodeMemory({ ...settings.transcodeMemory, [key]: entry }) })
+  }, [])
+
   const startFallback = useCallback(
     (
       originalUrl: string,
@@ -261,7 +309,13 @@ export function useTranscodeFallback(): {
       onReload: () => void,
       onError?: (message: string) => void,
       audioStreamIndex = 0,
-      reason: 'audio' | 'raw-stream' = 'audio'
+      reason: 'audio' | 'raw-stream' = 'audio',
+      // Runs once the session's output actually exists — the same moment onReload fires. The
+      // remembered-outcome writes need success, not intent: recording a fix whose remux then
+      // failed would make every later open skip detection and fail the same way with no
+      // self-heal. Optional so the live/raw-TS callers, whose own memory lives elsewhere,
+      // don't change.
+      onStarted?: () => void
     ): void => {
       triedTranscodeRef.current = true
       awaitingTranscodeRef.current = true
@@ -287,6 +341,7 @@ export function useTranscodeFallback(): {
             setActiveVodAudioIndex(audioStreamIndex)
             setActiveVodSubtitleIndex(subtitleStreamIndex)
           }
+          onStarted?.()
           onReload()
         })
         .catch((err) => {
@@ -366,10 +421,81 @@ export function useTranscodeFallback(): {
   const tryFallbackForSilentAudio = useCallback(
     (originalUrl: string, onReload: () => void, onError?: (message: string) => void, isVod = true): boolean => {
       if (awaitingTranscodeRef.current || triedTranscodeRef.current) return false
-      startFallback(originalUrl, isVod, 0, onReload, onError)
+      // VOD/series only (live keeps its own liveAudioFixes memory, deliberately untouched by
+      // this): the detection just concluded this title needs the remux, so remember the
+      // outcome — the next open starts here directly (see tryFallbackForRememberedAudio).
+      // Written on success, not on intent — see startFallback's onStarted.
+      const vodKey = isVod ? nowPlayingVodMemoryKey() : null
+      startFallback(
+        originalUrl,
+        isVod,
+        0,
+        onReload,
+        onError,
+        0,
+        'audio',
+        vodKey === null
+          ? undefined
+          : () =>
+              rememberTranscodeOutcome(vodKey, {
+                kind: 'audio',
+                audioIndex: 0,
+                url: originalUrl,
+                confirmedAt: Date.now()
+              })
+      )
       return true
     },
-    [startFallback]
+    [startFallback, rememberTranscodeOutcome]
+  )
+
+  // The read half of the remembered-outcome memory for movies/series: when this title's last
+  // confirmed outcome was the audio remux, and the source about to play still matches the one
+  // it was confirmed against (rotated provider token and all — see rememberedAudioIndex),
+  // start the remux right now and return true. A caller that gets true must skip registering
+  // its silent-audio detection poll entirely: the wait it replaces — up to
+  // SILENT_AUDIO_MAX_CHECK_ATTEMPTS seconds, plus the connection-release delay before ffmpeg
+  // may even start, plus the "is it stuck?" uncertainty throughout — is the whole point of the
+  // memory. Playback carries on with the original (its video was fine; only the audio was
+  // broken) and swaps to the remux when it is ready, exactly like live's own remembered-fix
+  // flow.
+  //
+  // Only an 'audio' entry starts anything, deliberately: a 'direct' entry records a source
+  // that played as-is, but the file behind a URL can change — acting on that record would
+  // leave a title that has since turned AC-3 silently mute with nothing on screen to explain
+  // it. Detection keeps running for 'direct' (this returns false); the record is kept.
+  const tryFallbackForRememberedAudio = useCallback(
+    (originalUrl: string, onReload: () => void, onError?: (message: string) => void): boolean => {
+      // Mirrors tryFallbackForSilentAudio's guard: a repeat call (a reload of this same title
+      // can re-enter before the session resolves) must not stack a second session on top of
+      // one already starting, and one that already ran doesn't get to run again either.
+      if (awaitingTranscodeRef.current || triedTranscodeRef.current) return false
+      const key = nowPlayingVodMemoryKey()
+      if (key === null) return false
+      const audioIndex = rememberedAudioIndex(useAppStore.getState().settings.transcodeMemory, key, originalUrl)
+      if (audioIndex === null) return false
+      startFallback(originalUrl, true, 0, onReload, onError, audioIndex, 'audio', () =>
+        // Re-confirm on success, refreshing confirmedAt: the prune drops the oldest entries,
+        // and an entry being used right now must not age into that group while unused ones sit
+        // behind it.
+        rememberTranscodeOutcome(key, { kind: 'audio', audioIndex, url: originalUrl, confirmedAt: Date.now() })
+      )
+      return true
+    },
+    [startFallback, rememberTranscodeOutcome]
+  )
+
+  // The write half for the detection poll's other conclusion: the poll ran its full course
+  // without ever confirming the silent-audio symptom, so this title played as-is. Recorded for
+  // the memory's own sake (and any later use); nothing reads 'direct' back as a reason to skip
+  // detection — see tryFallbackForRememberedAudio above — and it is a no-op for live content.
+  const rememberDirectOutcome = useCallback(
+    (originalUrl: string): void => {
+      const key = nowPlayingVodMemoryKey()
+      if (key === null) return
+      rememberTranscodeOutcome(key, { kind: 'direct', url: originalUrl, confirmedAt: Date.now() })
+    },
+    [rememberTranscodeOutcome]
   )
 
   // A live channel's actual MPEG-TS multiplex can carry more than one audio elementary stream
@@ -484,6 +610,8 @@ export function useTranscodeFallback(): {
     transcodeReason,
     attemptRemuxRecovery,
     tryFallbackForSilentAudio,
+    tryFallbackForRememberedAudio,
+    rememberDirectOutcome,
     reset,
     beginRun,
     hasFallbackActive,
