@@ -314,9 +314,14 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
     line showing the stamp. The provider guide is keyed per profile, a custom source by its URL.
     A **Refresh guides** button forces a refetch now — falling back to the saved copy if a source
     fails — and corrupt/partial cache entries fall back to a real fetch, never a broken guide.
-  - **Sports** — cache the normalized fixtures per selected day. Refetch when that day's cache is
-    stale, keeping the existing live-first refetch only while a cached day actually has live
-    fixtures (a day-old "live" strip is worse than none). A refresh button on the Sports tab.
+  - **Sports** — DONE (2026-09-28). `settings.sportsFixturesCache` holds one day's RAW payload,
+    its `day` key and a fetched-at stamp, written after a successful fetch and re-normalized on read
+    (`normalizeFixturesFromPayload` — the normalized form holds Dates, which would not survive a
+    round trip through settings). `SportsView` serves any day except today from it; **today
+    deliberately still refetches on its existing 5-minute cadence**, because a stale "LIVE" strip
+    is worse than none — the cache is for the fixed days, which is where re-requesting was pure
+    waste against the free tier's 100 requests/day. A small **Refresh** button beside the Fixtures
+    label requests the day again now, cache or not.
   - **Per channel** — DONE (2026-09-28). `EpgGridPanel`'s preview now carries a **↻ Refresh
     listings** button backed by a new `refreshShortEpg` action, which drops that channel's failure
     cooldown, stales its freshness stamp and then reuses `loadShortEpg` — so the fetch queue, the
