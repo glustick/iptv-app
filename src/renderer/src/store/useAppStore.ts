@@ -52,6 +52,7 @@ import type {
   MultiViewLayout
 } from '../lib/types'
 import { MAX_GUIDE_XML_CHARS } from '../lib/xmltvSections'
+import { isGuideCacheFresh, readCachedGuide, writeCachedGuide } from '../lib/guideCache'
 import { channelEntryFor, channelKey, channelKeyCandidates } from '../lib/channelIdentity'
 import {
   analyzeMediaPlaylist,
@@ -110,6 +111,11 @@ const shortEpgQueue: Array<() => void | Promise<void>> = []
 // results — letting a stale run finish would RESURRECT sources the user just removed (they'd
 // stay active in the guide and match report while unlisted and undeletable in Settings).
 let epgSourcesLoadSeq = 0
+// How many stale-but-rendered guide sources are being refetched behind the UI right now (see
+// loadEpgSources' stale-first behavior). Module-level bookkeeping mirrored into state only so
+// the Guide page can say a refresh is in flight; a counter (not a boolean) because two loads'
+// background batches can overlap, and it is the last one finishing that clears the indicator.
+let activeGuideBackgroundRefreshes = 0
 
 /**
  * Runs the bulk-suggestion planner in chunks, yielding to the event loop between them, and merges
@@ -228,6 +234,19 @@ function runNextShortEpgFetch(): void {
  * can't collide with this literal in any realistic setup. */
 export const PROVIDER_GUIDE_LABEL = 'Provider guide (xmltv.php)'
 
+/**
+ * The cache key for a guide source (see lib/guideCache and the main process's guideCache.ts):
+ * the provider's own xmltv.php guide is keyed per profile — another profile's xmltv.php is a
+ * different guide entirely, and ids are stable since profiles only ever come from addProfile —
+ * while a custom source is identified by its URL, which is its label everywhere else in the
+ * app. Null when a key can't be formed (a provider guide with no active profile), in which case
+ * callers skip the cache for that source.
+ */
+export function guideCacheKey(label: string, activeProfileId: string | null): string | null {
+  if (label === PROVIDER_GUIDE_LABEL) return activeProfileId ? `provider-guide:${activeProfileId}` : null
+  return label
+}
+
 /** One probed channel's feed health — see lib/channelHealth.ts and probeChannelHealth. */
 export interface ChannelHealthEntry {
   health: ChannelHealth
@@ -345,6 +364,15 @@ interface AppState {
   // format, HTTP error, etc. Provider-guide failures are deliberately not tracked here; see
   // loadEpgSources' own comment for why.
   epgSourceIssues: Record<string, string>
+  // When each loaded guide source's data was fetched — the cache's own stamp on a cache hit, or
+  // the moment a fresh fetch succeeded. Keyed by label, like every other per-source surface.
+  // Drives the Guide page's "last updated" line (with a disk read filling any source that
+  // hasn't loaded yet this session — see cachedGuideAge).
+  epgSourceFetchedAt: Record<string, number>
+  // True while stale-but-rendered guide sources are being refetched behind the guide (see
+  // loadEpgSources' stale-first behavior) — lets the Guide page say a refresh is in flight
+  // rather than leaving the "last updated" stamp to change without explanation.
+  epgBackgroundRefreshing: boolean
   shortEpgByStream: Record<string, ShortEpgProgram[]>
   // When each stream's shortEpgByStream entry was last refreshed from the provider (not set for
   // entries prefilled from a guide pool — those want the provider's fresher data as soon as
@@ -509,10 +537,13 @@ interface AppState {
   // there's no client, or no channel with that number.
   findChannelByNumber: (num: number) => Promise<LiveStream | null>
   // Fetches every full-XMLTV guide available (provider's own + user-added third-party sources),
-  // then prefills the short-EPG cache from them (see applyEpgPool). Best-effort by design: a
-  // provider that blocks xmltv.php, or an unreachable custom URL, degrades to exactly the old
-  // per-channel behavior rather than erroring the app.
-  loadEpgSources: () => Promise<void>
+  // then prefills the short-EPG cache from them (see applyEpgPool). Reads the cache first (see
+  // lib/guideCache): a copy inside the rolling 24 h TTL is parsed without refetching, and a
+  // stale copy renders immediately while a refetch runs in the background behind it. `force`
+  // (the Guide page's "Refresh guides" button) skips the cache and refetches every source now.
+  // Best-effort by design: a provider that blocks xmltv.php, or an unreachable custom URL,
+  // degrades to exactly the old per-channel behavior rather than erroring the app.
+  loadEpgSources: (force?: boolean) => Promise<void>
   // Re-applies the guide pool (epgSources) to every currently-loaded live channel that doesn't
   // yet have provider-fetched data — runs after a pool loads and after each category's
   // liveStreams arrive, since matching needs the channel list.
@@ -718,6 +749,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   epgLoadProgress: null,
   epgSourceIssues: {},
   epgSourceMatchStats: [],
+  epgSourceFetchedAt: {},
+  epgBackgroundRefreshing: false,
   shortEpgByStream: {},
   shortEpgFetchedAt: {},
   channelHealthByStream: {},
@@ -1000,6 +1033,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         epgLoadProgress: null,
         epgSourceIssues: {},
         epgSourceMatchStats: [],
+        // Stamps describe the sources loaded for the profile that was connected when they were
+        // read — the load below refills them, cache hit or fetch, for this profile.
+        epgSourceFetchedAt: {},
         proxyBase
       })
       shortEpgFailedAt.clear()
@@ -1055,6 +1091,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       epgLoadProgress: null,
       epgSourceIssues: {},
       epgSourceMatchStats: [],
+      epgSourceFetchedAt: {},
       shortEpgByStream: {},
       shortEpgFetchedAt: {},
       channelHealthByStream: {},
@@ -1213,7 +1250,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setSearchTerm: (term) => set({ searchTerm: term }),
 
-  loadEpgSources: async () => {
+  loadEpgSources: async (force = false) => {
     const { client, activeProfile, proxyBase, settings } = get()
     if (!client) return
     const seq = ++epgSourcesLoadSeq
@@ -1222,48 +1259,168 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Aligned index-for-index with `sources` — applyEpgPool's match report needs to know which
     // label each loaded guide goes with (and whether entry 0 is the provider's own guide).
     const labels: string[] = []
+    // When each loaded source's data was fetched — the cache's stamp on a hit, the moment a
+    // fresh fetch succeeded otherwise. The Guide page's "last updated" line reads these.
+    const fetchedAtByLabel: Record<string, number> = {}
     let providerGuideAvailable: boolean | null = null
     // Per-custom-source diagnostics, surfaced in Settings — a source the user explicitly added
     // must fail visibly (wrong format, HTTP error) instead of silently contributing nothing.
     // The provider's own guide is deliberately exempt: most resellers simply block xmltv.php,
     // and warning about that every single session would be noise, not signal.
     const issues: Record<string, string> = {}
+    // Stale-but-cached sources refetch *after* the commit below, so a launch renders the cached
+    // guides immediately and the network work happens quietly behind them — the stale-first
+    // behaviour chosen for the once-a-day cadence.
+    const backgroundRefreshes: Array<() => Promise<void>> = []
+    // One parser configuration for every path below — the sectioned parse is what keeps the
+    // window responsive, and progress only ever lands while this run is still the newest.
+    const parse = (xml: string): Promise<EpgData> =>
+      parseXmltvProgressive(xml, {
+        onProgress: (done, total) => {
+          // A newer load owns the status once its token has been issued (see the seq guard).
+          if (seq === epgSourcesLoadSeq) set({ epgLoadProgress: { done, total } })
+        }
+      })
+    const fetchCustomGuideXml = async (url: string): Promise<string> => {
+      if (!proxyBase) throw new Error('Proxy base URL not available')
+      const res = await fetch(`${proxyBase}/__fetch/${encodeURIComponent(url)}`)
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`)
+      return decodeMaybeGzipBytes(await res.arrayBuffer())
+    }
+    // One stale source's quiet refetch. Every commit point is re-guarded with `seq`: a newer
+    // load (a source added/removed, or the manual refresh) supersedes this one entirely, and
+    // its fetched data must then land neither in state nor in the cache.
+    const refreshStaleSource = async (label: string, cacheKey: string, fetchXml: () => Promise<string>): Promise<void> => {
+      const isCustom = label !== PROVIDER_GUIDE_LABEL
+      try {
+        const xml = await fetchXml()
+        if (seq !== epgSourcesLoadSeq) return
+        if (xml.length > MAX_GUIDE_XML_CHARS) return
+        // No progress reporting here: the status is already 'ready' and the cached guides are
+        // on screen — this parse is deliberately invisible.
+        const parsed = await parseXmltvProgressive(xml)
+        if (seq !== epgSourcesLoadSeq) return
+        // A custom source must still look like a guide (the same check the foreground path
+        // applies); the provider's own is pushed whatever it parses to, as it is on a fetch.
+        if (isCustom && (parsed.channels.size === 0 || parsed.programmesByChannel.size === 0)) return
+        const index = get().epgSourceLabels.indexOf(label)
+        if (index < 0) return // the source was removed while this refetch was in flight
+        const stamp = await writeCachedGuide(cacheKey, xml)
+        if (seq !== epgSourcesLoadSeq) return
+        const state = get()
+        const nextSources = [...state.epgSources]
+        nextSources[index] = parsed
+        const nextIssues = { ...state.epgSourceIssues }
+        if (isCustom) delete nextIssues[label]
+        set({
+          epgSources: nextSources,
+          epgSourceFetchedAt: { ...state.epgSourceFetchedAt, [label]: stamp },
+          epgSourceIssues: nextIssues,
+          ...(isCustom ? {} : { providerGuideAvailable: true })
+        })
+        get().applyEpgPool()
+        logGuideTiming(`guide load (${label.slice(0, 60)}): background refresh replaced the stale cached copy`)
+      } catch (err) {
+        // The cached copy keeps serving — its stamp stays old, and the next load tries again.
+        logGuideTiming(
+          `guide load (${label.slice(0, 60)}): background refresh failed ` +
+            `(${err instanceof Error ? err.message : String(err)}) — still using the cached copy`
+        )
+      }
+    }
+    // Runs the queued refetches one at a time (like the foreground pass) and mirrors their
+    // count into the state flag the Guide page shows — a counter, because two loads' background
+    // batches can overlap, and it is the last one finishing that clears the indicator.
+    const runGuideBackgroundRefreshes = async (refreshes: Array<() => Promise<void>>): Promise<void> => {
+      for (const refresh of refreshes) {
+        activeGuideBackgroundRefreshes += 1
+        set({ epgBackgroundRefreshing: true })
+        try {
+          await refresh()
+        } finally {
+          activeGuideBackgroundRefreshes -= 1
+          set({ epgBackgroundRefreshing: activeGuideBackgroundRefreshes > 0 })
+        }
+      }
+    }
     // 1. The provider's own full guide. M3U profiles skip it: their playlist's guide is already
     //    what M3uClient.getShortEpg serves per channel, so pooling it again would only duplicate
     //    data under a second matching pass.
     if (activeProfile?.kind !== 'm3u') {
-      try {
-        // The provider's own guide is the one that gets big — 16.3MB gzipped / 107.4MB of XML on
-        // this app's own provider, measured 2026-09-22 — so it is parsed in sections, reporting
-        // progress, with the event loop getting a turn between them (see parseXmltvProgressive).
-        // That is what stops the window freezing while it loads. The size check is a safety net
-        // against a pathological document, and sits far above any real guide (MAX_GUIDE_XML_CHARS).
-        const fetchStartedAt = Date.now()
-        const providerXml = await client.getFullEpgXml()
-        const fetchedAt = Date.now()
-        if (providerXml.length > MAX_GUIDE_XML_CHARS) {
-          throw new Error(
-            `guide is ${Math.round(providerXml.length / 1048576)}MB — beyond the ${Math.round(MAX_GUIDE_XML_CHARS / 1048576)}MB safety limit`
+      // Per profile: another profile's xmltv.php is a different guide entirely.
+      const cacheKey = guideCacheKey(PROVIDER_GUIDE_LABEL, activeProfile?.id ?? null)
+      // Read the cache before the fetch (unless this is the manual refresh): inside the TTL the
+      // cached copy is the whole load, and outside it the cached copy still renders first while
+      // a refetch runs behind it.
+      const cached = force ? null : await readCachedGuide(cacheKey)
+      let loaded = false
+      if (cached && cached.xml.length <= MAX_GUIDE_XML_CHARS) {
+        try {
+          const parseStartedAt = Date.now()
+          const parsedProvider = await parse(cached.xml)
+          sources.push(parsedProvider)
+          labels.push(PROVIDER_GUIDE_LABEL)
+          fetchedAtByLabel[PROVIDER_GUIDE_LABEL] = cached.fetchedAt
+          providerGuideAvailable = true
+          loaded = true
+          logGuideTiming(
+            `guide load (provider): cached copy from ${new Date(cached.fetchedAt).toISOString()} ` +
+              `(${(cached.xml.length / 1048576).toFixed(1)}MB of XML), parsed in ${((Date.now() - parseStartedAt) / 1000).toFixed(1)}s`
           )
-        }
-        const parsedProvider = await parseXmltvProgressive(providerXml, {
-          onProgress: (done, total) => {
-            // A newer load owns the status once its token has been issued (see the seq guard).
-            if (seq === epgSourcesLoadSeq) set({ epgLoadProgress: { done, total } })
+          if (cacheKey && !isGuideCacheFresh(cached.fetchedAt)) {
+            backgroundRefreshes.push(() => refreshStaleSource(PROVIDER_GUIDE_LABEL, cacheKey, () => client.getFullEpgXml()))
           }
-        })
-        logGuideTiming(
-          `guide load (provider): fetched ${(providerXml.length / 1048576).toFixed(1)}MB of XML in ` +
-            `${((fetchedAt - fetchStartedAt) / 1000).toFixed(1)}s, parsed in ${((Date.now() - fetchedAt) / 1000).toFixed(1)}s`
-        )
-        sources.push(parsedProvider)
-        labels.push(PROVIDER_GUIDE_LABEL)
-        providerGuideAvailable = true
-      } catch {
-        providerGuideAvailable = false
-        // Many Xtream resellers restrict or disable xmltv.php entirely (this app's own test
-        // account 403s on it) — the whole point of the sources below is that this failing no
-        // longer means "today's window is all you get."
+        } catch {
+          // A cached payload that won't parse (truncated despite the sidecar guard, or
+          // hand-edited) falls through to a real fetch rather than serving a broken guide.
+          logGuideTiming('guide load (provider): cached copy failed to parse — refetching')
+        }
+      }
+      if (!loaded) {
+        try {
+          // The provider's own guide is the one that gets big — 16.3MB gzipped / 107.4MB of XML
+          // on this app's own provider, measured 2026-09-22 — so it is parsed in sections,
+          // reporting progress, with the event loop getting a turn between them (see
+          // parseXmltvProgressive). That is what stops the window freezing while it loads. The
+          // size check is a safety net against a pathological document, and sits far above any
+          // real guide (MAX_GUIDE_XML_CHARS).
+          const fetchStartedAt = Date.now()
+          const providerXml = await client.getFullEpgXml()
+          const fetchedAt = Date.now()
+          if (providerXml.length > MAX_GUIDE_XML_CHARS) {
+            throw new Error(
+              `guide is ${Math.round(providerXml.length / 1048576)}MB — beyond the ${Math.round(MAX_GUIDE_XML_CHARS / 1048576)}MB safety limit`
+            )
+          }
+          const parsedProvider = await parse(providerXml)
+          logGuideTiming(
+            `guide load (provider): fetched ${(providerXml.length / 1048576).toFixed(1)}MB of XML in ` +
+              `${((fetchedAt - fetchStartedAt) / 1000).toFixed(1)}s, parsed in ${((Date.now() - fetchedAt) / 1000).toFixed(1)}s`
+          )
+          sources.push(parsedProvider)
+          labels.push(PROVIDER_GUIDE_LABEL)
+          providerGuideAvailable = true
+          fetchedAtByLabel[PROVIDER_GUIDE_LABEL] = await writeCachedGuide(cacheKey, providerXml)
+        } catch {
+          providerGuideAvailable = false
+          // A *forced* refresh that failed must not throw away a working cached copy — the
+          // click asked for newer data, not for the guide to go blank.
+          const fallback = force ? await readCachedGuide(cacheKey) : null
+          if (fallback && fallback.xml.length <= MAX_GUIDE_XML_CHARS) {
+            try {
+              sources.push(await parse(fallback.xml))
+              labels.push(PROVIDER_GUIDE_LABEL)
+              fetchedAtByLabel[PROVIDER_GUIDE_LABEL] = fallback.fetchedAt
+              providerGuideAvailable = true
+              logGuideTiming('guide load (provider): refresh failed — using the cached copy')
+            } catch {
+              // The cached copy is unusable too — the provider genuinely has nothing today.
+            }
+          }
+          // Many Xtream resellers restrict or disable xmltv.php entirely (this app's own test
+          // account 403s on it) — the whole point of the sources below is that this failing no
+          // longer means "today's window is all you get."
+        }
       }
     }
     // 2. User-added third-party guides (any XMLTV URL — plain XML or the .xml.gz form many
@@ -1271,39 +1428,80 @@ export const useAppStore = create<AppState>((set, get) => ({
     //    /__fetch/ passthrough every other cross-origin request uses. Sources load
     //    sequentially — a slow one shouldn't hold the earlier ones' data hostage.
     for (const url of settings.customEpgUrls) {
-      try {
-        if (!proxyBase) throw new Error('Proxy base URL not available')
-        const res = await fetch(`${proxyBase}/__fetch/${encodeURIComponent(url)}`)
-        if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`)
-        const text = await decodeMaybeGzipBytes(await res.arrayBuffer())
-        if (text.length > MAX_GUIDE_XML_CHARS) {
-          throw new Error(
-            `guide is ${Math.round(text.length / 1048576)}MB — beyond the ${Math.round(MAX_GUIDE_XML_CHARS / 1048576)}MB safety limit`
-          )
-        }
-        const customFetchAt = Date.now()
-        const parsed = await parseXmltvProgressive(text, {
-          onProgress: (done, total) => {
-            if (seq === epgSourcesLoadSeq) set({ epgLoadProgress: { done, total } })
+      // The URL *is* this source's cache key — the same identity it has everywhere else.
+      const cached = force ? null : await readCachedGuide(url)
+      let loaded = false
+      if (cached && cached.xml.length <= MAX_GUIDE_XML_CHARS) {
+        try {
+          const parseStartedAt = Date.now()
+          const parsed = await parse(cached.xml)
+          if (parsed.channels.size > 0 && parsed.programmesByChannel.size > 0) {
+            sources.push(parsed)
+            labels.push(url)
+            fetchedAtByLabel[url] = cached.fetchedAt
+            loaded = true
+            logGuideTiming(
+              `guide load (${url.slice(0, 60)}): cached copy from ${new Date(cached.fetchedAt).toISOString()} ` +
+                `(${(cached.xml.length / 1048576).toFixed(1)}MB of XML), parsed in ${((Date.now() - parseStartedAt) / 1000).toFixed(1)}s`
+            )
+            if (!isGuideCacheFresh(cached.fetchedAt)) {
+              backgroundRefreshes.push(() => refreshStaleSource(url, url, () => fetchCustomGuideXml(url)))
+            }
           }
-        })
-        logGuideTiming(
-          `guide load (${url.slice(0, 60)}): ${(text.length / 1048576).toFixed(1)}MB of XML, parsed in ` +
-            `${((Date.now() - customFetchAt) / 1000).toFixed(1)}s`
-        )
-        // A document with no channels or no programmes can't contribute anything (matching
-        // needs both) — far and away the most common cause is a plain-text or PDF schedule in
-        // a slot meant for a machine-readable XMLTV guide, so say exactly that.
-        if (parsed.channels.size === 0 || parsed.programmesByChannel.size === 0) {
-          issues[url] =
-            "Loaded, but didn't look like an XMLTV guide (no channels or programmes found). Plain-text or PDF schedules can't be parsed — if this source really is a guide, use its XML or .xml.gz form."
-        } else {
-          sources.push(parsed)
-          labels.push(url)
+          // A cached copy that parses but has no channels/programmes isn't a guide — fall
+          // through to a real fetch rather than serving it as one.
+        } catch {
+          logGuideTiming(`guide load (${url.slice(0, 60)}): cached copy failed to parse — refetching`)
         }
-      } catch (err) {
-        issues[url] = `Couldn't load: ${err instanceof Error ? err.message : String(err)}`
-        console.error(`[epg] failed to load custom EPG source ${url}:`, err)
+      }
+      if (!loaded) {
+        try {
+          const text = await fetchCustomGuideXml(url)
+          if (text.length > MAX_GUIDE_XML_CHARS) {
+            throw new Error(
+              `guide is ${Math.round(text.length / 1048576)}MB — beyond the ${Math.round(MAX_GUIDE_XML_CHARS / 1048576)}MB safety limit`
+            )
+          }
+          const customFetchAt = Date.now()
+          const parsed = await parse(text)
+          logGuideTiming(
+            `guide load (${url.slice(0, 60)}): ${(text.length / 1048576).toFixed(1)}MB of XML, parsed in ` +
+              `${((Date.now() - customFetchAt) / 1000).toFixed(1)}s`
+          )
+          // A document with no channels or no programmes can't contribute anything (matching
+          // needs both) — far and away the most common cause is a plain-text or PDF schedule in
+          // a slot meant for a machine-readable XMLTV guide, so say exactly that.
+          if (parsed.channels.size === 0 || parsed.programmesByChannel.size === 0) {
+            issues[url] =
+              "Loaded, but didn't look like an XMLTV guide (no channels or programmes found). Plain-text or PDF schedules can't be parsed — if this source really is a guide, use its XML or .xml.gz form."
+          } else {
+            sources.push(parsed)
+            labels.push(url)
+            fetchedAtByLabel[url] = await writeCachedGuide(url, text)
+          }
+        } catch (err) {
+          console.error(`[epg] failed to load custom EPG source ${url}:`, err)
+          const reason = err instanceof Error ? err.message : String(err)
+          // Same rule as the provider's: a *forced* refresh falls back to the cached copy where
+          // one exists — the click asked for newer data, not for a working source to vanish.
+          const fallback = force ? await readCachedGuide(url) : null
+          let fellBack = false
+          if (fallback && fallback.xml.length <= MAX_GUIDE_XML_CHARS) {
+            try {
+              const parsed = await parse(fallback.xml)
+              if (parsed.channels.size > 0 && parsed.programmesByChannel.size > 0) {
+                sources.push(parsed)
+                labels.push(url)
+                fetchedAtByLabel[url] = fallback.fetchedAt
+                issues[url] = `Couldn't refresh: ${reason} — using the saved copy.`
+                fellBack = true
+              }
+            } catch {
+              // The cached copy is unusable too — falls through to the plain failure below.
+            }
+          }
+          if (!fellBack) issues[url] = `Couldn't load: ${reason}`
+        }
       }
     }
     // A newer run superseded this one (a source was added/removed mid-download) — its own
@@ -1315,9 +1513,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       providerGuideAvailable,
       epgSourcesStatus: 'ready',
       epgSourceIssues: issues,
-      epgLoadProgress: null
+      epgLoadProgress: null,
+      epgSourceFetchedAt: fetchedAtByLabel
     })
     get().applyEpgPool()
+    // The cached guides are on screen; now the stale ones refetch behind them. Fire-and-forget
+    // by design — nothing awaits this, and the only signal is the page's "refreshing" note.
+    if (backgroundRefreshes.length > 0) void runGuideBackgroundRefreshes(backgroundRefreshes)
   },
 
   applyEpgPool: () => {

@@ -44,6 +44,8 @@ beforeEach(() => {
     epgSourcesStatus: 'idle',
     epgSourceIssues: {},
     epgSourceMatchStats: [],
+    epgSourceFetchedAt: {},
+    epgBackgroundRefreshing: false,
     nowPlaying: null,
     recentlyWatched: [],
     favorites: [],
@@ -1487,6 +1489,327 @@ describe('EPG source list integrity (stale loads and removals)', () => {
   })
 })
 
+describe('the once-a-day guide cache (loadEpgSources)', () => {
+  const URL = 'http://guides.example.com/g.xml'
+  const GOOD_XML = `<?xml version="1.0"?>
+<tv>
+  <channel id="c1"><display-name>Channel One</display-name></channel>
+  <programme start="20300101120000 +0000" stop="20300101130000 +0000" channel="c1"><title>Old Show</title></programme>
+</tv>`
+  const UPDATED_XML = GOOD_XML.replace('Old Show', 'Newer Show')
+  const STALE_AGE_MS = 25 * 60 * 60 * 1000 // past the rolling 24 h window
+
+  function makeClient(): XtreamClient {
+    // The common provider that blocks xmltv.php — irrelevant unless a test wants the provider
+    // guide itself.
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    vi.spyOn(client, 'getFullEpgXml').mockRejectedValue(new Error('403 Forbidden'))
+    return client
+  }
+
+  /** Stand-in for the preload bridge's cache namespace, backed by a Map. */
+  function stubCache(initial: Record<string, { xml: string; fetchedAt: number }> = {}): {
+    calls: { get: string[]; set: Array<{ key: string; xml: string }> }
+  } {
+    const entries = new Map(Object.entries(initial))
+    const calls = { get: [] as string[], set: [] as Array<{ key: string; xml: string }> }
+    ;(globalThis as unknown as { window: unknown }).window = {
+      api: {
+        // The real bridge always carries both; source edits inside these tests save settings
+        // through this stub rather than the localStorage fallback.
+        store: { get: async () => undefined, set: async () => {}, delete: async () => {} },
+        cache: {
+          get: async (key: string) => {
+            calls.get.push(key)
+            return entries.get(key) ?? null
+          },
+          set: async (key: string, xml: string) => {
+            calls.set.push({ key, xml })
+            const fetchedAt = Date.now()
+            entries.set(key, { xml, fetchedAt })
+            return { fetchedAt }
+          },
+          age: async (key: string) => {
+            const entry = entries.get(key)
+            return entry ? Date.now() - entry.fetchedAt : null
+          }
+        }
+      }
+    }
+    return { calls }
+  }
+
+  function mockFetchBody(body: string): ReturnType<typeof vi.fn> {
+    const spy = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        arrayBuffer: async () => new TextEncoder().encode(body).buffer
+      })
+    )
+    global.fetch = spy as unknown as typeof fetch
+    return spy
+  }
+
+  function titleOfLoadedSource(): string | undefined {
+    return useAppStore.getState().epgSources[0]?.programmesByChannel.get('c1')?.[0]?.title
+  }
+
+  it('parses a fresh cached copy without fetching, and reports its stamp', async () => {
+    const fetchedAt = Date.now() - 60 * 60 * 1000 // an hour ago — inside the TTL
+    const { calls } = stubCache({ [URL]: { xml: GOOD_XML, fetchedAt } })
+    const fetchSpy = mockFetchBody(UPDATED_XML)
+    useAppStore.setState({
+      client: makeClient(),
+      proxyBase: 'http://proxy',
+      settings: { ...DEFAULT_SETTINGS, customEpgUrls: [URL] }
+    })
+
+    await useAppStore.getState().loadEpgSources()
+
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(useAppStore.getState().epgSourceLabels).toEqual([URL])
+    expect(titleOfLoadedSource()).toBe('Old Show')
+    // The stamp the "last updated" line shows is the cache's own, and nothing was rewritten.
+    expect(useAppStore.getState().epgSourceFetchedAt[URL]).toBe(fetchedAt)
+    expect(calls.set).toEqual([])
+    expect(useAppStore.getState().epgBackgroundRefreshing).toBe(false)
+  })
+
+  it('renders a stale cached copy first, then replaces it with the background refetch', async () => {
+    const staleAt = Date.now() - STALE_AGE_MS
+    const { calls } = stubCache({ [URL]: { xml: GOOD_XML, fetchedAt: staleAt } })
+    // Hold the refetch open: the stale copy must be committed *while the network is still
+    // working* — that is what stale-first means.
+    let respondFetch: (body: string) => void = () => {}
+    global.fetch = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          respondFetch = (body: string) =>
+            resolve({
+              ok: true,
+              status: 200,
+              statusText: 'OK',
+              arrayBuffer: async () => new TextEncoder().encode(body).buffer
+            })
+        })
+    ) as unknown as typeof fetch
+    useAppStore.setState({
+      client: makeClient(),
+      proxyBase: 'http://proxy',
+      settings: { ...DEFAULT_SETTINGS, customEpgUrls: [URL] }
+    })
+
+    await useAppStore.getState().loadEpgSources()
+
+    // Committed from the cache while the refetch is still in flight — old data, old stamp, and
+    // the page's "refreshing" flag showing.
+    expect(titleOfLoadedSource()).toBe('Old Show')
+    expect(useAppStore.getState().epgSourceFetchedAt[URL]).toBe(staleAt)
+    await vi.waitFor(() => expect(useAppStore.getState().epgBackgroundRefreshing).toBe(true))
+
+    respondFetch(UPDATED_XML)
+
+    await vi.waitFor(() => expect(titleOfLoadedSource()).toBe('Newer Show'))
+    expect(useAppStore.getState().epgSourceFetchedAt[URL]).toBeGreaterThan(staleAt)
+    expect(calls.set).toEqual([{ key: URL, xml: UPDATED_XML }])
+    await vi.waitFor(() => expect(useAppStore.getState().epgBackgroundRefreshing).toBe(false))
+  })
+
+  it('keeps serving the stale copy quietly when the background refetch fails', async () => {
+    const staleAt = Date.now() - STALE_AGE_MS
+    const { calls } = stubCache({ [URL]: { xml: GOOD_XML, fetchedAt: staleAt } })
+    let respondFetch: () => void = () => {}
+    global.fetch = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          respondFetch = () =>
+            resolve({ ok: false, status: 503, statusText: 'Service Unavailable', arrayBuffer: async () => new ArrayBuffer(0) })
+        })
+    ) as unknown as typeof fetch
+    useAppStore.setState({
+      client: makeClient(),
+      proxyBase: 'http://proxy',
+      settings: { ...DEFAULT_SETTINGS, customEpgUrls: [URL] }
+    })
+
+    await useAppStore.getState().loadEpgSources()
+    await vi.waitFor(() => expect(useAppStore.getState().epgBackgroundRefreshing).toBe(true))
+    respondFetch()
+    await vi.waitFor(() => expect(useAppStore.getState().epgBackgroundRefreshing).toBe(false))
+
+    // The cached copy keeps working, so the failure is deliberately silent in the issue list —
+    // "Failed" would mis-state a source that is still supplying listings; the stamp simply
+    // stays visibly old, and nothing got written to the cache.
+    expect(useAppStore.getState().epgSourceLabels).toEqual([URL])
+    expect(titleOfLoadedSource()).toBe('Old Show')
+    expect(useAppStore.getState().epgSourceFetchedAt[URL]).toBe(staleAt)
+    expect(useAppStore.getState().epgSourceIssues[URL]).toBeUndefined()
+    expect(calls.set).toEqual([])
+  })
+
+  it('force (the Refresh guides button) refetches even a fresh cache and rewrites it', async () => {
+    const fetchedAt = Date.now() - 60 * 60 * 1000
+    const { calls } = stubCache({ [URL]: { xml: GOOD_XML, fetchedAt } })
+    const fetchSpy = mockFetchBody(UPDATED_XML)
+    useAppStore.setState({
+      client: makeClient(),
+      proxyBase: 'http://proxy',
+      settings: { ...DEFAULT_SETTINGS, customEpgUrls: [URL] }
+    })
+
+    await useAppStore.getState().loadEpgSources(true)
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(titleOfLoadedSource()).toBe('Newer Show')
+    expect(calls.set).toEqual([{ key: URL, xml: UPDATED_XML }])
+    // Skipping the cache read is what keeps the button honest: the result is a genuinely fresh
+    // fetch, not the very copy it was asked to supersede.
+    expect(calls.get).toEqual([])
+    expect(useAppStore.getState().epgSourceFetchedAt[URL]).toBeGreaterThanOrEqual(fetchedAt)
+    // And no background refresh follows a forced one.
+    expect(useAppStore.getState().epgBackgroundRefreshing).toBe(false)
+  })
+
+  it('falls back to a real fetch when the cached copy is corrupt', async () => {
+    const { calls } = stubCache({ [URL]: { xml: 'not a guide <<<', fetchedAt: Date.now() - 60 * 60 * 1000 } })
+    const fetchSpy = mockFetchBody(GOOD_XML)
+    useAppStore.setState({
+      client: makeClient(),
+      proxyBase: 'http://proxy',
+      settings: { ...DEFAULT_SETTINGS, customEpgUrls: [URL] }
+    })
+
+    await useAppStore.getState().loadEpgSources()
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(useAppStore.getState().epgSourceLabels).toEqual([URL])
+    expect(useAppStore.getState().epgSourceIssues[URL]).toBeUndefined()
+    // The broken copy is replaced by the fetched one.
+    expect(calls.set).toEqual([{ key: URL, xml: GOOD_XML }])
+  })
+
+  it('falls back to the provider fetch when its cached copy is corrupt', async () => {
+    stubCache({ 'provider-guide:p1': { xml: 'not a guide <<<', fetchedAt: Date.now() - 60 * 60 * 1000 } })
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    const providerFetch = vi.spyOn(client, 'getFullEpgXml').mockResolvedValue(UPDATED_XML)
+    useAppStore.setState({
+      client,
+      activeProfile: { id: 'p1', name: 'Primary', server: 'http://example.com', username: 'u', password: 'p' },
+      proxyBase: 'http://proxy',
+      settings: DEFAULT_SETTINGS
+    })
+
+    await useAppStore.getState().loadEpgSources()
+
+    expect(providerFetch).toHaveBeenCalledTimes(1)
+    expect(useAppStore.getState().epgSourceLabels).toEqual([PROVIDER_GUIDE_LABEL])
+    expect(useAppStore.getState().providerGuideAvailable).toBe(true)
+    expect(titleOfLoadedSource()).toBe('Newer Show')
+  })
+
+  it('keeps the saved copy when a forced refresh fails, saying why', async () => {
+    const fetchedAt = Date.now() - 60 * 60 * 1000
+    stubCache({ [URL]: { xml: GOOD_XML, fetchedAt } })
+    global.fetch = vi.fn(() =>
+      Promise.resolve({ ok: false, status: 503, statusText: 'Service Unavailable', arrayBuffer: async () => new ArrayBuffer(0) })
+    ) as unknown as typeof fetch
+    useAppStore.setState({
+      client: makeClient(),
+      proxyBase: 'http://proxy',
+      settings: { ...DEFAULT_SETTINGS, customEpgUrls: [URL] }
+    })
+
+    await useAppStore.getState().loadEpgSources(true)
+
+    // The click asked for newer data, not for a working source to vanish.
+    expect(useAppStore.getState().epgSourceLabels).toEqual([URL])
+    expect(titleOfLoadedSource()).toBe('Old Show')
+    expect(useAppStore.getState().epgSourceFetchedAt[URL]).toBe(fetchedAt)
+    expect(useAppStore.getState().epgSourceIssues[URL]).toMatch(/Couldn't refresh: HTTP 503/)
+  })
+
+  it('serves the provider guide from its own per-profile cache key', async () => {
+    const fetchedAt = Date.now() - 60 * 60 * 1000
+    const { calls } = stubCache({ 'provider-guide:p1': { xml: GOOD_XML, fetchedAt } })
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    const providerFetch = vi.spyOn(client, 'getFullEpgXml').mockResolvedValue(UPDATED_XML)
+    useAppStore.setState({
+      client,
+      activeProfile: { id: 'p1', name: 'Primary', server: 'http://example.com', username: 'u', password: 'p' },
+      proxyBase: 'http://proxy',
+      settings: DEFAULT_SETTINGS
+    })
+
+    await useAppStore.getState().loadEpgSources()
+
+    expect(providerFetch).not.toHaveBeenCalled()
+    expect(calls.get).toContain('provider-guide:p1')
+    expect(useAppStore.getState().epgSourceLabels).toEqual([PROVIDER_GUIDE_LABEL])
+    expect(useAppStore.getState().providerGuideAvailable).toBe(true)
+    expect(useAppStore.getState().epgSourceFetchedAt[PROVIDER_GUIDE_LABEL]).toBe(fetchedAt)
+  })
+
+  it('refreshes a stale provider guide in the background behind its cached copy', async () => {
+    const staleAt = Date.now() - STALE_AGE_MS
+    const { calls } = stubCache({ 'provider-guide:p1': { xml: GOOD_XML, fetchedAt: staleAt } })
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    vi.spyOn(client, 'getFullEpgXml').mockResolvedValue(UPDATED_XML)
+    useAppStore.setState({
+      client,
+      activeProfile: { id: 'p1', name: 'Primary', server: 'http://example.com', username: 'u', password: 'p' },
+      proxyBase: 'http://proxy',
+      settings: DEFAULT_SETTINGS
+    })
+
+    await useAppStore.getState().loadEpgSources()
+    expect(titleOfLoadedSource()).toBe('Old Show')
+
+    await vi.waitFor(() => expect(titleOfLoadedSource()).toBe('Newer Show'))
+    expect(calls.set).toEqual([{ key: 'provider-guide:p1', xml: UPDATED_XML }])
+    expect(useAppStore.getState().providerGuideAvailable).toBe(true)
+    expect(useAppStore.getState().epgSourceFetchedAt[PROVIDER_GUIDE_LABEL]).toBeGreaterThan(staleAt)
+  })
+
+  it('drops a background refetch superseded by a newer load instead of resurrecting its source', async () => {
+    const { calls } = stubCache({ [URL]: { xml: GOOD_XML, fetchedAt: Date.now() - STALE_AGE_MS } })
+    let respondFetch: (body: string) => void = () => {}
+    global.fetch = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          respondFetch = (body: string) =>
+            resolve({
+              ok: true,
+              status: 200,
+              statusText: 'OK',
+              arrayBuffer: async () => new TextEncoder().encode(body).buffer
+            })
+        })
+    ) as unknown as typeof fetch
+    useAppStore.setState({
+      client: makeClient(),
+      proxyBase: 'http://proxy',
+      settings: { ...DEFAULT_SETTINGS, customEpgUrls: [URL] }
+    })
+
+    // Run 1 commits the stale copy and starts its background refetch…
+    await useAppStore.getState().loadEpgSources()
+    expect(useAppStore.getState().epgSourceLabels).toEqual([URL])
+
+    // …then the source is removed, which starts a newer run that supersedes it.
+    useAppStore.getState().removeCustomEpgUrl(URL)
+    await vi.waitFor(() => expect(useAppStore.getState().epgSourceLabels).toEqual([]))
+
+    // Let the old refetch finish — its result must land neither in state nor in the cache.
+    respondFetch(UPDATED_XML)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(useAppStore.getState().epgSourceLabels).toEqual([])
+    expect(useAppStore.getState().epgSources).toEqual([])
+    expect(calls.set).toEqual([])
+  })
+})
+
 describe('connect() and init() control flow', () => {
   function stubElectronApi(backing: Record<string, unknown> = {}): Record<string, unknown> {
     ;(globalThis as unknown as { window: unknown }).window = {
@@ -2255,6 +2578,59 @@ describe('per-channel EPG state across playlists', () => {
     // … while the explicit per-channel refresh asks the provider again.
     await useAppStore.getState().refreshShortEpg(91002, 'primary')
     expect(calls).toHaveLength(2)
+  })
+
+  it('refreshShortEpg covers both layers: the provider refetch merges over the guide pool', async () => {
+    // The per-channel button's agreed shape — it refreshes the provider's own listings AND the
+    // channel's pool-supplied data survives, rather than the two being alternatives. A provider
+    // that only ever serves "rest of today" must not cost the channel its later days just
+    // because someone asked for fresher listings.
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    const now = Math.floor(Date.now() / 1000)
+    vi.spyOn(client, 'getShortEpg').mockResolvedValue([
+      {
+        id: 'provider-1',
+        epg_id: '',
+        title: 'From the provider',
+        lang: '',
+        start: new Date(now * 1000).toISOString(),
+        end: new Date((now + 3600) * 1000).toISOString(),
+        description: '',
+        channel_id: '',
+        start_timestamp: String(now),
+        stop_timestamp: String(now + 3600)
+      }
+    ])
+    const twoDaysOut = now + 2 * 24 * 3600
+    useAppStore.setState({
+      client,
+      primaryPlaylistId: 'primary',
+      // A pool prefill, identified by its missing fetchedAt stamp (see loadShortEpg) — one
+      // programme the provider's own window will never contain.
+      shortEpgByStream: {
+        91003: [
+          {
+            id: 'pool-1',
+            epg_id: '',
+            title: 'From the pool',
+            lang: '',
+            start: new Date(twoDaysOut * 1000).toISOString(),
+            end: new Date((twoDaysOut + 3600) * 1000).toISOString(),
+            description: '',
+            channel_id: '',
+            start_timestamp: String(twoDaysOut),
+            stop_timestamp: String(twoDaysOut + 3600)
+          }
+        ]
+      },
+      shortEpgFetchedAt: {}
+    })
+
+    await useAppStore.getState().refreshShortEpg(91003, 'primary')
+
+    const titles = (useAppStore.getState().shortEpgByStream['91003'] ?? []).map((p) => p.title)
+    expect(titles).toContain('From the provider')
+    expect(titles).toContain('From the pool')
   })
 })
 
