@@ -127,10 +127,11 @@ describe('shouldRestartRemuxChain', () => {
 //
 // Rendered in jsdom because the hook is real React state; the store is driven directly (same
 // pattern as components.test.tsx) and window.api is a minimal transcode stub. What these pin
-// down: a remembered 'audio' entry — even with a rotated provider token — starts the remux
-// immediately (true here means the caller skips its silent-audio poll, so the transcode must
-// already be going); a 'direct' record starts nothing, so detection keeps running; and both
-// conclusions write their outcome through the store's settings, pruned to the cap on the way.
+// down: the read hands the caller the remembered track to skip silent-audio detection with
+// (rotated provider token and all), while starting nothing itself; the start uses that index,
+// re-confirming on success and forgetting on failure (the self-heal that keeps a stale fix from
+// replaying forever); a 'direct' record starts nothing, so detection keeps running; and the
+// conclusion writes go through the store's settings, pruned to the cap on the way.
 describe('transcode memory (VOD/series)', () => {
   const PLAY_URL = 'http://provider.example:8080/movie/user/pass/1234.mkv?token=current'
   const CONFIRMED_URL = 'http://provider.example:8080/movie/user/pass/1234.mkv?token=rotated-away'
@@ -169,7 +170,23 @@ describe('transcode memory (VOD/series)', () => {
     cleanup()
   })
 
-  it('starts the remux straight from a remembered audio entry with a rotated token — no detection wait', async () => {
+  it('reads back the remembered track even across a rotated provider token — the value the caller uses to skip detection', () => {
+    useAppStore.setState({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        transcodeMemory: {
+          'movie:1234': { kind: 'audio', audioIndex: 2, url: CONFIRMED_URL, confirmedAt: 1000 }
+        }
+      }
+    })
+    const { result } = renderHook(() => useTranscodeFallback())
+    // A non-null index IS the "skip the poll and start via startRememberedVodFallback" signal;
+    // the read itself starts nothing (the caller detaches its video element first).
+    expect(result.current.rememberedVodAudioIndex(PLAY_URL)).toBe(2)
+    expect(startMock).not.toHaveBeenCalled()
+  })
+
+  it('starts the remembered remux at the remembered index and re-confirms the entry on success', async () => {
     useAppStore.setState({
       settings: {
         ...DEFAULT_SETTINGS,
@@ -180,12 +197,9 @@ describe('transcode memory (VOD/series)', () => {
     })
     const { result } = renderHook(() => useTranscodeFallback())
     const onReload = vi.fn()
-    let started = false
     await act(async () => {
-      started = result.current.tryFallbackForRememberedAudio(PLAY_URL, onReload)
+      result.current.startRememberedVodFallback(PLAY_URL, 2, onReload)
     })
-    // true = the caller skips registering its silent-audio poll; the transcode is already going.
-    expect(started).toBe(true)
     expect(startMock).toHaveBeenCalledWith(PLAY_URL, true, expect.any(String), 0, 2)
     expect(onReload).toHaveBeenCalled()
     // Success re-confirms the entry (fresh confirmedAt) rather than dropping or duplicating it.
@@ -194,7 +208,26 @@ describe('transcode memory (VOD/series)', () => {
     expect(entry.confirmedAt).toBeGreaterThan(1000)
   })
 
-  it('does not act on a direct record — detection keeps running in case the file changed', async () => {
+  it('forgets the entry when the remembered remux fails, so the next open re-detects (self-heal)', async () => {
+    startMock.mockRejectedValue(new Error('ffmpeg exited before producing output'))
+    useAppStore.setState({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        transcodeMemory: {
+          'movie:1234': { kind: 'audio', audioIndex: 2, url: CONFIRMED_URL, confirmedAt: 1000 }
+        }
+      }
+    })
+    const { result } = renderHook(() => useTranscodeFallback())
+    const onError = vi.fn()
+    await act(async () => {
+      result.current.startRememberedVodFallback(PLAY_URL, 2, vi.fn(), onError)
+    })
+    expect(onError).toHaveBeenCalledWith('ffmpeg exited before producing output')
+    expect(useAppStore.getState().settings.transcodeMemory['movie:1234']).toBeUndefined()
+  })
+
+  it('does not read an index for a direct record — detection keeps running in case the file changed', () => {
     useAppStore.setState({
       settings: {
         ...DEFAULT_SETTINGS,
@@ -202,15 +235,10 @@ describe('transcode memory (VOD/series)', () => {
       }
     })
     const { result } = renderHook(() => useTranscodeFallback())
-    let started = true
-    await act(async () => {
-      started = result.current.tryFallbackForRememberedAudio(PLAY_URL, vi.fn())
-    })
-    expect(started).toBe(false)
-    expect(startMock).not.toHaveBeenCalled()
+    expect(result.current.rememberedVodAudioIndex(PLAY_URL)).toBeNull()
   })
 
-  it('ignores a fix confirmed against a different file, and leaves live content alone', async () => {
+  it('ignores a fix confirmed against a different file, and leaves live content alone', () => {
     useAppStore.setState({
       settings: {
         ...DEFAULT_SETTINGS,
@@ -221,14 +249,10 @@ describe('transcode memory (VOD/series)', () => {
       }
     })
     const { result } = renderHook(() => useTranscodeFallback())
-    let started = true
-    await act(async () => {
-      started = result.current.tryFallbackForRememberedAudio(PLAY_URL, vi.fn())
-    })
-    expect(started).toBe(false)
+    expect(result.current.rememberedVodAudioIndex(PLAY_URL)).toBeNull()
 
     // A live channel with a matching-looking entry still gets nothing from this memory path —
-    // live keeps liveAudioFixes.
+    // live keeps liveAudioFixes (its own read is the player's apply-remembered-fix effect).
     useAppStore.setState({
       nowPlaying: {
         kind: 'live',
@@ -240,11 +264,7 @@ describe('transcode memory (VOD/series)', () => {
         icon: ''
       }
     })
-    let liveStarted = true
-    await act(async () => {
-      liveStarted = result.current.tryFallbackForRememberedAudio('http://provider.example/live/u/p/42.ts', vi.fn())
-    })
-    expect(liveStarted).toBe(false)
+    expect(result.current.rememberedVodAudioIndex('http://provider.example/live/u/p/42.ts')).toBeNull()
     expect(startMock).not.toHaveBeenCalled()
   })
 
