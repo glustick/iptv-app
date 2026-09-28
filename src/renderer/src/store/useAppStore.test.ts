@@ -2166,3 +2166,62 @@ describe('custom category membership across playlists', () => {
     expect(entries()).toEqual([42])
   })
 })
+
+describe('per-channel EPG state across playlists', () => {
+  it('keeps a manual guide mapping for the same id on two playlists independently', () => {
+    // The persisted half of the collision: a map made on provider B's 42 must not read as (or
+    // overwrite) provider A's 42. See lib/channelIdentity.
+    useAppStore.setState({ primaryPlaylistId: 'primary', settings: { ...DEFAULT_SETTINGS, epgChannelMappings: [] } })
+    const source = 'http://guides.example.com/g.xml'
+    const maps = () => useAppStore.getState().settings.epgChannelMappings
+
+    useAppStore.getState().addEpgChannelMapping({ sourceUrl: source, guideChannelId: 'c-primary', streamId: 42 })
+    useAppStore.getState().addEpgChannelMapping({ sourceUrl: source, guideChannelId: 'c-second', streamId: 42, playlistId: 'second' })
+
+    // Two entries, not one: the primary's keeps its original shape (no playlistId), the second's
+    // is qualified.
+    expect(maps()).toEqual([
+      { sourceUrl: source, guideChannelId: 'c-primary', streamId: 42 },
+      { sourceUrl: source, guideChannelId: 'c-second', streamId: 42, playlistId: 'second' }
+    ])
+
+    // Re-mapping the second playlist's channel replaces only that one.
+    useAppStore.getState().addEpgChannelMapping({ sourceUrl: source, guideChannelId: 'c-second-2', streamId: 42, playlistId: 'second' })
+    expect(maps().filter((m) => m.playlistId === 'second')).toEqual([
+      { sourceUrl: source, guideChannelId: 'c-second-2', streamId: 42, playlistId: 'second' }
+    ])
+    expect(maps().find((m) => !m.playlistId)?.guideChannelId).toBe('c-primary')
+
+    // Removing the second playlist's mapping leaves the primary's in place.
+    useAppStore.getState().removeEpgChannelMapping(source, 42, 'second')
+    expect(maps()).toEqual([{ sourceUrl: source, guideChannelId: 'c-primary', streamId: 42 }])
+  })
+
+  it('caches short EPG per playlist, so two playlists\' channel 42 are two entries', async () => {
+    useAppStore.setState({ primaryPlaylistId: 'primary', shortEpgByStream: {}, shortEpgFetchedAt: {} })
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    const now = Math.floor(Date.now() / 1000)
+    vi.spyOn(client, 'getShortEpg').mockImplementation(async (streamId: number) => [
+      {
+        id: `p-${streamId}`,
+        epg_id: '',
+        title: `Show ${streamId}`,
+        lang: '',
+        start: new Date(now * 1000).toISOString(),
+        end: new Date((now + 3600) * 1000).toISOString(),
+        description: '',
+        channel_id: '',
+        start_timestamp: String(now),
+        stop_timestamp: String(now + 3600)
+      }
+    ])
+    useAppStore.setState({ client })
+
+    await useAppStore.getState().loadShortEpg(91001, 'primary')
+    await useAppStore.getState().loadShortEpg(91001, 'second')
+
+    // The primary keeps its bare key; the second playlist gets a qualified one — two entries for
+    // what would otherwise have been one shared (and wrong) cache slot.
+    expect(Object.keys(useAppStore.getState().shortEpgByStream).sort()).toEqual(['91001', 'second:91001'])
+  })
+})

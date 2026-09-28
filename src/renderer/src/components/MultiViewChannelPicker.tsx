@@ -4,7 +4,7 @@ import { kindOf } from '../lib/customCategories'
 import { useDebouncedValue } from '../lib/useDebouncedValue'
 import { EpgGrid } from './EpgGrid'
 import type { LiveStream } from '../lib/types'
-import { channelKeyBelongsToPlaylist } from '../lib/channelIdentity'
+import { channelKey, channelKeyBelongsToPlaylist } from '../lib/channelIdentity'
 
 // A lightweight overlay for picking which channel goes in a Multi-View slot — reuses EpgGrid
 // (the same Gantt-chart guide EpgGridPanel/PlayerChannelBar already render) rather than building
@@ -91,10 +91,10 @@ export function MultiViewChannelPicker(): JSX.Element | null {
     const needle = debouncedSearch.toLowerCase()
     return source.filter((c) => {
       if (c.name.toLowerCase().includes(needle)) return true
-      const listings = shortEpgByStream[c.stream_id]
+      const listings = shortEpgByStream[channelKey(c.playlistId, c.stream_id, primaryPlaylistId)]
       return listings?.some((p) => p.title.toLowerCase().includes(needle)) ?? false
     })
-  }, [scope, favoriteChannels, liveStreams, debouncedSearch, shortEpgByStream, isChannelHidden, showHiddenLiveChannels])
+  }, [scope, favoriteChannels, liveStreams, debouncedSearch, shortEpgByStream, isChannelHidden, showHiddenLiveChannels, primaryPlaylistId])
 
   if (pickingSlot === null) return null
 

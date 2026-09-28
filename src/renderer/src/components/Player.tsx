@@ -1327,7 +1327,7 @@ export function Player(): JSX.Element | null {
   // its own definition), so this is safe to call again on every channel change without guarding
   // here too.
   useEffect(() => {
-    if (nowPlaying?.kind === 'live') void loadShortEpg(nowPlaying.streamId)
+    if (nowPlaying?.kind === 'live') void loadShortEpg(nowPlaying.streamId, nowPlaying.playbackPlaylistId)
   }, [nowPlaying, loadShortEpg])
 
   // VOD/series probes its own audio/subtitle tracks automatically on load (unlike Live TV's
@@ -1432,7 +1432,7 @@ export function Player(): JSX.Element | null {
   // listings starting slightly in the future, e.g. right at a programme boundary).
   const nowPlayingProgram =
     nowPlaying.kind === 'live'
-      ? (shortEpgByStream[nowPlaying.streamId] ?? []).find(
+      ? (shortEpgByStream[channelKey(nowPlaying.playbackPlaylistId, nowPlaying.streamId, primaryPlaylistId)] ?? []).find(
           (p) => Number(p.start_timestamp) * 1000 <= Date.now() && Number(p.stop_timestamp) * 1000 > Date.now()
         )
       : undefined

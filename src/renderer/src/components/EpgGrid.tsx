@@ -3,6 +3,7 @@ import { List, useListRef } from 'react-window'
 import { useAppStore } from '../store/useAppStore'
 import { useResizableWidth } from '../lib/useResizableWidth'
 import { pct } from '../lib/epgTime'
+import { channelKey } from '../lib/channelIdentity'
 import { describeChannelHealth } from '../lib/channelHealth'
 import type { LiveStream, ShortEpgProgram, ClockFormat } from '../lib/types'
 
@@ -73,12 +74,16 @@ function EpgRow({
   onChannelContextMenu
 }: { index: number; style: CSSProperties } & RowProps): JSX.Element {
   const channel = channels[index]
+  const primaryPlaylistId = useAppStore((s) => s.primaryPlaylistId)
+  // This channel's playlist-aware key (see lib/channelIdentity) — every per-channel map below is
+  // keyed by it, so the same numeric id on two playlists stays two different channels.
+  const channelId = channelKey(channel.playlistId, channel.stream_id, primaryPlaylistId)
   const shortEpgByStream = useAppStore((s) => s.shortEpgByStream)
   const loadShortEpg = useAppStore((s) => s.loadShortEpg)
   const toggleEpgReminder = useAppStore((s) => s.toggleEpgReminder)
   const isEpgReminderSet = useAppStore((s) => s.isEpgReminderSet)
   const probeChannelHealth = useAppStore((s) => s.probeChannelHealth)
-  const channelHealth = useAppStore((s) => s.channelHealthByStream[channel.stream_id])
+  const channelHealth = useAppStore((s) => s.channelHealthByStream[channelId])
 
   // Rows are virtualized, so this only fires for channels actually scrolled into view —
   // fine even against a 24k-channel catalog. This is also the workaround for providers
@@ -86,16 +91,17 @@ function EpgRow({
   // on it): get_short_epg is per-channel and part of the core Xtream API instead.
   useEffect(() => {
     // loadShortEpg catches its own errors internally (EPG is best-effort) and always resolves.
-    void loadShortEpg(channel.stream_id)
+    // Passed this channel's own playlist so the fetch goes to the account that serves it.
+    void loadShortEpg(channel.stream_id, channel.playlistId)
     // Same lazy, per-visible-row trigger for feed health: one small manifest request the first
     // time a channel is ever shown, then cached for the session (deduped, concurrency-capped and
     // cached inside the store — see probeChannelHealth). Fired from here rather than for a whole
     // category at once precisely because rows are virtualized: this asks about the channels the
     // user is actually looking at, at the rate they scroll.
-    void probeChannelHealth(channel.stream_id)
-  }, [channel.stream_id, loadShortEpg, probeChannelHealth])
+    void probeChannelHealth(channel.stream_id, channel.playlistId)
+  }, [channel.stream_id, channel.playlistId, loadShortEpg, probeChannelHealth])
 
-  const listings = shortEpgByStream[channel.stream_id]
+  const listings = shortEpgByStream[channelId]
   const visible = (listings ?? []).filter(
     (p) => Number(p.stop_timestamp) * 1000 > windowStart && Number(p.start_timestamp) * 1000 < windowEnd
   )
@@ -592,7 +598,7 @@ export function EpgGrid({
                 // (see App.tsx's onOpenAbout), so opening this from the fullscreen channel bar
                 // means leaving fullscreen first or the modal would render invisibly behind it.
                 if (document.fullscreenElement) await document.exitFullscreen().catch(() => {})
-                openEpgMatch(channel.stream_id, channel.name)
+                openEpgMatch(channel.stream_id, channel.name, channel.playlistId)
               })()
             }}
           >

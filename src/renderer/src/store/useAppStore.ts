@@ -139,8 +139,11 @@ async function planBulkSuggestionApplyChunked(
   }
   return total
 }
-const shortEpgInFlight = new Set<number>()
-const shortEpgFailedAt = new Map<number, number>()
+// Keyed by the channel's playlist-aware identity (lib/channelIdentity), not a bare stream id —
+// two providers number their channels independently, so id 42 in flight for one must not read as
+// id 42 in flight for the other.
+const shortEpgInFlight = new Set<string>()
+const shortEpgFailedAt = new Map<string, number>()
 
 // Channel-health probing (see probeChannelHealth): one small manifest request per channel, so a
 // whole category's worth of rows mounting at once must not become a burst — the same queueing
@@ -157,13 +160,14 @@ let activeHealthProbes = 0
 // `| Promise<void>` for the same reason the short-EPG queue carries it: each entry's own
 // try/finally settles it and chains the next one, so runNextHealthProbe() never awaits.
 const healthProbeQueue: Array<() => void | Promise<void>> = []
-const healthProbeInFlight = new Set<number>()
+const healthProbeInFlight = new Set<string>()
 // Channels already given a verdict this session. Deliberately module-level, like the short-EPG
 // bookkeeping above, because it is plumbing rather than anything a component renders — and it is
 // cleared on connect/disconnect, since stream ids are provider-scoped and a previous provider's
-// verdicts would be about a different channel entirely.
-const healthProbeSettled = new Set<number>()
-const healthProbeFailedAt = new Map<number, number>()
+// verdicts would be about a different channel entirely. Keyed by the channel's playlist-aware
+// identity for the same reason the short-EPG maps are (see lib/channelIdentity).
+const healthProbeSettled = new Set<string>()
+const healthProbeFailedAt = new Map<string, number>()
 
 /**
  * Sends a diagnostic line to the main process's lifecycle log, if there is a bridge to send it
@@ -302,7 +306,7 @@ interface AppState {
   // the FIRST source in priority order that has programmes for it (see applyEpgPool). Surfaced in
   // the channel preview so "why does this channel have listings and that one doesn't" has an
   // answer on screen instead of only in the match report. Reset with the rest of the EPG state.
-  epgSourceByStream: Record<number, string>
+  epgSourceByStream: Record<string, string>
   // true/false once an Xtream connect has tried the provider's own xmltv.php guide; null on
   // M3U profiles (their playlist guide never enters the pool as a separate source).
   providerGuideAvailable: boolean | null
@@ -318,15 +322,15 @@ interface AppState {
   // format, HTTP error, etc. Provider-guide failures are deliberately not tracked here; see
   // loadEpgSources' own comment for why.
   epgSourceIssues: Record<string, string>
-  shortEpgByStream: Record<number, ShortEpgProgram[]>
+  shortEpgByStream: Record<string, ShortEpgProgram[]>
   // When each stream's shortEpgByStream entry was last refreshed from the provider (not set for
   // entries prefilled from a guide pool — those want the provider's fresher data as soon as
   // their row loads). Drives SHORT_EPG_TTL_MS staleness in loadShortEpg.
-  shortEpgFetchedAt: Record<number, number>
+  shortEpgFetchedAt: Record<string, number>
   // Per-channel feed health, probed lazily as rows scroll into view (probeChannelHealth) —
   // 'loop' is a channel whose playlist is already finished, i.e. a fixed clip rather than a
   // live feed; see lib/channelHealth.ts for why that is the signal and how it is read.
-  channelHealthByStream: Record<number, ChannelHealthEntry>
+  channelHealthByStream: Record<string, ChannelHealthEntry>
   // The local proxy's base URL, captured at connect() — fetching a user-added third-party EPG
   // URL needs the proxy's /__fetch/ passthrough (same reason every other cross-origin request
   // here goes through it), and nothing else exposes it to the store.
@@ -391,7 +395,7 @@ interface AppState {
   // Set by a channel row's context menu ("EPG match…") to aim the Guide & EPG surface at one
   // channel: GuideSettingsPage consumes it on open and opens that channel's mapping editor with
   // the channel preselected (see openEpgMatch). null when nothing is being matched.
-  epgMatchTarget: { streamId: number; streamName: string } | null
+  epgMatchTarget: { streamId: number; streamName: string; playlistId?: string | null } | null
   // Derived in the overlays layer from epgMatchTarget !== null; the close action simply clears
   // the target, so the two can never disagree about whether the panel is open.
   channelMatchOpen: boolean
@@ -516,12 +520,15 @@ interface AppState {
   setEpgSourceHidden: (url: string, hidden: boolean) => void
   // Backs the per-channel match panel's Escape/click-outside (see ChannelMatchModal).
   closeChannelMatch: () => void
-  removeEpgChannelMapping: (sourceUrl: string, streamId: number) => void
+  removeEpgChannelMapping: (sourceUrl: string, streamId: number, playlistId?: string | null) => void
   // Loads the full live catalog into numericChannelCatalog when it isn't cached yet — the
   // mapping picker searches every channel the provider has, not just the currently-browsed
   // category's liveStreams.
   ensureChannelCatalog: () => Promise<void>
-  loadShortEpg: (streamId: number) => Promise<void>
+  // playlistId names which playlist's channel this is, so the listings are fetched from the
+  // account that actually serves it AND cached under that channel's playlist-aware key — the same
+  // numeric id on two playlists is two different channels (see lib/channelIdentity).
+  loadShortEpg: (streamId: number, playlistId?: string | null) => Promise<void>
   play: (
     kind: MediaKind,
     streamId: number,
@@ -557,7 +564,7 @@ interface AppState {
   // Probes one channel's own playlist for feed health (see lib/channelHealth.ts). Resolves when
   // the queued probe actually ran; a channel already judged this session, or already in flight,
   // resolves immediately.
-  probeChannelHealth: (streamId: number) => Promise<void>
+  probeChannelHealth: (streamId: number, playlistId?: string | null) => Promise<void>
   setShowNotLiveChannels: (show: boolean) => void
   // Records (or, via forgetLiveAudioFix, clears) that a live channel needs the ffmpeg AAC-remux
   // audio fallback, so the next open skips detection and engages the remux immediately — see
@@ -598,7 +605,7 @@ interface AppState {
   closeGuide: () => void
   // Opens the guide aimed at one channel — see epgMatchTarget. Clears the target if the guide
   // is merely opened normally instead.
-  openEpgMatch: (streamId: number, streamName: string) => void
+  openEpgMatch: (streamId: number, streamName: string, playlistId?: string | null) => void
   clearEpgMatchTarget: () => void
   // Resolves rather than throws either way (ok: false carries the error message) — Settings
   // renders these results directly rather than needing its own try/catch around every call.
@@ -1285,14 +1292,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   applyEpgPool: () => {
-    const { epgSources, epgSourceLabels, providerGuideAvailable, epgSourceIssues, liveStreams, shortEpgByStream, shortEpgFetchedAt, settings } = get()
+    const { epgSources, epgSourceLabels, providerGuideAvailable, epgSourceIssues, liveStreams, shortEpgByStream, shortEpgFetchedAt, settings, primaryPlaylistId } = get()
+    // Every channel in one applyEpgPool run comes from the single category just browsed, so they
+    // share one playlist — but that playlist may be a *second* account whose stream ids collide
+    // with the primary's. Key everything per channel with lib/channelIdentity so a pool entry (and
+    // the caches it feeds) for provider B's channel 42 can never be read as provider A's.
+    const liveKeys = new Set(liveStreams.map((stream) => channelKey(stream.playlistId, stream.stream_id, primaryPlaylistId)))
+    const keyByStreamId = new Map(liveStreams.map((stream) => [stream.stream_id, channelKey(stream.playlistId, stream.stream_id, primaryPlaylistId)]))
     // First source (in loadEpgSources' priority order) with programmes for a channel wins —
     // the provider's own guide outranks a third party's, and earlier custom URLs outrank later
     // ones.
-    const pool = new Map<number, ShortEpgProgram[]>()
+    const pool = new Map<string, ShortEpgProgram[]>()
     // Provenance for the preview panel: which source won each channel (first in priority order
     // with programmes for it — the same rule that decides the pool entry right below).
-    const sourceByStream: Record<number, string> = {}
+    const sourceByStream: Record<string, string> = {}
     // Per-source matching report for Settings — what a source actually did against the
     // currently-loaded channels, including how much of its matching rests on the weaker
     // name join and which channel names found no counterpart at all.
@@ -1322,8 +1335,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         })
         return
       }
+      // A mapping only applies to this run if it names a channel actually in the browsed list,
+      // matched by its playlist-aware key — so another playlist's mapping for the same numeric id
+      // is correctly ignored rather than applied to the wrong channel.
       const manual = new Map(
-        settings.epgChannelMappings.filter((m) => m.sourceUrl === sourceUrl).map((m) => [m.streamId, m.guideChannelId])
+        settings.epgChannelMappings
+          .filter((m) => m.sourceUrl === sourceUrl && liveKeys.has(channelKey(m.playlistId, m.streamId, primaryPlaylistId)))
+          .map((m) => [m.streamId, m.guideChannelId])
       )
       const matches = matchXmltvChannels(liveStreams, source, manual)
       let byId = 0
@@ -1358,11 +1376,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         unmatchedNames
       })
       for (const [streamId, match] of matches) {
-        if (pool.has(streamId)) continue
+        const key = keyByStreamId.get(streamId) ?? String(streamId)
+        if (pool.has(key)) continue
         const programmes = source.programmesByChannel.get(match.channelId)
         if (programmes?.length) {
-          pool.set(streamId, xmltvProgrammesToShort(programmes, match.channelId))
-          sourceByStream[streamId] = label
+          pool.set(key, xmltvProgrammesToShort(programmes, match.channelId))
+          sourceByStream[key] = label
         }
       }
     })
@@ -1388,7 +1407,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (pool.size === 0) return
     const nextShort = { ...shortEpgByStream }
     let changed = false
-    for (const [streamId, programmes] of pool) {
+    for (const [key, programmes] of pool) {
       // The pool only PREFILLS: it yields to any non-empty cached list (the provider's own
       // listings, or an earlier prefill) and loadShortEpg merges provider entries over it later.
       //
@@ -1399,7 +1418,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       // for the provider returns nothing, so that fetch caches an EMPTY array. The guide then
       // matched the channel, saw a completed fetch, and skipped it: the match report counted the
       // channel as matched while its row showed "No programme data" indefinitely.
-      const existing = nextShort[streamId]
+      const existing = nextShort[key]
       if (existing === programmes) continue
       // Provider data — a fetch happened AND actually returned listings — is never overwritten.
       // Note the two halves: an empty cached list is NOT provider data, it's the "the provider has
@@ -1407,8 +1426,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       // list with no fetchedAt stamp is a previous pool prefill, which a reprioritisation is
       // allowed to replace (a fetch that returned nothing leaves the pool's own data stamped, so a
       // reprioritisation settles on the next connect instead of churning what's on screen).
-      if (shortEpgFetchedAt[streamId] && existing && existing.length > 0) continue
-      nextShort[streamId] = programmes
+      if (shortEpgFetchedAt[key] && existing && existing.length > 0) continue
+      nextShort[key] = programmes
       changed = true
     }
     if (changed) set({ shortEpgByStream: nextShort })
@@ -1427,16 +1446,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!guide || catalog.length === 0) return { applied: 0, stillUnmatched: 0 }
 
     const index = buildGuideIndex(guide)
+    // The full catalogue here is the primary playlist's alone (ensureChannelCatalog), so its
+    // stream ids are bare — include only the primary's mappings, or a second playlist's map for
+    // the same numeric id would read as this channel already being covered.
     const manual = new Map(
-      settings.epgChannelMappings.filter((m) => m.sourceUrl === sourceUrl).map((m) => [m.streamId, m.guideChannelId])
+      settings.epgChannelMappings.filter((m) => m.sourceUrl === sourceUrl && !m.playlistId).map((m) => [m.streamId, m.guideChannelId])
     )
     const plan = await planBulkSuggestionApplyChunked(catalog, index, manual, threshold)
     if (plan.applied.length > 0) {
       const nameByStreamId = new Map(catalog.map((s) => [s.stream_id, s.name]))
       const appliedStreamIds = new Set(plan.applied.map((a) => a.streamId))
       // Same replace semantics as a single add: an existing mapping for a stream is superseded,
-      // and every other source's mappings are left untouched.
-      const rest = settings.epgChannelMappings.filter((m) => !(m.sourceUrl === sourceUrl && appliedStreamIds.has(m.streamId)))
+      // and every other source's mappings are left untouched. Scoped to primary mappings, since
+      // these applied channels are primary ones.
+      const rest = settings.epgChannelMappings.filter((m) => !(!m.playlistId && m.sourceUrl === sourceUrl && appliedStreamIds.has(m.streamId)))
       get().updateSettings({
         epgChannelMappings: [
           ...rest,
@@ -1480,7 +1503,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       const guideIndex = buildGuideIndex(guide)
       const manual = new Map(
-        settings.epgChannelMappings.filter((m) => m.sourceUrl === label).map((m) => [m.streamId, m.guideChannelId])
+        settings.epgChannelMappings.filter((m) => m.sourceUrl === label && !m.playlistId).map((m) => [m.streamId, m.guideChannelId])
       )
       for (const [streamId, channelId] of plannedHere) manual.set(streamId, channelId)
 
@@ -1503,7 +1526,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const appliedIds = new Set(newMappings.map((m) => m.streamId))
       get().updateSettings({
         epgChannelMappings: [
-          ...settings.epgChannelMappings.filter((m) => !appliedIds.has(m.streamId)),
+          ...settings.epgChannelMappings.filter((m) => !(!m.playlistId && appliedIds.has(m.streamId))),
           ...newMappings
         ]
       })
@@ -1581,8 +1604,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   addEpgChannelMapping: (mapping) => {
     if (!mapping.sourceUrl.trim() || !mapping.guideChannelId) return
+    const { primaryPlaylistId } = get()
+    // One stream maps to one guide channel per source, *per playlist* — replace by the channel's
+    // playlist-aware key, so re-adding on provider B's channel 42 doesn't wipe provider A's map.
+    const key = channelKey(mapping.playlistId, mapping.streamId, primaryPlaylistId)
     const rest = get().settings.epgChannelMappings.filter(
-      (m) => !(m.sourceUrl === mapping.sourceUrl && m.streamId === mapping.streamId)
+      (m) => !(m.sourceUrl === mapping.sourceUrl && channelKey(m.playlistId, m.streamId, primaryPlaylistId) === key)
     )
     get().updateSettings({ epgChannelMappings: [...rest, mapping] })
     // The guides themselves are already loaded — reapplying the pool is enough for the grid
@@ -1590,10 +1617,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     get().applyEpgPool()
   },
 
-  removeEpgChannelMapping: (sourceUrl, streamId) => {
+  removeEpgChannelMapping: (sourceUrl, streamId, playlistId) => {
+    const { primaryPlaylistId } = get()
+    const key = channelKey(playlistId, streamId, primaryPlaylistId)
+    const isTarget = (m: { sourceUrl: string; streamId: number; playlistId?: string | null }): boolean =>
+      m.sourceUrl === sourceUrl && channelKey(m.playlistId, m.streamId, primaryPlaylistId) === key
     const current = get().settings.epgChannelMappings
-    if (!current.some((m) => m.sourceUrl === sourceUrl && m.streamId === streamId)) return
-    get().updateSettings({ epgChannelMappings: current.filter((m) => !(m.sourceUrl === sourceUrl && m.streamId === streamId)) })
+    if (!current.some(isTarget)) return
+    get().updateSettings({ epgChannelMappings: current.filter((m) => !isTarget(m)) })
     get().applyEpgPool()
   },
 
@@ -1780,10 +1811,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     })()
   },
 
-  loadShortEpg: (streamId) => {
-    const { client, shortEpgByStream, shortEpgFetchedAt } = get()
-    if (!client) return Promise.resolve()
-    if (shortEpgInFlight.has(streamId)) return Promise.resolve()
+  loadShortEpg: (streamId, playlistId) => {
+    const { client, playlists, primaryPlaylistId, shortEpgByStream, shortEpgFetchedAt } = get()
+    // The channel's OWN playlist's client: with two accounts connected, asking the primary for a
+    // channel that belongs to the other would fetch a different channel that happens to share the
+    // id — or nothing at all. Same reasoning as play()'s own source lookup.
+    const source =
+      playlistId ? playlists.find((playlist) => playlist.profileId === playlistId)?.client ?? client : client
+    if (!source) return Promise.resolve()
+    // The channel's playlist-aware key (see lib/channelIdentity): its bare id on the primary
+    // playlist, a qualified one elsewhere — so two providers' channel 42 are two cache entries.
+    const key = channelKey(playlistId, streamId, primaryPlaylistId)
+    if (shortEpgInFlight.has(key)) return Promise.resolve()
     // A cache entry is only a reason NOT to fetch when it's provider-fetched (fetchedAt set),
     // still fresh within SHORT_EPG_TTL_MS, and either still covers "now" or was an honest
     // empty answer — an entry whose last programme has already ended (the "rest of today"
@@ -1791,8 +1830,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     // matter how recently it was fetched, which is what fixes the old "every channel blank
     // until restart" behavior. Entries prefilled from a guide pool have no fetchedAt, so they
     // never suppress the provider fetch.
-    const cached = shortEpgByStream[streamId]
-    const fetchedAt = shortEpgFetchedAt[streamId] ?? 0
+    const cached = shortEpgByStream[key]
+    const fetchedAt = shortEpgFetchedAt[key] ?? 0
     const spansNow =
       cached !== undefined && cached.some((p) => Number(p.stop_timestamp) * 1000 > Date.now())
     if (fetchedAt && Date.now() - fetchedAt < SHORT_EPG_TTL_MS && (spansNow || cached?.length === 0)) {
@@ -1800,9 +1839,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     // Recently failed — wait out the cooldown rather than hammering a channel the provider is
     // currently failing for, but (unlike before) do come back and retry after it.
-    const failedAt = shortEpgFailedAt.get(streamId) ?? 0
+    const failedAt = shortEpgFailedAt.get(key) ?? 0
     if (Date.now() - failedAt < SHORT_EPG_FAILURE_COOLDOWN_MS) return Promise.resolve()
-    shortEpgInFlight.add(streamId)
+    shortEpgInFlight.add(key)
     return new Promise((resolve) => {
       shortEpgQueue.push(async () => {
         try {
@@ -1811,26 +1850,26 @@ export const useAppStore = create<AppState>((set, get) => ({
           // than that just lets whatever the provider actually has through instead of an
           // artificial 16-item truncation that was cutting off real, already-available
           // programming well before the provider's own window ran out.
-          const listings = await client.getShortEpg(streamId, 48)
-          shortEpgFailedAt.delete(streamId)
+          const listings = await source.getShortEpg(streamId, 48)
+          shortEpgFailedAt.delete(key)
           // Merge with whatever's already cached for this channel — typically a guide-pool
           // prefill (see applyEpgPool): provider entries win their slots, the pool's later
           // days/gap-fillers survive around them.
-          const merged = mergeShortEpg(listings, shortEpgByStream[streamId] ?? [])
+          const merged = mergeShortEpg(listings, shortEpgByStream[key] ?? [])
           set({
-            shortEpgByStream: { ...get().shortEpgByStream, [streamId]: merged },
-            shortEpgFetchedAt: { ...get().shortEpgFetchedAt, [streamId]: Date.now() }
+            shortEpgByStream: { ...get().shortEpgByStream, [key]: merged },
+            shortEpgFetchedAt: { ...get().shortEpgFetchedAt, [key]: Date.now() }
           })
         } catch {
-          shortEpgFailedAt.set(streamId, Date.now())
+          shortEpgFailedAt.set(key, Date.now())
           // If nothing has ever loaded for this channel, cache an honest empty rather than
           // leaving the row's loading shimmer up forever — [] renders as "No programme data"
           // and stays retryable after the cooldown above.
-          if (get().shortEpgByStream[streamId] === undefined) {
-            set({ shortEpgByStream: { ...get().shortEpgByStream, [streamId]: [] } })
+          if (get().shortEpgByStream[key] === undefined) {
+            set({ shortEpgByStream: { ...get().shortEpgByStream, [key]: [] } })
           }
         } finally {
-          shortEpgInFlight.delete(streamId)
+          shortEpgInFlight.delete(key)
           activeShortEpgFetches--
           resolve()
           runNextShortEpgFetch()
@@ -1840,15 +1879,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
   },
 
-  probeChannelHealth: (streamId) => {
-    const { client } = get()
-    if (!client) return Promise.resolve()
-    if (healthProbeSettled.has(streamId) || healthProbeInFlight.has(streamId)) return Promise.resolve()
-    const failedAt = healthProbeFailedAt.get(streamId) ?? 0
+  probeChannelHealth: (streamId, playlistId) => {
+    const { client, playlists, primaryPlaylistId } = get()
+    // The URL has to come from the channel's OWN playlist's client — a probe reads that account's
+    // stream, and the same id on another playlist is a different channel (see lib/channelIdentity).
+    const source =
+      playlistId ? playlists.find((playlist) => playlist.profileId === playlistId)?.client ?? client : client
+    if (!source) return Promise.resolve()
+    const key = channelKey(playlistId, streamId, primaryPlaylistId)
+    if (healthProbeSettled.has(key) || healthProbeInFlight.has(key)) return Promise.resolve()
+    const failedAt = healthProbeFailedAt.get(key) ?? 0
     if (Date.now() - failedAt < HEALTH_PROBE_FAILURE_COOLDOWN_MS) return Promise.resolve()
     let url: string
     try {
-      url = client.getStreamUrl('live', streamId, 'm3u8')
+      url = source.getStreamUrl('live', streamId, 'm3u8')
     } catch {
       // A channel id this client can't resolve (an M3U playlist that changed underneath us,
       // say) — there is nothing to probe, and it is not this channel's fault.
@@ -1860,7 +1904,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     // not ending in .m3u8 is therefore left unjudged on purpose. (The same test Player.tsx and
     // useHlsAttach.ts use to decide what hls.js can play at all.)
     if (!url.endsWith('.m3u8')) return Promise.resolve()
-    healthProbeInFlight.add(streamId)
+    healthProbeInFlight.add(key)
     return new Promise((resolve) => {
       healthProbeQueue.push(async () => {
         try {
@@ -1874,12 +1918,12 @@ export const useAppStore = create<AppState>((set, get) => ({
           } finally {
             clearTimeout(timer)
           }
-          healthProbeFailedAt.delete(streamId)
-          healthProbeSettled.add(streamId)
+          healthProbeFailedAt.delete(key)
+          healthProbeSettled.add(key)
           set({
             channelHealthByStream: {
               ...get().channelHealthByStream,
-              [streamId]: {
+              [key]: {
                 health: classifyChannelHealth(analysis),
                 // A master playlist's own summed durations say nothing about the variants it
                 // hands off to, so only a media playlist's length is worth keeping.
@@ -1892,9 +1936,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           // Transport-level failure — no verdict at all, just back off before trying again (see
           // HEALTH_PROBE_FAILURE_COOLDOWN_MS). Recording "unavailable" here would be a lie the
           // user would act on.
-          healthProbeFailedAt.set(streamId, Date.now())
+          healthProbeFailedAt.set(key, Date.now())
         } finally {
-          healthProbeInFlight.delete(streamId)
+          healthProbeInFlight.delete(key)
           activeHealthProbes--
           resolve()
           runNextHealthProbe()
@@ -2226,8 +2270,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   openGuide: () => set({ guideOpen: true, settingsOpen: false, epgMatchTarget: null, channelMatchOpen: false }),
   closeGuide: () => set({ guideOpen: false }),
 
-  openEpgMatch: (streamId, streamName) =>
-    set({ epgMatchTarget: { streamId, streamName }, channelMatchOpen: true, guideOpen: false, settingsOpen: false }),
+  openEpgMatch: (streamId, streamName, playlistId) =>
+    set({ epgMatchTarget: { streamId, streamName, playlistId }, channelMatchOpen: true, guideOpen: false, settingsOpen: false }),
 
   clearEpgMatchTarget: () => set({ epgMatchTarget: null, channelMatchOpen: false }),
 

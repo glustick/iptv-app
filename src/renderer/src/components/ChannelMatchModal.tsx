@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore, PROVIDER_GUIDE_LABEL } from '../store/useAppStore'
+import { channelKey } from '../lib/channelIdentity'
 import { buildGuideIndex, suggestGuideChannels, type GuideIndex } from '../lib/epg'
 import { pickDefaultMatchSource, tierCandidates, POSSIBLE_MATCH_SCORE } from '../lib/channelMatch'
 
@@ -34,6 +35,7 @@ export function ChannelMatchModal(): JSX.Element | null {
   const epgSourceLabels = useAppStore((s) => s.epgSourceLabels)
   const epgSourceByStream = useAppStore((s) => s.epgSourceByStream)
   const liveStreams = useAppStore((s) => s.liveStreams)
+  const primaryPlaylistId = useAppStore((s) => s.primaryPlaylistId)
   const addEpgChannelMapping = useAppStore((s) => s.addEpgChannelMapping)
   const removeEpgChannelMapping = useAppStore((s) => s.removeEpgChannelMapping)
   const openGuide = useAppStore((s) => s.openGuide)
@@ -46,12 +48,15 @@ export function ChannelMatchModal(): JSX.Element | null {
   // over the entire guide, so per-open rebuilding would pay that cost every click.
   const indexCache = useRef(new Map<string, GuideIndex>())
 
+  // The target channel's playlist-aware key (see lib/channelIdentity) — everything below is keyed
+  // per channel, so a match made on one playlist's channel 42 never reads as another's.
+  const targetKey = target ? channelKey(target.playlistId, target.streamId, primaryPlaylistId) : null
   const channel = useMemo(
-    () => (target ? liveStreams.find((c) => c.stream_id === target.streamId) ?? null : null),
-    [target, liveStreams]
+    () => (target ? liveStreams.find((c) => channelKey(c.playlistId, c.stream_id, primaryPlaylistId) === targetKey) ?? null : null),
+    [target, targetKey, liveStreams, primaryPlaylistId]
   )
   const channelName = channel?.name ?? target?.streamName ?? ''
-  const supplier = target ? epgSourceByStream[target.streamId] ?? null : null
+  const supplier = targetKey ? epgSourceByStream[targetKey] ?? null : null
 
   // Mappable sources: everything except the provider's own guide (not manually mappable — its
   // channel ids are what epg_channel_id already refers to; see EpgChannelMapping).
@@ -97,7 +102,7 @@ export function ChannelMatchModal(): JSX.Element | null {
   }, [guideChannels, query])
 
   const mappedHere = settings.epgChannelMappings.filter((m) => m.sourceUrl === sourceUrl)
-  const mappedForChannel = mappedHere.find((m) => m.streamId === target?.streamId) ?? null
+  const mappedForChannel = mappedHere.find((m) => channelKey(m.playlistId, m.streamId, primaryPlaylistId) === targetKey) ?? null
 
   if (!target) return null
 
@@ -245,6 +250,9 @@ export function ChannelMatchModal(): JSX.Element | null {
                         sourceUrl,
                         guideChannelId: selectedGuideId,
                         streamId: target.streamId,
+                        // Only set for a non-primary playlist, so a primary channel's mapping keeps
+                        // exactly the shape every mapping written before multi-playlist had.
+                        ...(target.playlistId ? { playlistId: target.playlistId } : {}),
                         guideChannelName: guideChannels.find((c) => c.id === selectedGuideId)?.displayName,
                         streamName: channelName || undefined
                       })
@@ -258,7 +266,7 @@ export function ChannelMatchModal(): JSX.Element | null {
                       className="danger-link"
                       onClick={() => {
                         if (!sourceUrl) return
-                        removeEpgChannelMapping(sourceUrl, target.streamId)
+                        removeEpgChannelMapping(sourceUrl, target.streamId, target.playlistId)
                         clearTarget()
                       }}
                     >

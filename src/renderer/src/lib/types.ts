@@ -211,6 +211,12 @@ export interface EpgChannelMapping {
   streamId: number
   guideChannelName?: string
   streamName?: string
+  // Which playlist's channel this map is for. Absent/null means the primary playlist — which is
+  // what every mapping written before multi-playlist means, so nothing needs rewriting. With two
+  // playlists connected, stream ids collide (provider A's channel 42 is not provider B's), and
+  // this is what keeps a manual map for one from silently applying to the other. See
+  // lib/channelIdentity.ts for the key rule.
+  playlistId?: string | null
 }
 
 // A user-made channel grouping for Live TV — the sidebar's "My Categories" section above the

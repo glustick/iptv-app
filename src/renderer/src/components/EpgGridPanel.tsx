@@ -7,7 +7,7 @@ import { useNumericChannelEntry } from '../lib/useNumericChannelEntry'
 import { EpgGrid } from './EpgGrid'
 import { describeChannelHealth } from '../lib/channelHealth'
 import type { LiveStream, ShortEpgProgram } from '../lib/types'
-import { channelKeyBelongsToPlaylist } from '../lib/channelIdentity'
+import { channelKey, channelKeyBelongsToPlaylist } from '../lib/channelIdentity'
 
 // Docked/full-width chrome (preview video, favorite/close buttons, resize handle) around the
 // shared EpgGrid — see EpgGrid.tsx for the actual Gantt-chart guide, also reused as the
@@ -79,10 +79,10 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
     () =>
       liveStreams.filter((c) => {
         if (!showHiddenLiveChannels && isChannelHidden(c.playlistId, c.stream_id)) return false
-        const health = channelHealthByStream[c.stream_id]?.health
+        const health = channelHealthByStream[channelKey(c.playlistId, c.stream_id, primaryPlaylistId)]?.health
         return health === 'loop' || health === 'unavailable'
       }).length,
-    [liveStreams, channelHealthByStream, showHiddenLiveChannels, isChannelHidden]
+    [liveStreams, channelHealthByStream, showHiddenLiveChannels, isChannelHidden, primaryPlaylistId]
   )
   const channels = useMemo(() => {
     let source = showHiddenLiveChannels
@@ -90,7 +90,7 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
       : liveStreams.filter((c) => !isChannelHidden(c.playlistId, c.stream_id))
     if (!showNotLiveChannels) {
       source = source.filter((c) => {
-        const health = channelHealthByStream[c.stream_id]?.health
+        const health = channelHealthByStream[channelKey(c.playlistId, c.stream_id, primaryPlaylistId)]?.health
         return health !== 'loop' && health !== 'unavailable'
       })
     }
@@ -103,10 +103,10 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
       // no bulk/search endpoint, so searching every one of a 24k-channel catalog up front
       // isn't practical. Real but limited: "what's playing X right now" works for channels
       // you've already browsed past, not the whole catalog sight-unseen.
-      const listings = shortEpgByStream[c.stream_id]
+      const listings = shortEpgByStream[channelKey(c.playlistId, c.stream_id, primaryPlaylistId)]
       return listings?.some((p) => p.title.toLowerCase().includes(needle)) ?? false
     })
-  }, [liveStreams, debouncedSearch, shortEpgByStream, isChannelHidden, showHiddenLiveChannels, showNotLiveChannels, channelHealthByStream])
+  }, [liveStreams, debouncedSearch, shortEpgByStream, isChannelHidden, showHiddenLiveChannels, showNotLiveChannels, channelHealthByStream, primaryPlaylistId])
 
   // Suppress the small preview's own stream while the fullscreen player has one open for
   // the same account — most Xtream providers cap concurrent connections quite low (often
@@ -148,7 +148,10 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
   }
 
   const favorited = isFavorited('live', previewChannel.stream_id)
-  const previewHealth = channelHealthByStream[previewChannel.stream_id]
+  // The previewed channel's playlist-aware key (see lib/channelIdentity) — the guide provenance
+  // and health lookups below are per channel, not per bare stream id.
+  const previewChannelId = channelKey(previewChannel.playlistId, previewChannel.stream_id, primaryPlaylistId)
+  const previewHealth = channelHealthByStream[previewChannelId]
 
   function watchFullscreen(channel: LiveStream = previewChannel!): void {
     play('live', channel.stream_id, channel.name, 'm3u8', channel.stream_icon, channel.tv_archive, channel.playlistId)
@@ -220,20 +223,20 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
                 {describeChannelHealth(previewHealth.health, previewHealth.durationSeconds)}
               </p>
             )}
-            {epgSourceByStream[previewChannel.stream_id] && (
+            {epgSourceByStream[previewChannelId] && (
               <p
                 className="epg-guide-source"
                 title="Which guide source supplies this channel's listings beyond the provider's own today-window"
               >
-                Guide: {epgSourceByStream[previewChannel.stream_id]}
+                Guide: {epgSourceByStream[previewChannelId]}
               </p>
             )}
             {/* Only once the fetch has actually settled with nothing (an entry exists and is
                 empty) — showing this while it's still loading would flash a "no data" claim at
                 every channel click. This is the one place the user is looking at a channel with
                 a known-empty guide, so it's where pointing at the fix belongs. */}
-            {shortEpgByStream[previewChannel.stream_id] !== undefined &&
-              (shortEpgByStream[previewChannel.stream_id]?.length ?? 0) === 0 && (
+            {shortEpgByStream[previewChannelId] !== undefined &&
+              (shortEpgByStream[previewChannelId]?.length ?? 0) === 0 && (
                 <p className="epg-no-listings">
                   No guide listings for this channel.{' '}
                   <button className="link-button" onClick={openGuide}>
