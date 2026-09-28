@@ -1,10 +1,23 @@
-import { useState } from 'react'
-import { useAppStore, PROVIDER_GUIDE_LABEL } from '../store/useAppStore'
+import { useEffect, useState } from 'react'
+import { useAppStore, PROVIDER_GUIDE_LABEL, guideCacheKey } from '../store/useAppStore'
 import { unionEpgSourceUrls } from '../lib/epg'
+import { cachedGuideAge, GUIDE_CACHE_TTL_MS } from '../lib/guideCache'
 
 // The confidence floors offered for the bulk suggestion apply, shared by the per-source and the
 // section-wide runs so the two never drift apart.
 const BULK_THRESHOLDS = [0.6, 0.7, 0.8, 0.9, 1]
+
+/** "3 hours ago"-style phrasing for the guide age line — coarse on purpose: it answers "do I
+ * need to hit refresh?", not "exactly when?". */
+function formatAge(ms: number): string {
+  const minutes = Math.floor(ms / 60_000)
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`
+  const days = Math.floor(hours / 24)
+  return `${days} day${days === 1 ? '' : 's'} ago`
+}
 
 /**
  * "Guide & EPG" — the EPG configuration, on its own surface rather than buried in Settings
@@ -42,6 +55,33 @@ export function GuideSettingsPage(): JSX.Element | null {
   // "Show/hide its guide" — a hidden source is loaded but supplies no listings (see
   // applyEpgPool); the summary row below carries the toggle.
   const setEpgSourceHidden = useAppStore((s) => s.setEpgSourceHidden)
+  // The once-a-day cadence's user-facing surface: when guides were last fetched, and the manual
+  // way to refetch now.
+  const epgSourceFetchedAt = useAppStore((s) => s.epgSourceFetchedAt)
+  const epgBackgroundRefreshing = useAppStore((s) => s.epgBackgroundRefreshing)
+  const loadEpgSources = useAppStore((s) => s.loadEpgSources)
+  const activeProfileId = useAppStore((s) => s.activeProfile?.id ?? null)
+  const connected = useAppStore((s) => !!s.client)
+
+  // Ages read straight from the cache sidecars, so the line is honest even for sources this
+  // session hasn't (re)loaded yet — a sidecar-only read, never the multi-megabyte payload (see
+  // cachedGuideAge). The store's own stamps take precedence where they exist (a fresh fetch).
+  const [cachedAtByLabel, setCachedAtByLabel] = useState<Record<string, number>>({})
+  useEffect(() => {
+    if (!guideOpen) return
+    let cancelled = false
+    void (async () => {
+      const known: Record<string, number> = {}
+      for (const label of [PROVIDER_GUIDE_LABEL, ...settings.customEpgUrls]) {
+        const age = await cachedGuideAge(guideCacheKey(label, activeProfileId))
+        if (age !== null) known[label] = Date.now() - age
+      }
+      if (!cancelled) setCachedAtByLabel(known)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [guideOpen, activeProfileId, settings.customEpgUrls])
 
   const [epgUrlDraft, setEpgUrlDraft] = useState('')
   // Bulk suggestion apply: the confidence floor to use, and what the last run reported.
@@ -70,6 +110,23 @@ export function GuideSettingsPage(): JSX.Element | null {
       : providerGuideAvailable === false
         ? { cls: 'guide-chip guide-chip--warn', text: 'Blocked or disabled by this provider' }
         : { cls: 'guide-chip guide-chip--muted', text: epgSourcesStatus === 'loading' ? 'Checking…' : 'Not checked' }
+
+  // The guide age line. "Last updated" reports when an update last happened (the freshest
+  // stamp), with a caveat appended when some known source is past its daily window — the two
+  // together are what tell a user whether to hit Refresh (or just wait, when one is running).
+  const refreshing = epgSourcesStatus === 'loading' || epgBackgroundRefreshing
+  const knownStamps = [PROVIDER_GUIDE_LABEL, ...settings.customEpgUrls]
+    .map((label) => epgSourceFetchedAt[label] ?? cachedAtByLabel[label])
+    .filter((stamp): stamp is number => typeof stamp === 'number')
+  const now = Date.now()
+  const overdueCount = knownStamps.filter((stamp) => now - stamp >= GUIDE_CACHE_TTL_MS).length
+  const lastUpdatedText = (() => {
+    if (knownStamps.length === 0) return refreshing ? 'Refreshing guides…' : 'No cached copy yet'
+    let text = `Last updated: ${formatAge(now - Math.max(...knownStamps))}`
+    if (refreshing) text += ' · refreshing…'
+    else if (overdueCount > 0) text += ` · ${overdueCount} source${overdueCount === 1 ? '' : 's'} past the daily refresh window`
+    return text
+  })()
 
   function removeSource(url: string): void {
     removeCustomEpgUrl(url)
@@ -183,6 +240,21 @@ export function GuideSettingsPage(): JSX.Element | null {
             <span className="guide-stat-label">Manual maps</span>
             <span className="guide-stat-value">{manualMappingCount}</span>
           </div>
+        </div>
+
+        {/* The once-a-day cadence made visible: when guides were last fetched, whether a refresh
+            is running, and the manual way to ask for fresh ones right now. Either way, a cached
+            copy renders immediately — see loadEpgSources' stale-first behavior. */}
+        <div className="guide-refresh-row">
+          <span className="guide-last-updated">{lastUpdatedText}</span>
+          <button
+            className="secondary-button"
+            disabled={!connected || epgSourcesStatus === 'loading'}
+            title="Refetch every guide source now, ignoring the daily cache"
+            onClick={() => void loadEpgSources(true)}
+          >
+            {epgSourcesStatus === 'loading' ? 'Refreshing…' : 'Refresh guides'}
+          </button>
         </div>
 
         <section className="guide-section">

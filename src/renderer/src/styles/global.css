@@ -3330,6 +3330,23 @@ body.resizing-col {
   white-space: nowrap;
 }
 
+/* The "last updated + Refresh guides" row under the stats — the once-a-day cadence's
+   user-facing surface (see loadEpgSources' stale-first behavior). Pulled up into the stats'
+   own bottom margin so the two read as one block. */
+.guide-refresh-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: -8px 0 16px;
+}
+
+.guide-last-updated {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
 .guide-section {
   margin-bottom: 18px;
 }

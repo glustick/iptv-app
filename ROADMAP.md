@@ -295,7 +295,8 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
 
 ### Code, in the order I would take it
 
-- **Cache the guide and the sports fixtures — once a day, not once a launch (requested 2026-09-28).**
+- **Cache the guide and the sports fixtures — once a day, not once a launch (requested 2026-09-28;
+  the guide half is DONE 2026-09-28, sports remains).**
   Both are refetched on every connect today: the provider's full guide is 16.3 MB gzipped / 107.4 MB
   of XML (measured 2026-09-22, and the single biggest thing the app does), and api-football is a
   rate-limited third-party API the Sports tab refreshes on a live-first cadence. The request,
@@ -303,9 +304,16 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
   per day is good enough, the results should be stored in the application database on the system its
   installed... there should still be a button to manually refresh if its really needed... there
   should be a button per channel to manually refresh."* Shape:
-  - **Guide** — cache what was fetched, per source, with a fetched-at stamp. A launch inside the TTL
-    parses the cache instead of refetching, so the ~6.6 s download is skipped (the ~2.3 s sectioned
-    parse still runs). A **Refresh guides** button on the Guide & EPG page forces a refetch.
+  - **Guide** — DONE (2026-09-28). `loadEpgSources` reads the cache per source before fetching.
+    The cache is a new main-process `guideCache.ts` behind a `cache:get/set/age` IPC: one file pair
+    per source key under `userData/guide-cache` — the raw XML as fetched, plus a `fetchedAt`
+    sidecar written *second*, so a half-written payload can never look fresh. A copy inside the
+    rolling 24 h TTL is parsed without refetching (the ~6.6 s download skipped, the ~2.3 s
+    sectioned parse still runs); a stale copy renders immediately while its refetch runs in the
+    background (stale-first) and swaps in when it lands, with the Guide page's new "last updated"
+    line showing the stamp. The provider guide is keyed per profile, a custom source by its URL.
+    A **Refresh guides** button forces a refetch now — falling back to the saved copy if a source
+    fails — and corrupt/partial cache entries fall back to a real fetch, never a broken guide.
   - **Sports** — cache the normalized fixtures per selected day. Refetch when that day's cache is
     stale, keeping the existing live-first refetch only while a cached day actually has live
     fixtures (a day-old "live" strip is worse than none). A refresh button on the Sports tab.
@@ -314,24 +322,18 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
     cooldown, stales its freshness stamp and then reuses `loadShortEpg` — so the fetch queue, the
     in-flight dedupe and the provider/pool merge all behave exactly as before; only the explicit
     button bypasses the guards. The grid row's own lazy load keeps its TTL.
-  - **Where it is stored** — sports fixtures are small JSON and belong in the electron-store the app
-    already persists to (`store:get/set` — the "application database" on the installed machine).
-    **The guide must not go there**: electron-store rewrites its whole file on every `set`, so a
-    16–107 MB document would make every later settings write enormous. It needs a dedicated cache
-    file under `userData`, written by the main process through a small new IPC mirroring
-    `store:*`.
-  Open decisions, deliberately not guessed: **(a)** should a stale guide render immediately and
-  refresh in the background, or wait for the daily fetch; **(b)** does "once a day" mean a rolling
-  24 h TTL or the first launch of each calendar day; **(c)** should the per-channel refresh bypass
-  the guide *pool* too, or only the provider's own `get_short_epg`.
-  **Build plan (next pass, in order):** ① `src/main/index.ts` — a `cache:get`/`cache:set`/`cache:age`
-  IPC pair writing one file per source key under `userData/guide-cache/` (raw XML kept as fetched,
-  plus a small JSON sidecar carrying `fetchedAt`; the sidecar is what the TTL reads, so a
-  half-written payload can never look fresh). ② `src/preload/index.ts` + `index.d.ts` — expose it
-  under a `cache` namespace, mirroring `store`'s shape. ③ `useAppStore.loadEpgSources` — read the
-  cache before each source's fetch and write it after a success; a `force` argument threads through
-  from the button. ④ `GuideSettingsPage` — "Refresh guides" plus a "last updated" line. ⑤ Tests:
-  TTL hit/miss, force-bypass, and a corrupt/partial cache falling back to a real fetch.
+  - **Where it is stored** — as built for the guide half: one file pair per source key under
+    `userData/guide-cache`, written by the main process (`src/main/guideCache.ts`) through the
+    `cache:*` IPC — deliberately not electron-store, whose whole-file rewrites a 16–107 MB
+    document would make enormous. Sports fixtures are small JSON and remain headed for the
+    electron-store the app already persists to (`store:get/set` — the "application database" on
+    the installed machine).
+  Decided (the maintainer, 2026-09-28): **(a)** stale-first — a stale cached guide renders immediately and
+  refreshes in the background, with a visible "last updated" stamp; **(b)** "once a day" is a
+  rolling 24 h TTL, not the first launch of each calendar day; **(c)** the per-channel refresh
+  covers both layers — the provider's own listings are refetched and the guide pool's data
+  survives the merge (pinned by a test). The item's file-level build plan (①-⑤) was consumed by
+  the guide half, all landed 2026-09-28; **the sports half still awaits the same treatment**.
 
 - **Remember what transcode a channel (or title) actually needed — the live half exists, the rest does
   not (raised 2026-09-28).** The request, verbatim: *"have a database of transcoding need for

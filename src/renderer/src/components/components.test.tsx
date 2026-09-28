@@ -421,4 +421,70 @@ describe('GuideSettingsPage', () => {
 
     expect(useAppStore.getState().settings.customEpgUrls).toEqual(['b.xml', 'a.xml'])
   })
+
+  it('shows when the guides were last updated, from the newest known stamp', () => {
+    withEpg()
+    useAppStore.setState({
+      epgSourceFetchedAt: {
+        [PROVIDER_GUIDE_LABEL]: Date.now() - 3 * 60 * 60 * 1000,
+        [SOURCE]: Date.now() - 30 * 60 * 1000
+      }
+    })
+    render(<GuideSettingsPage />)
+
+    expect(screen.getByText(/Last updated: 30 minutes ago/)).toBeTruthy()
+    expect(screen.getByText('Refresh guides')).toBeTruthy()
+  })
+
+  it('flags sources past the daily refresh window', () => {
+    withEpg()
+    useAppStore.setState({
+      epgSourceFetchedAt: { [SOURCE]: Date.now() - 25 * 60 * 60 * 1000 }
+    })
+    render(<GuideSettingsPage />)
+
+    expect(screen.getByText(/1 source past the daily refresh window/)).toBeTruthy()
+  })
+
+  it('Refresh guides forces a reload that skips the cache', async () => {
+    withEpg()
+    const cacheCalls: string[] = []
+    ;(window as unknown as { api: unknown }).api = {
+      cache: {
+        get: async (key: string) => {
+          cacheCalls.push(key)
+          return null
+        },
+        set: async () => ({ fetchedAt: Date.now() }),
+        age: async () => null
+      }
+    }
+    const sourceXml = `<?xml version="1.0"?>
+<tv>
+  <channel id="c1"><display-name>Channel One</display-name></channel>
+  <programme start="20300101120000 +0000" stop="20300101130000 +0000" channel="c1"><title>Show</title></programme>
+</tv>`
+    global.fetch = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        arrayBuffer: async () => new TextEncoder().encode(sourceXml).buffer
+      })
+    ) as unknown as typeof fetch
+    useAppStore.setState({
+      activeProfile: null,
+      epgSourceFetchedAt: {},
+      client: { getFullEpgXml: () => Promise.reject(new Error('blocked')) } as never,
+      proxyBase: 'http://proxy'
+    })
+    render(<GuideSettingsPage />)
+
+    fireEvent.click(screen.getByText('Refresh guides'))
+
+    await waitFor(() => expect(useAppStore.getState().epgSourceFetchedAt[SOURCE]).toBeTypeOf('number'))
+    expect(useAppStore.getState().epgSources).toHaveLength(1)
+    // The force thread is real: the button's reload never even asked the cache for a copy.
+    expect(cacheCalls).toEqual([])
+  })
 })
