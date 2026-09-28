@@ -32,6 +32,7 @@ import { exec as sudoExec } from 'sudo-prompt'
 import extractZip from 'extract-zip'
 import { createProxyServer, type UpstreamClientRequest } from './proxyServer'
 import { createFfmpegResolver } from './ffmpegResolver'
+import { createGuideCache } from './guideCache'
 import { createTranscodeService } from './transcodeService'
 import { createVpnRecoveryService } from './vpnRecoveryService'
 import { buildRouteScriptText, normalizeRouteIps } from './vpnRouteScript'
@@ -84,6 +85,13 @@ process.on('unhandledRejection', (reason) => {
 })
 
 const store = new Store()
+
+// The once-a-day guide cache (see ROADMAP): one file pair per source under
+// userData/guide-cache — raw XML as fetched, plus a fetchedAt sidecar the TTL reads. Deliberately
+// NOT electron-store, whose every write rewrites its whole settings file — a 16–107MB guide
+// would turn every later settings write enormous. The file handling lives in guideCache.ts so
+// it can be tested directly (see its test); this is just the Electron-side wiring.
+const guideCache = createGuideCache({ dir: join(app.getPath('userData'), 'guide-cache') })
 
 // Deliberately not persisted through BACKUP_KEYS below — this is purely local recovery
 // bookkeeping for *this* machine's own openvpn process, not user data, and would be meaningless
@@ -1126,6 +1134,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('store:get', (_event, key: string) => store.get(key))
   ipcMain.handle('store:set', (_event, key: string, value: unknown) => store.set(key, value))
   ipcMain.handle('store:delete', (_event, key: string) => store.delete(key))
+  // The guide cache (see the guideCache module's own comment for the file layout and why the
+  // sidecar is what a reader trusts). `get` resolves null for anything that can't be trusted —
+  // missing, half-written, or corrupt — which the renderer treats as "fetch it".
+  ipcMain.handle('cache:get', (_event, key: string) => guideCache.get(String(key)))
+  ipcMain.handle('cache:set', (_event, key: string, xml: string) => guideCache.set(String(key), String(xml)))
+  ipcMain.handle('cache:age', (_event, key: string) => guideCache.age(String(key)))
   ipcMain.handle('notification:show', (_event, title: string, body: string) => {
     new Notification({ title, body }).show()
   })

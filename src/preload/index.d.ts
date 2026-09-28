@@ -17,6 +17,15 @@ interface StoreAPI {
   delete: (key: string) => Promise<void>
 }
 
+// The guide cache (see the main process's guideCache.ts): raw XML per source key plus a fetchedAt
+// stamp. `get` resolves null for anything that can't be trusted — absent, half-written, or
+// corrupt — so callers fall back to fetching.
+interface CacheAPI {
+  get: (key: string) => Promise<{ xml: string; fetchedAt: number } | null>
+  set: (key: string, xml: string) => Promise<{ fetchedAt: number }>
+  age: (key: string) => Promise<number | null>
+}
+
 interface NotificationsAPI {
   show: (title: string, body: string) => Promise<void>
 }
@@ -113,6 +122,7 @@ declare global {
     api: {
       app: AppInfoAPI
       store: StoreAPI
+      cache: CacheAPI
       notifications: NotificationsAPI
       backup: BackupAPI
       proxy: ProxyAPI

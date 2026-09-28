@@ -35,6 +35,16 @@ const api = {
     set: (key: string, value: unknown) => ipcRenderer.invoke('store:set', key, value),
     delete: (key: string) => ipcRenderer.invoke('store:delete', key)
   },
+  cache: {
+    // The guide cache (see src/main/guideCache.ts): raw XML per source key plus a fetchedAt
+    // stamp, deliberately outside electron-store — a 16–107MB guide there would make every
+    // later settings write enormous. `get` resolves null when there is no trustworthy copy
+    // (missing, half-written, corrupt), which callers treat as "fetch it".
+    get: (key: string) =>
+      ipcRenderer.invoke('cache:get', key) as Promise<{ xml: string; fetchedAt: number } | null>,
+    set: (key: string, xml: string) => ipcRenderer.invoke('cache:set', key, xml) as Promise<{ fetchedAt: number }>,
+    age: (key: string) => ipcRenderer.invoke('cache:age', key) as Promise<number | null>
+  },
   notifications: {
     show: (title: string, body: string) => ipcRenderer.invoke('notification:show', title, body) as Promise<void>
   },
