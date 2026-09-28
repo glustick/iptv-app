@@ -346,6 +346,13 @@ export interface AppSettings {
   // the same safeStorage boundary as the parental PIN; null = feature unconfigured, and the
   // Sports tab stays on its provider-channel schedule alone.
   apiFootballKey: string | null
+  // One day's api-football fixtures, kept so re-opening the Sports tab — or the app — on a fixed
+  // day does not request it again: the free tier is 100 requests/day, and a past or future day's
+  // fixtures do not change. `day` is the yyyy-mm-dd the payload belongs to; the payload is the
+  // RAW response, re-normalized on read, because the normalized form holds Dates and would not
+  // survive a round trip through settings. Today deliberately does NOT read this — live scores
+  // keep their own refetch cadence, since a stale "LIVE" strip would be worse than none.
+  sportsFixturesCache: { day: string; fetchedAt: number; payload: unknown } | null
   // Sports tab pane widths (drag-resizable, persisted). The left/middle panes store their own
   // width; the right pane flexes to fill whatever remains.
   sportsLeftWidth: number
@@ -377,6 +384,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   enabledPlaylistIds: [],
   customCategories: [],
   apiFootballKey: null,
+  sportsFixturesCache: null,
   sportsLeftWidth: 260,
   sportsMiddleWidth: 460
 }

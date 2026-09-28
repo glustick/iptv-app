@@ -3603,6 +3603,31 @@ body.resizing-col {
   letter-spacing: 0.4px;
   color: var(--text-dim, #8b8f9a);
   margin: 8px 0 2px;
+  /* The refresh button sits inside the label so it reads as belonging to this section rather
+     than to the list underneath it. */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* Deliberately small and quiet: a manual refresh is a rarely-needed escape hatch, not a primary
+   action competing with the fixtures themselves. */
+.sports-fixtures-refresh {
+  background: none;
+  border: 1px solid var(--border, #3a3f4a);
+  border-radius: 5px;
+  color: var(--text-dim, #8b8f9a);
+  font-size: 10px;
+  letter-spacing: 0.4px;
+  padding: 2px 7px;
+  text-transform: none;
+  cursor: pointer;
+}
+
+.sports-fixtures-refresh:hover {
+  color: var(--text, #e8eaf0);
+  border-color: var(--accent);
 }
 
 .sports-status {

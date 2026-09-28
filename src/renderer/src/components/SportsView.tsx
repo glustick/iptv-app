@@ -3,6 +3,8 @@ import { useAppStore } from '../store/useAppStore'
 import { buildSportsSchedule, dayKeyOf, gamesForDay, type SportsGame, type SportsGroup } from '../lib/sports'
 import {
   fetchFixturesForDate,
+  fixtureDateParam,
+  normalizeFixturesFromPayload,
   type ApiFootballFixture,
   type FixtureFetchResult
 } from '../lib/api-football'
@@ -99,31 +101,52 @@ export function SportsView(): JSX.Element {
   const [dayOffset, setDayOffset] = useState(0)
   const [selectedGameKey, setSelectedGameKey] = useState<string | null>(null)
   const [fixtureResult, setFixtureResult] = useState<FixtureFetchResult>({ fixtures: [], error: null })
+  // Bumped by the refresh button: forces the day's fixtures to be requested again even where the
+  // cache would otherwise answer (see the effect below).
+  const [refreshNonce, setRefreshNonce] = useState(0)
 
   // api-football fixtures for the picked day — an independent data source from the provider's
   // channel schedule below, so its failures are contained: an error renders one line and the
   // schedule stays fully usable. No key = feature unconfigured; nothing is fetched and nothing
-  // extra renders. The 5-minute refetch keeps live scores honest without burning the free-tier
-  // request quota (100/day on api-football's free plan).
+  // extra renders.
+  //
+  // Any day OTHER than today is served from settings.sportsFixturesCache when it is there: a past
+  // or future day's fixtures do not change, so requesting them again on every open is pure waste
+  // against the free tier's 100 requests/day. Today is deliberately never cached — its scores and
+  // statuses move, and the 5-minute refetch below is what keeps them honest.
   useEffect(() => {
     if (!apiFootballKey) return
     let active = true
+    const date = new Date(Date.now() + dayOffset * 86_400_000)
+    const dayKey = fixtureDateParam(date)
+    const storeCache = useAppStore.getState().settings.sportsFixturesCache
+    const cached = dayOffset !== 0 && refreshNonce === 0 && storeCache?.day === dayKey ? storeCache : null
+    if (cached) {
+      // The raw payload, re-normalized on read — see sportsFixturesCache for why the normalized
+      // form is not what gets stored.
+      setFixtureResult({ fixtures: normalizeFixturesFromPayload(cached.payload), error: null })
+      return
+    }
     const load = (): void => {
-      void fetchFixturesForDate(
-        window.api.apiFootball.fetch,
-        apiFootballKey,
-        new Date(Date.now() + dayOffset * 86_400_000)
-      ).then((result) => {
-        if (active) setFixtureResult(result)
+      void fetchFixturesForDate(window.api.apiFootball.fetch, apiFootballKey, date).then((result) => {
+        if (!active) return
+        setFixtureResult(result)
+        if (result.payload !== undefined) {
+          // Taken from the store rather than the component's own binding: this effect is declared
+          // above it, and a zustand action's identity is stable anyway.
+          useAppStore
+            .getState()
+            .updateSettings({ sportsFixturesCache: { day: dayKey, fetchedAt: Date.now(), payload: result.payload } })
+        }
       })
     }
     load()
-    const timer = setInterval(load, 300_000)
+    const timer = dayOffset === 0 ? setInterval(load, 300_000) : null
     return () => {
       active = false
-      clearInterval(timer)
+      if (timer) clearInterval(timer)
     }
-  }, [apiFootballKey, dayOffset])
+  }, [apiFootballKey, dayOffset, refreshNonce])
 
   // Live matches first, then by kickoff — the two questions a sports viewer asks ("what's on
   // right now", "what's coming up") in one ordering.
@@ -247,7 +270,18 @@ export function SportsView(): JSX.Element {
         <div className="resize-handle resize-handle--right" onMouseDown={middle.startDrag} />
         {apiFootballKey ? (
           <>
-            <div className="sports-section-label">Fixtures · api-football.com</div>
+            <div className="sports-section-label">
+              Fixtures · api-football.com
+              {/* The manual refresh — an explicitly cached day is otherwise answered from disk,
+                  and even today's live-refetching day has no reason to wait for the next tick. */}
+              <button
+                className="sports-fixtures-refresh"
+                onClick={() => setRefreshNonce((n) => n + 1)}
+                title="Request this day's fixtures again now, ignoring the cached copy"
+              >
+                ↻ Refresh
+              </button>
+            </div>
             <div className="sports-list sports-fixtures">
               {fixtureResult.error ? (
                 <div className="sports-empty">{fixtureResult.error}</div>

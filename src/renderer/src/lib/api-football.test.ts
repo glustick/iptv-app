@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { normalizeFixture, fetchFixturesForDate, type RawFixture } from './api-football'
+import {
+  normalizeFixture,
+  normalizeFixturesFromPayload,
+  fetchFixturesForDate,
+  type RawFixture
+} from './api-football'
 
 function rawFixture(overrides: Partial<RawFixture> = {}): RawFixture {
   return {
@@ -103,5 +108,24 @@ describe('fetchFixturesForDate', () => {
       Promise.reject(new Error("Error invoking remote method 'api-football:fetch': Error: API-Football request failed (403)"))
     const result = await fetchFixturesForDate(bridge, 'key', new Date())
     expect(result.error).toBe('API-Football request failed (403)')
+  })
+})
+
+describe('normalizeFixturesFromPayload', () => {
+  // The Sports tab caches the RAW payload for a fixed day and re-normalizes it on read, because
+  // the normalized form holds Dates and would not survive a round trip through settings — so this
+  // is the function that has to keep working on a payload that has been through JSON.
+  it('re-normalizes a payload that has been through JSON, kickoff date included', () => {
+    const payload = JSON.parse(JSON.stringify({ response: [rawFixture()] })) as unknown
+    const [f] = normalizeFixturesFromPayload(payload)
+    expect(f.homeTeam).toBe('Brentford')
+    expect(f.live).toBe(true)
+    expect(f.kickoff?.toISOString()).toBe('2026-09-27T15:00:00.000Z')
+  })
+
+  it('yields an empty list rather than throwing on a malformed payload', () => {
+    expect(normalizeFixturesFromPayload(null)).toEqual([])
+    expect(normalizeFixturesFromPayload({})).toEqual([])
+    expect(normalizeFixturesFromPayload({ response: 'not an array' })).toEqual([])
   })
 })

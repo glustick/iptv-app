@@ -181,6 +181,11 @@ export async function loadSettings(): Promise<AppSettings> {
     console.warn('[settings] transcodeMemory was not an object on disk — resetting it')
     result.transcodeMemory = {}
   }
+  const sportsCache = result.sportsFixturesCache
+  if (sportsCache !== null && sportsCache !== undefined && (typeof sportsCache !== 'object' || Array.isArray(sportsCache))) {
+    console.warn('[settings] sportsFixturesCache was not an object on disk — resetting it')
+    result.sportsFixturesCache = null
+  }
   // Namespaced lock IDs — drop legacy bare ones rather than guessing which section they meant.
   result.lockedCategoryIds = result.lockedCategoryIds.filter((id) => id.includes(':'))
   let needsMigration = false
