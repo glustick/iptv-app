@@ -335,8 +335,8 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
   survives the merge (pinned by a test). The item's file-level build plan (①-⑤) was consumed by
   the guide half, all landed 2026-09-28; **the sports half still awaits the same treatment**.
 
-- **Remember what transcode a channel (or title) actually needed — the live half exists, the rest does
-  not (raised 2026-09-28).** The request, verbatim: *"have a database of transcoding need for
+- **Remember what transcode a channel (or title) actually needed — DONE for VOD/series
+  (2026-09-28); the live half always existed.** The request, verbatim: *"have a database of transcoding need for
   channels on the system locally, this table can store previous video/audio working transcoding for
   that channel so we dont need to discover and timeout each time we view a channel, if this can
   survive upgrades that would be great."* **What already exists, so nobody rebuilds it:** live channels
@@ -358,14 +358,24 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
   time — compare the URL's *shape* (host + path) as well as the exact string, or the memory quietly
   stops helping exactly when it is needed; **(b)** the table grows without bound on a 30k-channel
   catalogue, so it wants a size cap or oldest-first prune, and entries for a deleted profile should be
-  droppable. **Build plan (next pass, in order):** ① `lib/types.ts` — the `transcodeMemory` record
-  plus its `DEFAULT_SETTINGS` entry, and a `loadSettings` shape check mirroring `liveAudioFixes`'s.
-  ② `lib/transcodeMemory.ts` — pure key/url-shape helpers (`movie:<id>`, `series:<episodeId>`, the
-  live channel key; host+path comparison) so the policy is testable without a player. ③
-  `useTranscodeFallback.ts` — read a remembered decision before starting detection, write it when a
-  session is confirmed working; ④ `Player.tsx` — the same read for the live path it already partly
-  has. ⑤ A prune on write (cap + oldest-first) and a `BACKUP_KEYS` entry. ⑥ Tests: key shapes,
-  url-shape matching across a rotated token, and the poll being skipped on a remembered title.
+  droppable. **SHIPPED (2026-09-28):** ① the `TranscodeMemoryEntry` union (direct / audio / video /
+  rawTs, each carrying the url it was confirmed against and a `confirmedAt`) plus its `loadSettings`
+  shape check; ② pure `lib/transcodeMemory.ts` — `transcodeMemoryKey`, `sameSourceUrl` (host+path, so
+  a rotated token still matches) and `pruneTranscodeMemory` (2000-cap, oldest-first); ③ the hook's
+  read/write — an `audio` conclusion is recorded **on success only** (a failed fix must not poison
+  the memory), a `direct` outcome on the poll's give-up branch, writes pruned through
+  `updateSettings`; ④ `Player.tsx`'s VOD branch reads the memory before registering the poll and,
+  when it matches, skips the poll and starts the remembered remux — pausing and detaching the video
+  first, then waiting out `CONNECTION_RELEASE_DELAY_MS`, because the single-connection contention is
+  the same one the poll's own path exists for. The read and the start are deliberately **two** hook
+  methods (`rememberedVodAudioIndex` / `startRememberedVodFallback`) for exactly that reason — a
+  combined call would have started ffmpeg before the caller could release the connection. The start
+  also re-confirms on success (so an entry in active use cannot age out of the prune) and **forgets
+  on failure** (so a fix that stopped working is re-detected rather than replayed). 541 tests.
+  **Not done, deliberately:** the `video`/`rawTs` entries are defined but nothing writes or reads
+  them yet — they are live-side outcomes, and live keeps its own `liveAudioFixes` untouched — and
+  whether the two memories eventually unify remains an open decision. **Not live-verified:** no
+  playback run has confirmed the poll is actually skipped for a remembered title.
 
 - **Per-channel state: EPG mappings and the per-channel caches — DONE in 0.9.0; the
   note below is kept for the record (0.7.105's known limit, three-quarters closed).** Hidden channels and remembered audio fixes moved
