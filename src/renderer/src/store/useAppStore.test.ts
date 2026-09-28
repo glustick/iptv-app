@@ -2225,3 +2225,56 @@ describe('per-channel EPG state across playlists', () => {
     expect(Object.keys(useAppStore.getState().shortEpgByStream).sort()).toEqual(['91001', 'second:91001'])
   })
 })
+
+describe('the full catalogue across playlists (ensureChannelCatalog)', () => {
+  function stream(streamId: number, name: string, num: number): LiveStream {
+    return {
+      num,
+      name,
+      stream_type: 'live',
+      stream_id: streamId,
+      stream_icon: '',
+      epg_channel_id: null,
+      added: '',
+      category_id: '1',
+      custom_sid: null,
+      tv_archive: 0,
+      direct_source: '',
+      tv_archive_duration: 0
+    }
+  }
+
+  it("loads every connected playlist's channels and tags them with their playlist", async () => {
+    const primary = new XtreamClient('http://a.example.com', 'u', 'p')
+    const second = new XtreamClient('http://b.example.com', 'u', 'p')
+    vi.spyOn(primary, 'getLiveStreams').mockResolvedValue([stream(42, 'A Forty-Two', 1)])
+    vi.spyOn(second, 'getLiveStreams').mockResolvedValue([stream(42, 'B Forty-Two', 7)])
+
+    useAppStore.setState({
+      client: primary,
+      primaryPlaylistId: 'primary',
+      numericChannelCatalog: null,
+      playlists: [
+        { profileId: 'primary', name: 'Primary', client: primary, error: null, categories: [] },
+        { profileId: 'second', name: 'Second', client: second, error: null, categories: [] }
+      ]
+    })
+
+    await useAppStore.getState().ensureChannelCatalog()
+
+    // Both providers' channel 42 are present, each carrying its own playlist — which is what makes
+    // a second playlist's channels reachable from the mapping editor and custom categories.
+    const catalog = useAppStore.getState().numericChannelCatalog ?? []
+    expect(catalog.map((c) => [c.playlistId, c.stream_id, c.name])).toEqual([
+      ['primary', 42, 'A Forty-Two'],
+      ['second', 42, 'B Forty-Two']
+    ])
+
+    // A numeric lookup resolves against the playlist being browsed, not whichever loaded first.
+    useAppStore.setState({ selectedPlaylistId: 'second' })
+    await expect(useAppStore.getState().findChannelByNumber(7)).resolves.toMatchObject({
+      name: 'B Forty-Two',
+      playlistId: 'second'
+    })
+  })
+})

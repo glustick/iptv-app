@@ -1708,6 +1708,16 @@ body.resizing-col {
   border-color: var(--accent);
 }
 
+/* The "checked N of M" readout beside the filters — a statement, not a control, so it is styled
+   as plain dimmed text rather than borrowing the toggle's button chrome. */
+.epg-health-checked {
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 4px 2px;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
 .epg-grid-nav {
   /* Kept in lockstep with .epg-row-channel's width (both read the same custom property, set
      inline by EpgGrid.tsx from the drag-resizable epgChannelColumnWidth setting) so the time

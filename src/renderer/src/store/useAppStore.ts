@@ -139,6 +139,29 @@ async function planBulkSuggestionApplyChunked(
   }
   return total
 }
+
+/**
+ * Splits the full live catalogue into one group per playlist. Stream ids are unique only *within*
+ * a playlist (see lib/channelIdentity), so anything that plans, matches or maps across the whole
+ * catalogue has to work one group at a time — a mixed run would let one provider's channel 42
+ * stand in for another's. `playlistId` is null for the primary's own channels, which is what a
+ * single-playlist install always produces.
+ */
+function groupCatalogByPlaylist(
+  catalog: LiveStream[],
+  primaryPlaylistId: string | null
+): Array<{ playlistId: string | null; streams: LiveStream[] }> {
+  const groups = new Map<string, { playlistId: string | null; streams: LiveStream[] }>()
+  for (const stream of catalog) {
+    const playlistId = stream.playlistId ?? null
+    const bucket = playlistId ?? primaryPlaylistId ?? ''
+    const group = groups.get(bucket)
+    if (group) group.streams.push(stream)
+    else groups.set(bucket, { playlistId, streams: [stream] })
+  }
+  return Array.from(groups.values())
+}
+
 // Keyed by the channel's playlist-aware identity (lib/channelIdentity), not a bare stream id —
 // two providers number their channels independently, so id 42 in flight for one must not read as
 // id 42 in flight for the other.
@@ -1127,12 +1150,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   findChannelByNumber: async (num) => {
     const { client } = get()
     if (!client) return null
-    let catalog = get().numericChannelCatalog
-    if (!catalog) {
-      catalog = await client.getLiveStreams()
-      set({ numericChannelCatalog: catalog })
-    }
-    return catalog.find((c) => c.num === num) ?? null
+    if (!get().numericChannelCatalog) await get().ensureChannelCatalog()
+    const catalog = get().numericChannelCatalog ?? []
+    // With more than one playlist the same channel number can exist on each of them — prefer the
+    // one being browsed (then the primary), rather than whichever account happened to load first.
+    const { selectedPlaylistId, primaryPlaylistId } = get()
+    const scope = selectedPlaylistId ?? primaryPlaylistId
+    const inScope = (c: LiveStream): boolean => (c.playlistId ?? null) === (scope ?? null)
+    return catalog.find((c) => c.num === num && inScope(c)) ?? catalog.find((c) => c.num === num) ?? null
   },
 
   selectCategory: async (categoryId, playlistId) => {
@@ -1439,59 +1464,75 @@ export const useAppStore = create<AppState>((set, get) => ({
     // catalogue, plan nothing, and report the misleading "no channel scored X%" rather than doing
     // the work. Load it here instead of depending on which screen was visited first.
     if (!get().numericChannelCatalog) await get().ensureChannelCatalog()
-    const { epgSources, epgSourceLabels, numericChannelCatalog, settings } = get()
+    const { epgSources, epgSourceLabels, numericChannelCatalog, settings, primaryPlaylistId } = get()
     const sourceIndex = epgSourceLabels.indexOf(sourceUrl)
     const guide = sourceIndex >= 0 ? epgSources[sourceIndex] : undefined
     const catalog = numericChannelCatalog ?? []
     if (!guide || catalog.length === 0) return { applied: 0, stillUnmatched: 0 }
 
     const index = buildGuideIndex(guide)
-    // The full catalogue here is the primary playlist's alone (ensureChannelCatalog), so its
-    // stream ids are bare — include only the primary's mappings, or a second playlist's map for
-    // the same numeric id would read as this channel already being covered.
-    const manual = new Map(
-      settings.epgChannelMappings.filter((m) => m.sourceUrl === sourceUrl && !m.playlistId).map((m) => [m.streamId, m.guideChannelId])
-    )
-    const plan = await planBulkSuggestionApplyChunked(catalog, index, manual, threshold)
-    if (plan.applied.length > 0) {
-      const nameByStreamId = new Map(catalog.map((s) => [s.stream_id, s.name]))
-      const appliedStreamIds = new Set(plan.applied.map((a) => a.streamId))
-      // Same replace semantics as a single add: an existing mapping for a stream is superseded,
-      // and every other source's mappings are left untouched. Scoped to primary mappings, since
-      // these applied channels are primary ones.
-      const rest = settings.epgChannelMappings.filter((m) => !(!m.playlistId && m.sourceUrl === sourceUrl && appliedStreamIds.has(m.streamId)))
+    // One planning pass per playlist: stream ids are unique only within one, so a mixed run would
+    // let one provider's channel 42 stand in for another's — and each group's "already mapped"
+    // check has to be scoped to its own playlist's mappings for the same reason.
+    const applied: Array<{ streamId: number; channelId: string; playlistId: string | null }> = []
+    let belowThreshold = 0
+    for (const group of groupCatalogByPlaylist(catalog, primaryPlaylistId)) {
+      const manual = new Map(
+        settings.epgChannelMappings
+          .filter((m) => m.sourceUrl === sourceUrl && (m.playlistId ?? primaryPlaylistId) === (group.playlistId ?? primaryPlaylistId))
+          .map((m) => [m.streamId, m.guideChannelId])
+      )
+      const plan = await planBulkSuggestionApplyChunked(group.streams, index, manual, threshold)
+      applied.push(...plan.applied.map((a) => ({ ...a, playlistId: group.playlistId })))
+      belowThreshold += plan.belowThreshold
+    }
+    if (applied.length > 0) {
+      const nameByKey = new Map(catalog.map((s) => [channelKey(s.playlistId, s.stream_id, primaryPlaylistId), s.name]))
+      const appliedKeys = new Set(applied.map((a) => channelKey(a.playlistId, a.streamId, primaryPlaylistId)))
+      // Same replace semantics as a single add: an existing mapping for a channel is superseded,
+      // and every other source's mappings are left untouched.
+      const rest = settings.epgChannelMappings.filter(
+        (m) => !(m.sourceUrl === sourceUrl && appliedKeys.has(channelKey(m.playlistId, m.streamId, primaryPlaylistId)))
+      )
       get().updateSettings({
         epgChannelMappings: [
           ...rest,
-          ...plan.applied.map((a) => ({
+          ...applied.map((a) => ({
             sourceUrl,
             guideChannelId: a.channelId,
             streamId: a.streamId,
+            // Only a non-primary channel is qualified, so a primary mapping keeps the exact shape
+            // every mapping written before multi-playlist had.
+            ...(a.playlistId ? { playlistId: a.playlistId } : {}),
             guideChannelName: index.channels.get(a.channelId)?.displayName,
-            streamName: nameByStreamId.get(a.streamId)
+            streamName: nameByKey.get(channelKey(a.playlistId, a.streamId, primaryPlaylistId))
           }))
         ]
       })
     }
     // Refresh the pool and the match report so the editor shows the new state immediately.
     get().applyEpgPool()
-    return { applied: plan.applied.length, stillUnmatched: plan.belowThreshold }
+    return { applied: applied.length, stillUnmatched: belowThreshold }
   },
 
   applySuggestedMappingsAcrossSources: async (threshold) => {
     // Same lazy-catalogue trap as the per-source action above.
     if (!get().numericChannelCatalog) await get().ensureChannelCatalog()
-    const { epgSources, epgSourceLabels, numericChannelCatalog, settings } = get()
+    const { epgSources, epgSourceLabels, numericChannelCatalog, settings, primaryPlaylistId } = get()
     const catalog = numericChannelCatalog ?? []
     const perSource: Array<{ source: string; applied: number }> = []
     if (catalog.length === 0 || epgSources.length === 0) return { applied: 0, perSource }
 
-    const nameByStreamId = new Map(catalog.map((s) => [s.stream_id, s.name]))
+    const nameByKey = new Map(catalog.map((s) => [channelKey(s.playlistId, s.stream_id, primaryPlaylistId), s.name]))
+    // Planning is per playlist (ids collide across them — see lib/channelIdentity), and the
+    // skip-list below is keyed the same way so a channel placed on one provider never suppresses
+    // an unrelated same-numbered channel on another.
+    const groups = groupCatalogByPlaylist(catalog, primaryPlaylistId)
     // Channels this run has already given a mapping to. Each source keeps its own mapping list
     // (they're independent — that's what source priority is for), but planning the NEXT source
     // should skip them: the highest-priority source able to place a channel is the one that
     // should, and without this every source would happily map the same channel again.
-    const plannedHere = new Map<number, string>()
+    const plannedHere = new Map<string, string>()
     const newMappings: EpgChannelMapping[] = []
 
     for (const [index, label] of epgSourceLabels.entries()) {
@@ -1502,31 +1543,43 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (!guide) continue
 
       const guideIndex = buildGuideIndex(guide)
-      const manual = new Map(
-        settings.epgChannelMappings.filter((m) => m.sourceUrl === label && !m.playlistId).map((m) => [m.streamId, m.guideChannelId])
-      )
-      for (const [streamId, channelId] of plannedHere) manual.set(streamId, channelId)
+      let appliedCount = 0
+      for (const group of groups) {
+        const manual = new Map(
+          settings.epgChannelMappings
+            .filter((m) => m.sourceUrl === label && (m.playlistId ?? primaryPlaylistId) === (group.playlistId ?? primaryPlaylistId))
+            .map((m) => [m.streamId, m.guideChannelId])
+        )
+        for (const stream of group.streams) {
+          const planned = plannedHere.get(channelKey(stream.playlistId, stream.stream_id, primaryPlaylistId))
+          if (planned) manual.set(stream.stream_id, planned)
+        }
 
-      const plan = await planBulkSuggestionApplyChunked(catalog, guideIndex, manual, threshold)
-      if (plan.applied.length === 0) continue
-      for (const { streamId, channelId } of plan.applied) plannedHere.set(streamId, channelId)
-      newMappings.push(
-        ...plan.applied.map(({ streamId, channelId }) => ({
-          sourceUrl: label,
-          guideChannelId: channelId,
-          streamId,
-          guideChannelName: guideIndex.channels.get(channelId)?.displayName,
-          streamName: nameByStreamId.get(streamId)
-        }))
-      )
-      perSource.push({ source: label, applied: plan.applied.length })
+        const plan = await planBulkSuggestionApplyChunked(group.streams, guideIndex, manual, threshold)
+        if (plan.applied.length === 0) continue
+        appliedCount += plan.applied.length
+        for (const { streamId, channelId } of plan.applied) {
+          plannedHere.set(channelKey(group.playlistId, streamId, primaryPlaylistId), channelId)
+        }
+        newMappings.push(
+          ...plan.applied.map(({ streamId, channelId }) => ({
+            sourceUrl: label,
+            guideChannelId: channelId,
+            streamId,
+            ...(group.playlistId ? { playlistId: group.playlistId } : {}),
+            guideChannelName: guideIndex.channels.get(channelId)?.displayName,
+            streamName: nameByKey.get(channelKey(group.playlistId, streamId, primaryPlaylistId))
+          }))
+        )
+      }
+      if (appliedCount > 0) perSource.push({ source: label, applied: appliedCount })
     }
 
     if (newMappings.length > 0) {
-      const appliedIds = new Set(newMappings.map((m) => m.streamId))
+      const appliedKeys = new Set(newMappings.map((m) => channelKey(m.playlistId, m.streamId, primaryPlaylistId)))
       get().updateSettings({
         epgChannelMappings: [
-          ...settings.epgChannelMappings.filter((m) => !(!m.playlistId && appliedIds.has(m.streamId))),
+          ...settings.epgChannelMappings.filter((m) => !appliedKeys.has(channelKey(m.playlistId, m.streamId, primaryPlaylistId))),
           ...newMappings
         ]
       })
@@ -1629,10 +1682,44 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   ensureChannelCatalog: async () => {
-    const { client } = get()
+    const { client, playlists } = get()
     if (!client || get().numericChannelCatalog) return
+    // EVERY connected playlist's catalogue, not just the primary's — the mapping editor, custom
+    // categories and the bulk EPG apply all resolve channels against this, and until now a second
+    // playlist's channels were unreachable from all three (the last piece of 0.7.105's own gap).
+    // Channels are tagged with their playlist only when more than one is connected (the same rule
+    // selectCategory applies), so a single-playlist install keeps exactly the catalogue shape it
+    // has always had and its channel keys stay bare. Falls back to the single `client` when no
+    // playlist list exists (tests, or a connection made before the list does).
+    const sources =
+      playlists.length > 0
+        ? playlists.map((playlist) => ({
+            profileId: playlist.profileId as string | null,
+            name: (playlist.name ?? null) as string | null,
+            client: playlist.client
+          }))
+        : [{ profileId: null as string | null, name: null as string | null, client }]
+    const tagPlaylists = sources.length > 1
     try {
-      const catalog = await client.getLiveStreams()
+      const catalog: LiveStream[] = []
+      for (const source of sources) {
+        try {
+          const streams = await source.client.getLiveStreams()
+          catalog.push(
+            ...(tagPlaylists && source.profileId
+              ? streams.map((stream) => ({
+                  ...stream,
+                  playlistId: source.profileId as string,
+                  playlistName: source.name ?? undefined
+                }))
+              : streams)
+          )
+        } catch (err) {
+          // One account failing must never hide another's channels — a flaky provider is the whole
+          // reason multi-playlist exists.
+          console.error("[store] failed to load one playlist's channel catalog for EPG mapping:", err)
+        }
+      }
       set({ numericChannelCatalog: catalog })
     } catch (err) {
       // The mapping picker degrades to the currently-browsed category when the full catalog

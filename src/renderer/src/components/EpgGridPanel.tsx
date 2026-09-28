@@ -108,6 +108,18 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
     })
   }, [liveStreams, debouncedSearch, shortEpgByStream, isChannelHidden, showHiddenLiveChannels, showNotLiveChannels, channelHealthByStream, primaryPlaylistId])
 
+  // How much of what's on screen the feed-health probe has actually judged (see
+  // probeChannelHealth). Without it, "no badge" means either "checked and live" or "not checked
+  // yet" — indistinguishable to a user — so a plain count turns the absence of a flag into a
+  // verdict rather than silence.
+  const checkedCount = useMemo(
+    () =>
+      channels.filter(
+        (c) => channelHealthByStream[channelKey(c.playlistId, c.stream_id, primaryPlaylistId)] !== undefined
+      ).length,
+    [channels, channelHealthByStream, primaryPlaylistId]
+  )
+
   // Suppress the small preview's own stream while the fullscreen player has one open for
   // the same account — most Xtream providers cap concurrent connections quite low (often
   // just 1), so running both at once can fail outright. It resumes automatically once
@@ -266,6 +278,17 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
                 <button className="epg-density-toggle" onClick={() => setShowHiddenLiveChannels(!showHiddenLiveChannels)}>
                   {showHiddenLiveChannels ? 'Hide hidden' : `Show hidden (${hiddenCount})`}
                 </button>
+              )}
+              {/* Not a filter — the one place that says how much of this list has actually been
+                  judged, so a channel with no badge reads as "not checked yet" rather than a
+                  silent pass. See probeChannelHealth. */}
+              {checkedCount > 0 && (
+                <span
+                  className="epg-health-checked"
+                  title="Channels whose feed the health probe has actually judged. A channel with no badge simply hasn't been checked yet."
+                >
+                  Checked {checkedCount} of {channels.length}
+                </span>
               )}
               {/* Appears only once something has actually been found, so the control can't be
                   mistaken for a filter that does nothing. */}
