@@ -324,6 +324,14 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
   refresh in the background, or wait for the daily fetch; **(b)** does "once a day" mean a rolling
   24 h TTL or the first launch of each calendar day; **(c)** should the per-channel refresh bypass
   the guide *pool* too, or only the provider's own `get_short_epg`.
+  **Build plan (next pass, in order):** ① `src/main/index.ts` — a `cache:get`/`cache:set`/`cache:age`
+  IPC pair writing one file per source key under `userData/guide-cache/` (raw XML kept as fetched,
+  plus a small JSON sidecar carrying `fetchedAt`; the sidecar is what the TTL reads, so a
+  half-written payload can never look fresh). ② `src/preload/index.ts` + `index.d.ts` — expose it
+  under a `cache` namespace, mirroring `store`'s shape. ③ `useAppStore.loadEpgSources` — read the
+  cache before each source's fetch and write it after a success; a `force` argument threads through
+  from the button. ④ `GuideSettingsPage` — "Refresh guides" plus a "last updated" line. ⑤ Tests:
+  TTL hit/miss, force-bypass, and a corrupt/partial cache falling back to a real fetch.
 
 - **Remember what transcode a channel (or title) actually needed — the live half exists, the rest does
   not (raised 2026-09-28).** The request, verbatim: *"have a database of transcoding need for
@@ -348,7 +356,14 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
   time — compare the URL's *shape* (host + path) as well as the exact string, or the memory quietly
   stops helping exactly when it is needed; **(b)** the table grows without bound on a 30k-channel
   catalogue, so it wants a size cap or oldest-first prune, and entries for a deleted profile should be
-  droppable.
+  droppable. **Build plan (next pass, in order):** ① `lib/types.ts` — the `transcodeMemory` record
+  plus its `DEFAULT_SETTINGS` entry, and a `loadSettings` shape check mirroring `liveAudioFixes`'s.
+  ② `lib/transcodeMemory.ts` — pure key/url-shape helpers (`movie:<id>`, `series:<episodeId>`, the
+  live channel key; host+path comparison) so the policy is testable without a player. ③
+  `useTranscodeFallback.ts` — read a remembered decision before starting detection, write it when a
+  session is confirmed working; ④ `Player.tsx` — the same read for the live path it already partly
+  has. ⑤ A prune on write (cap + oldest-first) and a `BACKUP_KEYS` entry. ⑥ Tests: key shapes,
+  url-shape matching across a rotated token, and the poll being skipped on a remembered title.
 
 - **Per-channel state: EPG mappings and the per-channel caches — DONE in 0.9.0 (untagged WIP); the
   note below is kept for the record (0.7.105's known limit, three-quarters closed).** Hidden channels and remembered audio fixes moved
