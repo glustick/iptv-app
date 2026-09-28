@@ -323,6 +323,31 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
   24 h TTL or the first launch of each calendar day; **(c)** should the per-channel refresh bypass
   the guide *pool* too, or only the provider's own `get_short_epg`.
 
+- **Remember what transcode a channel (or title) actually needed — the live half exists, the rest does
+  not (raised 2026-09-28).** The request, verbatim: *"have a database of transcoding need for
+  channels on the system locally, this table can store previous video/audio working transcoding for
+  that channel so we dont need to discover and timeout each time we view a channel, if this can
+  survive upgrades that would be great."* **What already exists, so nobody rebuilds it:** live channels
+  remember their audio fix in `settings.liveAudioFixes` — keyed by the playlist-aware channel key
+  (0.7.107), storing `{ audioIndex, url }` — with `Player.tsx` opening straight into the remembered
+  remux instead of re-running silent-audio detection, and 0.7.110's raw-MPEG-TS remedy piggybacking on
+  the same memory. It persists in the app's own settings store under `userData` (whose path is pinned
+  explicitly across the productName rename), so **it already survives upgrades**, and it sits in
+  `BACKUP_KEYS` so it rides export/import too. **The real gap is everything else:** there is no
+  VOD/series equivalent — *every* movie or episode re-runs the silent-audio detection poll and pays the
+  discovery cost again — and nothing records the *video* decision (whether a channel's HEVC had to be
+  re-encoded rather than copied), which today is derived from the machine's decoder support rather than
+  remembered per title. Proposed shape: one persisted `transcodeMemory` keyed by content identity —
+  the channel key for live (bare id / `playlist:id`), `movie:<streamId>` and `series:<episodeId>` for
+  the rest — storing the decision (no fix needed / audio remux at index N / video re-encode / raw-TS
+  remux) plus the source URL it was confirmed against, so a first view discovers once and every later
+  view goes straight to the known-good path. Two things to get right while building it: **(a)** the
+  stored `url` carries the provider's rotating token, so an exact-URL match invalidates itself over
+  time — compare the URL's *shape* (host + path) as well as the exact string, or the memory quietly
+  stops helping exactly when it is needed; **(b)** the table grows without bound on a 30k-channel
+  catalogue, so it wants a size cap or oldest-first prune, and entries for a deleted profile should be
+  droppable.
+
 - **Per-channel state: EPG mappings and the per-channel caches — DONE in 0.9.0 (untagged WIP); the
   note below is kept for the record (0.7.105's known limit, three-quarters closed).** Hidden channels and remembered audio fixes moved
   to composite keys in 0.7.107, watch reminders and custom-category membership in 0.7.108. Still
