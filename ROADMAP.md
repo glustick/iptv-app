@@ -295,6 +295,34 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
 
 ### Code, in the order I would take it
 
+- **Cache the guide and the sports fixtures — once a day, not once a launch (requested 2026-09-28).**
+  Both are refetched on every connect today: the provider's full guide is 16.3 MB gzipped / 107.4 MB
+  of XML (measured 2026-09-22, and the single biggest thing the app does), and api-football is a
+  rate-limited third-party API the Sports tab refreshes on a live-first cadence. The request,
+  verbatim: *"the sport and EPG updates should not be every time the application is launched, once
+  per day is good enough, the results should be stored in the application database on the system its
+  installed... there should still be a button to manually refresh if its really needed... there
+  should be a button per channel to manually refresh."* Shape:
+  - **Guide** — cache what was fetched, per source, with a fetched-at stamp. A launch inside the TTL
+    parses the cache instead of refetching, so the ~6.6 s download is skipped (the ~2.3 s sectioned
+    parse still runs). A **Refresh guides** button on the Guide & EPG page forces a refetch.
+  - **Sports** — cache the normalized fixtures per selected day. Refetch when that day's cache is
+    stale, keeping the existing live-first refetch only while a cached day actually has live
+    fixtures (a day-old "live" strip is worse than none). A refresh button on the Sports tab.
+  - **Per channel** — the grid row's lazy `loadShortEpg` keeps its TTL, but gains a user-visible
+    **refresh this channel** action that bypasses the cooldown: the request's own "button per
+    channel".
+  - **Where it is stored** — sports fixtures are small JSON and belong in the electron-store the app
+    already persists to (`store:get/set` — the "application database" on the installed machine).
+    **The guide must not go there**: electron-store rewrites its whole file on every `set`, so a
+    16–107 MB document would make every later settings write enormous. It needs a dedicated cache
+    file under `userData`, written by the main process through a small new IPC mirroring
+    `store:*`.
+  Open decisions, deliberately not guessed: **(a)** should a stale guide render immediately and
+  refresh in the background, or wait for the daily fetch; **(b)** does "once a day" mean a rolling
+  24 h TTL or the first launch of each calendar day; **(c)** should the per-channel refresh bypass
+  the guide *pool* too, or only the provider's own `get_short_epg`.
+
 - **Per-channel state: EPG mappings and the per-channel caches — DONE in 0.9.0 (untagged WIP); the
   note below is kept for the record (0.7.105's known limit, three-quarters closed).** Hidden channels and remembered audio fixes moved
   to composite keys in 0.7.107, watch reminders and custom-category membership in 0.7.108. Still
