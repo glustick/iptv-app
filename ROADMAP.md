@@ -324,14 +324,14 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
   which is where the peak comes from); and **bound** what is held, with a size cap and a clear
   message for a guide beyond it rather than a silent stall. Re-measure afterwards with the same
   probe that produced these numbers.
-- **Multi-View picker rework.** Reported unusable at catalogue scale: it lists thousands of channels
+- **Multi-View picker rework — DONE in 0.7.104, kept here only for the record.** Reported unusable at catalogue scale: it lists thousands of channels
   immediately (slow to populate, and it hangs the app while it does) and its category dropdown
   arrives in a bad state. The requested shape, verbatim: *"i would recommend just showing the
   favourites list first, then prepopulating the category selection"* — favourites first, the category
   list populated and driving the rows instead of a bulk default, and search scoped to the chosen
   category. The hang is very likely the item above, but "render everything by default" is wrong on
   its own merits.
-- **Make the macOS update prompt honest.** Consequence of the decision above, and now the only
+- **Make the macOS update prompt honest — DONE in 0.7.102, kept here only for the record.** Consequence of the decision above, and now the only
   user-visible cost of it: on macOS the in-app updater can find and download a release but cannot
   apply one to an unsigned app. Today that path ends in an error after the user has said yes; it
   should instead say what is true on that platform — download the `.dmg` from the releases page —

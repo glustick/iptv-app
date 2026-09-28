@@ -1,18 +1,26 @@
 # Project state
 
-_A consolidated handover snapshot, first written 2026-09-14 at v0.7.74 and updated 2026-09-24 at
-v0.7.108. `ROADMAP.md` remains the authoritative, per-release history — this page is the "where are
+_A consolidated handover snapshot, first written 2026-09-14 at v0.7.74 and updated 2026-09-28 at
+v0.8.0. `ROADMAP.md` remains the authoritative, per-release history — this page is the "where are
 we and why" summary for whoever picks this up next (human or agent)._
 
 ## TL;DR
 
 AllisonIPTV is a working desktop IPTV client (Electron + React + TypeScript) in daily use against a
-real Xtream provider with a ~30k-channel catalog. Current release: **v0.7.108** (see ROADMAP for the
-full history). Test suite: **437 passing**. CI (typecheck/lint/test/build) and the three-platform
-Release workflow are both green on every tagged release.
+real Xtream provider with a ~30k-channel catalog. Current release: **v0.8.0** (build 127; see
+ROADMAP for the full history). Test suite: **491 passing**, plus a separate GUI smoke harness
+(61 checks). CI (typecheck/lint/test/build) and the three-platform Release workflow are green on
+every tagged release.
 
 0.7.65 → 0.7.79 were almost entirely about the **EPG system**, **user-made categories**, and the
-**release pipeline**; all three are now in a genuinely complete state for the provider in use.
+**release pipeline**. Since then: **multi-playlist** (0.7.105–0.7.108), with a playlist-aware
+identity for per-channel state; a guide load that parses the provider's 107 MB XML in sections so
+the window never freezes (0.7.103); the provider's switch to **raw MPEG-TS delivered as a ~10×
+firehose**, answered with a paced local fMP4 remux, an HEVC re-encode fallback and bounded
+auto-recovery when the provider drops a live connection mid-playback (0.7.110–0.7.113); and a
+rebuilt **Sports tab** with api-football.com fixtures (0.8.0). The release workflow now creates the
+GitHub Release **once**, up front, so the three platform jobs stop racing to create it (the
+`422 already_exists` that failed the mac job on v0.7.98).
 
 ## The EPG system, end to end
 
