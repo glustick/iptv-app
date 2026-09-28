@@ -320,7 +320,10 @@ export function Player(): JSX.Element | null {
     activeVodSubtitleIndex,
     probeVodTracks,
     switchVodAudioTrack,
-    switchVodSubtitleTrack
+    switchVodSubtitleTrack,
+    rememberedVodAudioIndex,
+    startRememberedVodFallback,
+    rememberDirectOutcome
   } = useTranscodeFallback()
 
   // Channel identity changing (including to nothing, i.e. the player closing) is the only
@@ -969,59 +972,94 @@ export function Player(): JSX.Element | null {
       // attempted. The same ffmpeg remux this path already runs for silent-audio titles would
       // fix that too, since it produces a fresh HLS output regardless of the source container —
       // the gap was ever detecting the case instead of quietly giving up on it.
-      let consecutiveSilentAudioTicks = 0
-      let silentAudioCheckAttempts = 0
-      let everDecodedVideo = false
-      silentAudioCheckTimer = setInterval(() => {
-        silentAudioCheckAttempts += 1
-        const chromiumVideo = video as ChromiumVideoElement
-        const videoBytes = chromiumVideo.webkitVideoDecodedByteCount ?? 0
-        const audioBytes = chromiumVideo.webkitAudioDecodedByteCount ?? 0
-        if (videoBytes > 0) everDecodedVideo = true
-        consecutiveSilentAudioTicks = videoBytes > 0 && audioBytes === 0 ? consecutiveSilentAudioTicks + 1 : 0
-
-        const confirmedSilentAudio = consecutiveSilentAudioTicks >= 2
-        const timedOut = silentAudioCheckAttempts >= SILENT_AUDIO_MAX_CHECK_ATTEMPTS
-        // Nothing ever decoded despite the full timeout window this account's slower titles
-        // already need (see startTranscode's own 25-90s observed input-open times) — treated
-        // as "unplayable format," not "still starting up."
-        const confirmedUnplayableFormat = timedOut && !everDecodedVideo
-
-        if (!confirmedSilentAudio && !timedOut) return
-        if (silentAudioCheckTimer) clearInterval(silentAudioCheckTimer)
-        silentAudioCheckTimer = null
-        if (!confirmedSilentAudio && !confirmedUnplayableFormat) return
-
-        // Unlike live TV (where the hls.js source triggering tryFallback is already broken and
-        // has mostly stopped pulling data by the time it fires), this video is otherwise
-        // healthy — either playing fine with no sound, or still pulling real bytes over the
-        // network despite never decoding any of them — so left alone it keeps aggressively
-        // buffering ahead from the original URL for the entire time ffmpeg is also reading
-        // that same URL through the same local proxy. Two concurrent requests for the same
-        // resource that way was enough to trip a real net::ERR_HTTP2_PROTOCOL_ERROR against
-        // this provider — pausing and detaching the source first, before asking for the
-        // transcode, avoids the contention instead of hoping the origin tolerates it. See
-        // CONNECTION_RELEASE_DELAY_MS for why starting the transcode itself is also delayed,
-        // not just the detach.
+      // A remembered transcode outcome (transcodeMemory, VOD/series only): this title needed an
+      // audio remux last time against this same source (host + path — a rotated provider token
+      // still matches), so skip the silent-audio poll entirely and go straight to the remux it
+      // confirmed. The poll below is the "discover and wait" cost this memory exists to remove,
+      // and the remembered path needs the same detach + connection-release-delay dance for the
+      // same single-connection contention that block's own comment describes.
+      const rememberedAudioIndex = rememberedVodAudioIndex(nowPlaying.url)
+      if (rememberedAudioIndex !== null) {
         video.pause()
         video.removeAttribute('src')
         video.load()
 
         silentAudioCheckTimer = setTimeout(() => {
           silentAudioCheckTimer = null
-          tryFallbackForSilentAudio(
+          startRememberedVodFallback(
             nowPlaying.url,
+            rememberedAudioIndex,
             () => setReloadTick((t) => t + 1),
             (message) =>
               setPlaybackError(
-                `${confirmedUnplayableFormat ? "This title's format isn't supported by this player" : 'Audio codec not supported by this player'}, and automatic transcoding failed: ${message}` +
+                `Audio codec not supported by this player, and automatic transcoding failed: ${message}` +
                   (singleConnectionAccount
                     ? ' (this account only allows one connection at a time, which can cause exactly this)'
                     : '')
               )
           )
         }, CONNECTION_RELEASE_DELAY_MS)
-      }, SILENT_AUDIO_CHECK_INTERVAL_MS)
+      } else {
+        let consecutiveSilentAudioTicks = 0
+        let silentAudioCheckAttempts = 0
+        let everDecodedVideo = false
+        silentAudioCheckTimer = setInterval(() => {
+          silentAudioCheckAttempts += 1
+          const chromiumVideo = video as ChromiumVideoElement
+          const videoBytes = chromiumVideo.webkitVideoDecodedByteCount ?? 0
+          const audioBytes = chromiumVideo.webkitAudioDecodedByteCount ?? 0
+          if (videoBytes > 0) everDecodedVideo = true
+          consecutiveSilentAudioTicks = videoBytes > 0 && audioBytes === 0 ? consecutiveSilentAudioTicks + 1 : 0
+
+          const confirmedSilentAudio = consecutiveSilentAudioTicks >= 2
+          const timedOut = silentAudioCheckAttempts >= SILENT_AUDIO_MAX_CHECK_ATTEMPTS
+          // Nothing ever decoded despite the full timeout window this account's slower titles
+          // already need (see startTranscode's own 25-90s observed input-open times) — treated
+          // as "unplayable format," not "still starting up."
+          const confirmedUnplayableFormat = timedOut && !everDecodedVideo
+
+          if (!confirmedSilentAudio && !timedOut) return
+          if (silentAudioCheckTimer) clearInterval(silentAudioCheckTimer)
+          silentAudioCheckTimer = null
+          if (!confirmedSilentAudio && !confirmedUnplayableFormat) {
+            // The poll ran its full window with neither failure shape confirmed — video and
+            // audio both decoded, just later than the window allowed. Remember it, so the next
+            // open of this title skips the wait entirely (see transcodeMemory).
+            rememberDirectOutcome(nowPlaying.url)
+            return
+          }
+
+          // Unlike live TV (where the hls.js source triggering tryFallback is already broken and
+          // has mostly stopped pulling data by the time it fires), this video is otherwise
+          // healthy — either playing fine with no sound, or still pulling real bytes over the
+          // network despite never decoding any of them — so left alone it keeps aggressively
+          // buffering ahead from the original URL for the entire time ffmpeg is also reading
+          // that same URL through the same local proxy. Two concurrent requests for the same
+          // resource that way was enough to trip a real net::ERR_HTTP2_PROTOCOL_ERROR against
+          // this provider — pausing and detaching the source first, before asking for the
+          // transcode, avoids the contention instead of hoping the origin tolerates it. See
+          // CONNECTION_RELEASE_DELAY_MS for why starting the transcode itself is also delayed,
+          // not just the detach.
+          video.pause()
+          video.removeAttribute('src')
+          video.load()
+
+          silentAudioCheckTimer = setTimeout(() => {
+            silentAudioCheckTimer = null
+            tryFallbackForSilentAudio(
+              nowPlaying.url,
+              () => setReloadTick((t) => t + 1),
+              (message) =>
+                setPlaybackError(
+                  `${confirmedUnplayableFormat ? "This title's format isn't supported by this player" : 'Audio codec not supported by this player'}, and automatic transcoding failed: ${message}` +
+                    (singleConnectionAccount
+                      ? ' (this account only allows one connection at a time, which can cause exactly this)'
+                      : '')
+                )
+            )
+          }, CONNECTION_RELEASE_DELAY_MS)
+        }, SILENT_AUDIO_CHECK_INTERVAL_MS)
+      }
     }
 
     return () => {
