@@ -18,6 +18,7 @@
  */
 
 import { channelKey } from './channelIdentity'
+import type { TranscodeMemoryEntry } from './types'
 
 /**
  * The storage key for one channel/title's remembered transcode outcome.
@@ -65,4 +66,56 @@ function hostAndPath(raw: string): { host: string; pathname: string } | null {
   } catch {
     return null
   }
+}
+
+// Cap on the shared record. Without one it grows an entry for every distinct channel/title that
+// ever needed a fix (or specifically didn't) — thousands of entries on a large catalogue,
+// rewritten into settings on every write. 2000 is a generous multiple of any realistic watch
+// history while still bounding the file.
+export const TRANSCODE_MEMORY_MAX_ENTRIES = 2000
+
+/**
+ * Caps the record at `cap` entries, dropping the OLDEST by `confirmedAt` first — an outcome not
+ * seen (or re-confirmed) for the longest is the safest to forget. Within the cap the record is
+ * returned as-is (the same reference), so a write that doesn't exceed the limit never rewrites
+ * more than the single entry it came for.
+ *
+ * Entries missing a usable `confirmedAt` (a hand-edited or partially-written settings file —
+ * loadSettings only shape-checks this field as an object) count as the oldest, so corruption
+ * ages out rather than pinning the record's newest end.
+ */
+export function pruneTranscodeMemory(
+  memory: Record<string, TranscodeMemoryEntry>,
+  cap = TRANSCODE_MEMORY_MAX_ENTRIES
+): Record<string, TranscodeMemoryEntry> {
+  const keys = Object.keys(memory)
+  if (keys.length <= cap) return memory
+  const newestFirst = keys.sort(
+    (a, b) => (memory[b]?.confirmedAt ?? 0) - (memory[a]?.confirmedAt ?? 0)
+  )
+  const kept: Record<string, TranscodeMemoryEntry> = {}
+  for (const key of newestFirst.slice(0, cap)) kept[key] = memory[key]
+  return kept
+}
+
+/**
+ * The audio track index a remembered outcome says to remux with, or null when there is nothing
+ * actionable to act on.
+ *
+ * Deliberately only an 'audio' entry is acted on. Acting on a 'direct' record — skipping
+ * detection because this source played as-is last time — would silently leave a title whose
+ * file has since been replaced with an AC-3 one mute, with nothing on screen to explain it; so
+ * 'direct' is recorded but detection must keep running against it. A missing entry, or one
+ * confirmed against a different source shape, likewise yields null — normal detection, not a
+ * guess. The url comparison is sameSourceUrl's host+path rule, so a rotated provider token
+ * still matches (see this file's header for why exact matching would be the wrong test).
+ */
+export function rememberedAudioIndex(
+  memory: Record<string, TranscodeMemoryEntry>,
+  key: string,
+  url: string
+): number | null {
+  const entry = memory[key]
+  if (!entry || entry.kind !== 'audio') return null
+  return sameSourceUrl(entry.url, url) ? entry.audioIndex : null
 }
