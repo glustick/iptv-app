@@ -2318,7 +2318,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   openChannelPreview: (channel) => {
     set({ previewChannel: channel })
     // loadShortEpg catches its own errors internally (EPG is best-effort) and always resolves.
-    void get().loadShortEpg(channel.stream_id)
+    // The channel's own playlist is passed through: with two providers connected, the same id
+    // 42 exists on both, and dropping it here would fetch the *other* provider's channel (or
+    // nothing) and file the result under the wrong key — leaving the preview's own pane empty.
+    void get().loadShortEpg(channel.stream_id, channel.playlistId)
   },
 
   closeChannelPreview: () => set({ previewChannel: null }),

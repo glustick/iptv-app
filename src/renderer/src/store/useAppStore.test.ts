@@ -2548,6 +2548,64 @@ describe('per-channel EPG state across playlists', () => {
     expect(Object.keys(useAppStore.getState().shortEpgByStream).sort()).toEqual(['91001', 'second:91001'])
   })
 
+  it("openChannelPreview asks the channel's own playlist for listings", async () => {
+    useAppStore.setState({ primaryPlaylistId: 'primary', shortEpgByStream: {}, shortEpgFetchedAt: {} })
+    const primary = new XtreamClient('http://a.example.com', 'u', 'p')
+    const second = new XtreamClient('http://b.example.com', 'u', 'p')
+    const primaryCalls: number[] = []
+    const secondCalls: number[] = []
+    const now = Math.floor(Date.now() / 1000)
+    const listing = (streamId: number): ShortEpgProgram => ({
+      id: `x-${streamId}`,
+      epg_id: '',
+      title: `Show ${streamId}`,
+      lang: '',
+      start: new Date(now * 1000).toISOString(),
+      end: new Date((now + 3600) * 1000).toISOString(),
+      description: '',
+      channel_id: '',
+      start_timestamp: String(now),
+      stop_timestamp: String(now + 3600)
+    })
+    vi.spyOn(primary, 'getShortEpg').mockImplementation(async (streamId: number) => {
+      primaryCalls.push(streamId)
+      return [listing(streamId)]
+    })
+    vi.spyOn(second, 'getShortEpg').mockImplementation(async (streamId: number) => {
+      secondCalls.push(streamId)
+      return [listing(streamId)]
+    })
+    useAppStore.setState({
+      client: primary,
+      playlists: [
+        { profileId: 'primary', name: 'Primary', client: primary, error: null, categories: [] },
+        { profileId: 'second', name: 'Second', client: second, error: null, categories: [] }
+      ]
+    })
+
+    useAppStore.getState().openChannelPreview({
+      num: 7,
+      name: 'B Forty-Two',
+      stream_type: 'live',
+      stream_id: 42,
+      stream_icon: '',
+      epg_channel_id: null,
+      added: '',
+      category_id: '1',
+      custom_sid: null,
+      tv_archive: 0,
+      direct_source: '',
+      tv_archive_duration: 0,
+      playlistId: 'second'
+    })
+    await vi.waitFor(() => expect(secondCalls).toEqual([42]))
+
+    // The second playlist's channel is fetched through ITS provider and filed under its own key —
+    // the primary's channel 42 is never asked for (it would be a different channel entirely).
+    expect(primaryCalls).toEqual([])
+    expect(Object.keys(useAppStore.getState().shortEpgByStream)).toEqual(['second:42'])
+  })
+
   it('refreshShortEpg fetches again straight away, ignoring the freshness window', async () => {
     const client = new XtreamClient('http://example.com', 'user', 'pass')
     const now = Math.floor(Date.now() / 1000)
