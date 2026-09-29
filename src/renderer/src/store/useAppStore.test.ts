@@ -2604,6 +2604,10 @@ describe('per-channel EPG state across playlists', () => {
     // the primary's channel 42 is never asked for (it would be a different channel entirely).
     expect(primaryCalls).toEqual([])
     expect(Object.keys(useAppStore.getState().shortEpgByStream)).toEqual(['second:42'])
+
+    // This test borrowed the store's `playlists` list; clear it again, or the next test's
+    // loadShortEpg resolves its 'primary' fetch to THIS test's client and sees no call at all.
+    useAppStore.setState({ playlists: [] })
   })
 
   it('refreshShortEpg fetches again straight away, ignoring the freshness window', async () => {
