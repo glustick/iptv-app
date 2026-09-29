@@ -94,6 +94,13 @@ function withDayShift(time: string, localYmd: string, venueYmd: string): string 
   return days > 0 ? `${time} +${days}d` : `${time} ${days}d`
 }
 
+function clockText(h: number, m: number, hour12: boolean): string {
+  if (!hour12) return `${pad2(h)}:${pad2(m)}`
+  const ampm = h < 12 ? 'am' : 'pm'
+  const h12 = h % 12 === 0 ? 12 : h % 12
+  return `${h12}:${pad2(m)} ${ampm}`
+}
+
 /**
  * Fixture path: a UTC kickoff instant plus the venue's IANA zone (from the league country).
  * `localTz` is injectable for deterministic tests; defaults to the viewer's zone.
@@ -106,12 +113,7 @@ export function formatDualFromInstant(
 ): DualTime {
   const venue = wallInZone(ms, venueTz)
   const local = wallInZone(ms, localTz ?? Intl.DateTimeFormat().resolvedOptions().timeZone)
-  const fmt = (h: number, m: number): string => {
-    if (!hour12) return `${pad2(h)}:${pad2(m)}`
-    const ampm = h < 12 ? 'am' : 'pm'
-    const h12 = h % 12 === 0 ? 12 : h % 12
-    return `${h12}:${pad2(m)} ${ampm}`
-  }
+  const fmt = (h: number, m: number): string => clockText(h, m, hour12)
   return {
     venue: `${fmt(venue.hour, venue.minute)} ${venue.tzName}`,
     local: withDayShift(fmt(local.hour, local.minute), local.ymd, venue.ymd),
@@ -133,12 +135,7 @@ export function formatDualFromWall(
   localTz: string | undefined = undefined
 ): DualTime {
   const dual = formatDualFromInstant(kickoffMs, 'UTC', hour12, localTz)
-  const fmt = (h: number, m: number): string => {
-    if (!hour12) return `${pad2(h)}:${pad2(m)}`
-    const ampm = h < 12 ? 'am' : 'pm'
-    const h12 = h % 12 === 0 ? 12 : h % 12
-    return `${h12}:${pad2(m)} ${ampm}`
-  }
+  const fmt = (h: number, m: number): string => clockText(h, m, hour12)
   return {
     venue: tzLabel ? `${fmt(hour, minute)} ${tzLabel}` : fmt(hour, minute),
     local: dual.local,
@@ -193,4 +190,31 @@ export function shortZoneName(ms: number, tz: string): string {
     .formatToParts(new Date(ms))
     .find((p) => p.type === 'timeZoneName')?.value
   return name ?? tz
+}
+
+/** The same, as an offset name ("GMT+8", "GMT+5:30") — uniform across regions; falls back to the
+ *  short name on engines without `shortOffset`. */
+function shortOffsetName(ms: number, tz: string): string {
+  try {
+    const name = new Intl.DateTimeFormat('en-GB', { timeZone: tz, timeZoneName: 'shortOffset' })
+      .formatToParts(new Date(ms))
+      .find((p) => p.type === 'timeZoneName')?.value
+    if (name) return name
+  } catch {
+    // Older engines: fall through to the short name.
+  }
+  return shortZoneName(ms, tz)
+}
+
+/**
+ * The viewer-local kickoff clock with the local system timezone in parentheses — "19:45 (GMT+8)".
+ *
+ * This is the Sports tab's requested time format (2026-09-29): the local time of the kickoff
+ * first, then the local system timezone in brackets. `localTz` is injectable for deterministic
+ * tests; it defaults to the viewer's own zone.
+ */
+export function localKickoffLabel(ms: number, hour12 = false, localTz: string | undefined = undefined): string {
+  const tz = localTz ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+  const wall = wallInZone(ms, tz)
+  return `${clockText(wall.hour, wall.minute, hour12)} (${shortOffsetName(ms, tz)})`
 }

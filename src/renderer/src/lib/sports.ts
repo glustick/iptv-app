@@ -50,6 +50,9 @@ export interface ParsedEvent {
 export interface SportsGame {
   key: string
   leagueId: string
+  /** The normalized team pair, sorted — the same form lib/fixtureMatch.ts compares API events
+   *  against, so one game in the provider's catalogue can be found from the API's spelling too. */
+  pairKey: string
   homeDisplay: string
   awayDisplay: string
   /** Local calendar day (YYYY-MM-DD) the kickoff lands on, or null when unscheduled. */
@@ -154,6 +157,36 @@ export function classifyCategory(categoryName: string): CategoryClass | null {
   return null
 }
 
+// --- Which platform sport each competition belongs to ------------------------------------------
+
+/**
+ * The sport id a competition rule belongs to — matching lib/api-sports.ts's source ids, which are
+ * the api-football.com platform's own category ids. The left pane lists those categories, so this
+ * is what ties the provider's parseable leagues (Football, NFL, NBA…) to one of them; a rule
+ * without an entry (tennis, cricket, golf, darts) belongs to no platform sport and is simply not
+ * listed under any category.
+ */
+const SPORT_OF_LEAGUE: Record<string, string> = {
+  'premier-league': 'football', 'champions-league': 'football', 'europa-league': 'football',
+  'conference-league': 'football', 'la-liga': 'football', 'serie-a': 'football',
+  bundesliga: 'football', 'ligue-1': 'football', championship: 'football',
+  'efl-leagues': 'football', spfl: 'football', 'fa-cup': 'football', friendlies: 'football',
+  mls: 'football', football: 'football',
+  nfl: 'nfl',
+  nba: 'nba',
+  nhl: 'hockey',
+  mlb: 'baseball',
+  fighting: 'mma',
+  rugby: 'rugby',
+  motorsport: 'formula-1',
+  'aussie-rules': 'afl'
+}
+
+/** The platform sport a competition belongs to, or null when it isn't one of them. */
+export function sportOfLeague(leagueId: string): string | null {
+  return SPORT_OF_LEAGUE[leagueId] ?? null
+}
+
 // --- Event-name parsing -----------------------------------------------------------------------
 
 // "EPL01: ", "US Open 10: ", "PSF 03 | ", "EPL 05ⓧ: " — some index-ish token followed by : or |.
@@ -205,6 +238,12 @@ function cleanTeam(side: string): { display: string; key: string } {
     .filter((t) => !EDGE_NOISE.has(t))
   while (keyTokens.length > 1 && CLUB_SUFFIX.has(keyTokens[keyTokens.length - 1])) keyTokens.pop()
   return { display, key: keyTokens.join(' ') }
+}
+
+/** The match key of one team name, normalized through the same rules the schedule uses — the
+ *  join point lib/fixtureMatch.ts compares API spellings against. */
+export function teamMatchKey(name: string): string {
+  return cleanTeam(name).key
 }
 
 function parseTimeToken(
@@ -476,6 +515,7 @@ export function buildSportsSchedule(streams: LiveStream[], categories: Category[
       game = {
         key,
         leagueId: rule.id,
+        pairKey: pair,
         homeDisplay: event.homeDisplay,
         awayDisplay: event.awayDisplay,
         dayKey,

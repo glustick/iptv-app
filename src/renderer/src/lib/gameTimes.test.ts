@@ -4,6 +4,7 @@ import {
   formatDualFromInstant,
   formatDualFromWall,
   dualTimeLabel,
+  localKickoffLabel,
   zonedWallToUtc,
   shortZoneName
 } from './gameTimes'
@@ -88,5 +89,22 @@ describe('formatDualFromWall', () => {
     expect(dual.venue).toBe('20:00')
     expect(dual.sameWall).toBe(true)
     expect(dualTimeLabel(dual)).toBe('20:00')
+  })
+})
+
+describe('localKickoffLabel', () => {
+  // The Sports tab's requested format (2026-09-29): viewer-local clock first, the local system
+  // timezone in parentheses — "22:00 (GMT+8)" for a 14:00Z kickoff at UTC+8.
+  it('shows the local clock with the offset-format zone in parentheses', () => {
+    expect(localKickoffLabel(Date.UTC(2026, 8, 27, 14, 0), false, VIEWER_TZ)).toBe('22:00 (GMT+8)')
+  })
+
+  it('formats 12-hour clocks on request', () => {
+    expect(localKickoffLabel(Date.UTC(2026, 8, 27, 14, 0), true, VIEWER_TZ)).toBe('10:00 pm (GMT+8)')
+  })
+
+  it('handles half-hour offsets and the DST-correct winter name', () => {
+    expect(localKickoffLabel(Date.UTC(2026, 8, 27, 14, 0), false, 'Asia/Kolkata')).toBe('19:30 (GMT+5:30)')
+    expect(localKickoffLabel(Date.UTC(2026, 0, 15, 15, 0), false, 'Europe/London')).toBe('15:00 (GMT+0)')
   })
 })

@@ -5,7 +5,9 @@ import {
   cleanCategoryLabel,
   dayKeyOf,
   gamesForDay,
-  parseEventName
+  parseEventName,
+  sportOfLeague,
+  teamMatchKey
 } from './sports.js'
 import type { Category, LiveStream } from './types'
 
@@ -233,6 +235,15 @@ describe('buildSportsSchedule', () => {
     expect(brentford?.channels).toHaveLength(3)
     expect(brentford?.channels.map((c) => c.stream_id)).toEqual([11, 12, 21])
     expect(brentford?.dayKey).toBe(dayKeyOf(NOW))
+    // The sorted, parser-normalized pair — the exact form lib/fixtureMatch.ts compares API
+    // events against.
+    expect(brentford?.pairKey).toBe('brentford vs chelsea')
+  })
+
+  it('carries each game\'s normalized pair key for the API-side join', () => {
+    const { gamesByLeague } = schedule()
+    const newcastle = (gamesByLeague['premier-league'] ?? []).find((g) => g.homeDisplay === 'Newcastle United')
+    expect(newcastle?.pairKey).toBe('hull city vs newcastle united')
   })
 
   it('buckets games by their kickoff day and sorts earliest first', () => {
@@ -252,5 +263,35 @@ describe('buildSportsSchedule', () => {
     expect(games).toHaveLength(1)
     expect(games[0].dayKey).toBeNull()
     expect(games[0].channels).toHaveLength(1)
+  })
+})
+
+describe('sportOfLeague', () => {
+  it('ties each provider competition to the platform sport whose pane lists it', () => {
+    expect(sportOfLeague('premier-league')).toBe('football')
+    expect(sportOfLeague('champions-league')).toBe('football')
+    expect(sportOfLeague('nfl')).toBe('nfl')
+    expect(sportOfLeague('nba')).toBe('nba')
+    expect(sportOfLeague('nhl')).toBe('hockey')
+    expect(sportOfLeague('mlb')).toBe('baseball')
+    expect(sportOfLeague('fighting')).toBe('mma')
+    expect(sportOfLeague('rugby')).toBe('rugby')
+    expect(sportOfLeague('motorsport')).toBe('formula-1')
+    expect(sportOfLeague('aussie-rules')).toBe('afl')
+  })
+
+  it('returns null for competitions outside the platform (tennis, cricket, golf, darts)', () => {
+    expect(sportOfLeague('tennis')).toBeNull()
+    expect(sportOfLeague('cricket')).toBeNull()
+    expect(sportOfLeague('golf')).toBeNull()
+    expect(sportOfLeague('darts-snooker')).toBeNull()
+  })
+})
+
+describe('teamMatchKey', () => {
+  it('normalizes club spelling through the schedule parser, dropping club suffixes', () => {
+    expect(teamMatchKey('Newcastle United')).toBe('newcastle united')
+    expect(teamMatchKey('Hull City AFC')).toBe('hull city')
+    expect(teamMatchKey('  Brentford  ')).toBe('brentford')
   })
 })
