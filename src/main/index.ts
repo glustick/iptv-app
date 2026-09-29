@@ -1397,6 +1397,44 @@ app.whenReady().then(async () => {
     return res.json()
   })
 
+  // The Sports tab's other sport feeds. api-football.com fronts one API per sport, each on its
+  // own host (v1.basketball…, v2.nba…, v1.american-football… for the NFL) — and all of them
+  // answer the same account key. Same discipline as the football handler above: the host is
+  // pinned per sport id — an allowlist, never a passed-in URL — and paths must be relative, so
+  // this can't be turned into a general-purpose proxy. Unknown sports are rejected outright
+  // rather than guessed at; the list here must stay in step with the renderer's SPORT_SOURCES
+  // (lib/api-sports.ts), which is the one place sport ids are defined.
+  const apiSportsHosts: Record<string, string> = {
+    football: 'v3.football.api-sports.io',
+    afl: 'v1.afl.api-sports.io',
+    baseball: 'v1.baseball.api-sports.io',
+    basketball: 'v1.basketball.api-sports.io',
+    'formula-1': 'v1.formula-1.api-sports.io',
+    handball: 'v1.handball.api-sports.io',
+    hockey: 'v1.hockey.api-sports.io',
+    mma: 'v1.mma.api-sports.io',
+    nba: 'v2.nba.api-sports.io',
+    nfl: 'v1.american-football.api-sports.io',
+    rugby: 'v1.rugby.api-sports.io',
+    volleyball: 'v1.volleyball.api-sports.io'
+  }
+  ipcMain.handle('api-sports:fetch', async (_event, sport: string, path: string, key: string): Promise<unknown> => {
+    if (!key) throw new Error('API-Football key is not set — add it in Settings first.')
+    const host = typeof sport === 'string' ? apiSportsHosts[sport] : undefined
+    if (!host) throw new Error(`Unknown sports feed: ${String(sport)}`)
+    if (typeof path !== 'string' || !path.startsWith('/')) {
+      throw new Error('Invalid API-Sports request path.')
+    }
+    const res = await net.fetch(`https://${host}${path}`, {
+      headers: { 'x-apisports-key': key }
+    })
+    if (!res.ok) {
+      logLifecycle(`api-sports ${sport} ${path} failed: ${res.status} ${res.statusText}`)
+      throw new Error(`API-Sports request failed (${res.status})`)
+    }
+    return res.json()
+  })
+
   // The launch-time check is triggered from the renderer's init() now (see useAppStore.ts),
   // not fired from here. Firing it this early, straight from main, raced webContents' own
   // load: if checkForUpdates() resolved (or update-available fired) before the page had

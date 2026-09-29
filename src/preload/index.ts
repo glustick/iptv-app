@@ -157,6 +157,14 @@ const api = {
     // rather than read from main's store — keeps one source of truth for settings.
     fetch: (path: string, key: string) =>
       ipcRenderer.invoke('api-football:fetch', path, key) as Promise<unknown>
+  },
+  apiSports: {
+    // The sibling sport feeds (basketball, baseball, hockey, rugby, handball, volleyball, AFL,
+    // MMA, NBA, NFL, Formula-1): the sport id selects one of main's pinned hosts, so the
+    // renderer can never aim the key-holding fetch anywhere else. Football keeps its own bridge
+    // above unchanged; this is additive.
+    fetch: (sport: string, path: string, key: string) =>
+      ipcRenderer.invoke('api-sports:fetch', sport, path, key) as Promise<unknown>
   }
 }
 

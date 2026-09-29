@@ -116,6 +116,13 @@ interface ApiFootballAPI {
   fetch: (path: string, key: string) => Promise<unknown>
 }
 
+// The sibling sport feeds on api-football.com (one host per sport; see lib/api-sports.ts for the
+// renderer-side list). Same pinned-host discipline, with the sport id selecting the host from
+// main's own allowlist.
+interface ApiSportsAPI {
+  fetch: (sport: string, path: string, key: string) => Promise<unknown>
+}
+
 declare global {
   interface Window {
     electron: ElectronAPI
@@ -132,6 +139,7 @@ declare global {
       vpn: VpnAPI
       updater: UpdaterAPI
       apiFootball: ApiFootballAPI
+      apiSports: ApiSportsAPI
     }
   }
 }
