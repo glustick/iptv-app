@@ -3641,3 +3641,30 @@ body.resizing-col {
   font-size: 12px;
   padding: 6px 9px;
 }
+
+/* The games pane's right-hand status: LIVE badge / FT marker + the score beside it. */
+.sports-item-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.sports-live {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #ff5d5d;
+}
+
+.sports-ft {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--text-dim, #8b8f9a);
+}
+
+/* The refresh button sits at the games pane title's trailing edge. */
+.sports-pane-title .sports-fixtures-refresh {
+  margin-left: auto;
+}
