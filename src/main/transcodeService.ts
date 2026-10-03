@@ -210,6 +210,12 @@ const LIVE_H264_REENCODE_ARGS = [
   'expr:gte(t,n_forced*4)'
 ]
 
+// The layouts the AAC audio encode is pinned to — see the `-af` call site's comment for the
+// measured PCE/channelConfiguration=0 failure this prevents (web sibling, allison-web-iptv
+// v0.71.0). Exported pure so the value the argv carries is testable without spawning ffmpeg.
+export const AUDIO_CHANNEL_LAYOUT_FILTER = 'aformat=channel_layouts=mono|stereo|5.1|7.1'
+
+
 const TRANSCODE_MIME_TYPES: Record<string, string> = {
   '.m3u8': 'application/vnd.apple.mpegurl',
   '.ts': 'video/mp2t',
@@ -371,8 +377,21 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
       'aac',
       '-b:a',
       '192k',
-      '-ac',
-      '2',
+      // Pin the AAC output's channel layout to shapes Chromium's MSE can actually name, in place
+      // of the old `-ac 2` downmix. Two findings from the web sibling (measured there
+      // 2026-10-03, allison-web-iptv v0.71.0) meet here: (1) `-ac 2` folds every 5.1 feed to
+      // stereo at the only point surround could have been kept — this provider's channels carry
+      // E-AC-3 5.1(side); (2) simply dropping `-ac 2` is NOT safe either: the aac encoder writes
+      // layouts with no standard MPEG channel configuration (5.1(side) is exactly one) as an
+      // AudioSpecificConfig with channelConfiguration=0 — an in-band PCE — which Chromium's MSE
+      // cannot derive a channel count from and rejects the fMP4 init segment outright (every
+      // append fails; hls.js dies at mediaSourceRequiresReset before a single fragment buffers;
+      // isolated with a raw-MSE matrix on the web sibling's rig). aformat passes through every
+      // layout it names and converts the rest to the nearest one it does, so a 5.1(side) source
+      // lands on 5.1 (configuration 6 — the side/back distinction names speaker positions the
+      // encoder re-states regardless) and a stereo source is untouched.
+      '-af',
+      AUDIO_CHANNEL_LAYOUT_FILTER,
       ...(isVod && subtitleStreamIndex >= 0 ? ['-c:s', 'webvtt'] : []),
       '-f',
       'hls',

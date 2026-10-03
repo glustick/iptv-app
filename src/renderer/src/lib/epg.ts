@@ -1,5 +1,5 @@
-import { XMLParser } from 'fast-xml-parser'
-import { DEFAULT_SECTION_CHARS, splitXmltvIntoSections } from './xmltvSections'
+import { createXmltvStreamParser } from './xmltvStream'
+import { DEFAULT_SECTION_CHARS } from './xmltvSections'
 import type { LiveStream, ShortEpgProgram } from './types'
 
 export interface EpgChannel {
@@ -21,94 +21,18 @@ export interface EpgData {
   programmesByChannel: Map<string, EpgProgramme[]>
 }
 
-function asArray<T>(value: T | T[] | undefined): T[] {
-  if (value === undefined) return []
-  return Array.isArray(value) ? value : [value]
-}
-
-function textOf(value: unknown): string | undefined {
-  if (value == null) return undefined
-  if (typeof value === 'string') return value
-  if (typeof value === 'object' && '#text' in (value as Record<string, unknown>)) {
-    return String((value as Record<string, unknown>)['#text'])
-  }
-  return String(value)
-}
-
-/** XMLTV timestamps look like `20240101120000 +0000`. */
-function parseXmltvDate(value: string): Date {
-  const match = value.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\s*([+-]\d{4})?$/)
-  if (!match) return new Date(value)
-  const [, year, month, day, hour, minute, second, offset] = match
-  const normalizedOffset = offset ? `${offset.slice(0, 3)}:${offset.slice(3)}` : 'Z'
-  return new Date(`${year}-${month}-${day}T${hour}:${minute}:${second}${normalizedOffset}`)
-}
-
 export function parseXmltv(xml: string): EpgData {
-  // fast-xml-parser caps total entity expansions (every &amp;/&quot;/&#8217; in tag values
-  // counts) at 1000 by default — a billion-laughs DoS guard that real XMLTV guides trip
-  // within their first few dozen channels: a large country guide carries thousands of entity
-  // references across titles/descriptions, and hitting the cap aborts the whole parse
-  // ("Entity expansion limit exceeded: 1001 > 1000"), making a perfectly healthy source look
-  // unavailable. Scale the cap by input size instead: an entity reference is at least 4
-  // characters (`&lt;`), so xml.length / 4 is the mathematical maximum any well-formed
-  // document can expand — legitimate guides can never be rejected — while small-input
-  // amplification stays capped (a 1KB billion-laughs-style file gets a ~251-expansion
-  // ceiling, preserving the protection the default existed for). The separate maxEntityCount
-  // DOCTYPE-definition cap (default 1000) is untouched and still bounds recursive entities.
-  const parser = new XMLParser({
-    ignoreAttributes: false,
-    attributeNamePrefix: '@_',
-    processEntities: {
-      maxTotalExpansions: Math.floor(xml.length / 4) + 1,
-      // Total expanded-entity characters: real guides' expansions never exceed their own
-      // source text (named entities shrink), so 2x input plus fixed headroom can't reject a
-      // legitimate guide while still bounding adversarial amplification.
-      maxExpandedLength: xml.length * 2 + 100000
-    }
-  })
-  // Lenient to preamble: a leading BOM or stray text before the XML root (e.g. a ".txt" file
-  // that is really XMLTV with junk on top, which providers do hand out) shouldn't kill the
-  // whole guide — everything before the first <?xml/<tv tag is skipped. No XML tag found at
-  // all (-1) keeps the input unchanged, producing the empty guide loadEpgSources then flags
-  // as "didn't look like an XMLTV guide" rather than a mystery.
-  const rootStart = xml.search(/<\?xml|<tv[\s>]/i)
-  const doc = parser.parse(rootStart > 0 ? xml.slice(rootStart) : xml) as {
-    tv?: { channel?: unknown; programme?: unknown }
-  }
-  const tv = doc.tv ?? {}
-
-  const channels = new Map<string, EpgChannel>()
-  for (const raw of asArray(tv.channel as any)) {
-    const id = String(raw['@_id'])
-    const displayName = textOf(raw['display-name']) ?? id
-    const icon = raw.icon?.['@_src']
-    channels.set(id, { id, displayName, icon })
-  }
-
-  const programmesByChannel = new Map<string, EpgProgramme[]>()
-  for (const raw of asArray(tv.programme as any)) {
-    const channelId = String(raw['@_channel'])
-    const programme: EpgProgramme = {
-      channelId,
-      start: parseXmltvDate(String(raw['@_start'])),
-      stop: parseXmltvDate(String(raw['@_stop'])),
-      title: textOf(raw.title) ?? 'Untitled',
-      description: textOf(raw.desc)
-    }
-    const list = programmesByChannel.get(channelId)
-    if (list) {
-      list.push(programme)
-    } else {
-      programmesByChannel.set(channelId, [programme])
-    }
-  }
-
-  for (const list of programmesByChannel.values()) {
-    list.sort((a, b) => a.start.getTime() - b.start.getTime())
-  }
-
-  return { channels, programmesByChannel }
+  // The streaming scanner (lib/xmltvStream.ts, ported from the web sibling's v0.73.0 OOM fix)
+  // replaces the fast-xml-parser DOM build: identical output for well-formed input, without
+  // ever holding a document tree. That also retires two workarounds the DOM parse needed —
+  // the entity-expansion caps (the scanner decodes lazily, so there is nothing to cap) and
+  // the preamble surgery (a scanner only ever looks for <channel/<programme tokens, so junk
+  // before the root is ignored by construction, BOM included). A document with no <tv> root
+  // still yields an empty guide, which loadEpgSources flags as "didn't look like an XMLTV
+  // guide" exactly as before.
+  const parser = createXmltvStreamParser()
+  parser.write(xml)
+  return parser.end()
 }
 
 export function getCurrentProgramme(
@@ -213,6 +137,8 @@ export function mergeShortEpg(primary: ShortEpgProgram[], secondary: ShortEpgPro
 export async function parseXmltvProgressive(
   xml: string,
   options: {
+    /** Kept for call-site compatibility: the slice size the parser is fed in. Chunking is now
+     *  purely a yield/progress cadence — the scanner is split-agnostic, so any size parses. */
     maxSectionChars?: number
     onProgress?: (done: number, total: number) => void
     /** Injected so tests can run the whole thing synchronously; production yields to the macrotask
@@ -220,36 +146,23 @@ export async function parseXmltvProgressive(
     yieldTo?: () => Promise<void>
   } = {}
 ): Promise<EpgData> {
-  const plan = splitXmltvIntoSections(xml, options.maxSectionChars ?? DEFAULT_SECTION_CHARS)
-  // Nothing to cut (no <tv> root, or a document small enough to be one section): the plain parse is
-  // both correct and cheaper than the section machinery.
-  if (plan.bodies.length <= 1 && !plan.footer) return parseXmltv(xml)
-
-  const sections = plan.bodies.length > 0 ? plan.bodies : [xml]
+  // One scanner across every slice — the document-level state (current element, partial close
+  // tags, accumulated guide) lives in the scanner, so a slice boundary can no longer split a
+  // channel's programmes the way the old section cuts could. Slices exist only to yield
+  // between them, keeping the renderer painting while a large guide streams through.
+  const sliceChars = options.maxSectionChars ?? DEFAULT_SECTION_CHARS
+  const slices = Math.max(1, Math.ceil(xml.length / sliceChars))
   const yieldTo = options.yieldTo ?? ((): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0)))
-  const channels = new Map<string, EpgChannel>()
-  const programmesByChannel = new Map<string, EpgProgramme[]>()
+  const parser = createXmltvStreamParser()
 
-  for (let i = 0; i < sections.length; i += 1) {
-    const parsed = parseXmltv(plan.header + sections[i] + plan.footer)
-    for (const [id, channel] of parsed.channels) channels.set(id, channel)
-    for (const [channelId, programmes] of parsed.programmesByChannel) {
-      const existing = programmesByChannel.get(channelId)
-      if (existing) existing.push(...programmes)
-      else programmesByChannel.set(channelId, [...programmes])
-    }
-    options.onProgress?.(i + 1, sections.length)
-    // Yield between sections, never after the last one — no point delaying the result.
-    if (i < sections.length - 1) await yieldTo()
+  for (let i = 0; i < slices; i += 1) {
+    parser.write(xml.slice(i * sliceChars, (i + 1) * sliceChars))
+    options.onProgress?.(i + 1, slices)
+    // Yield between slices, never after the last one — no point delaying the result.
+    if (i < slices - 1) await yieldTo()
   }
 
-  // Sections arrive in document order, but a channel's programmes can straddle a cut, so the
-  // per-channel ordering `parseXmltv` guarantees has to be re-established across the join.
-  for (const list of programmesByChannel.values()) {
-    list.sort((a, b) => a.start.getTime() - b.start.getTime())
-  }
-
-  return { channels, programmesByChannel }
+  return parser.end()
 }
 
 export async function decodeMaybeGzipBytes(buffer: ArrayBuffer): Promise<string> {

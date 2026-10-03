@@ -1,4 +1,10 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
+import {
+  backupPreferredUntil,
+  createFailoverState,
+  notePrimaryFailure,
+  notePrimarySuccess
+} from './proxyFailover'
 import { URL } from 'url'
 
 /**
@@ -90,6 +96,12 @@ export interface ProxyServerDeps {
   // Swapped whenever the user connects to a (possibly different) profile — null before any
   // profile has connected yet.
   getProxyTargetBase: () => string | null
+  // The account's backup portal for the current primary target, or null when there is none
+  // (no backup configured, or the proxy is deliberately pointed elsewhere). Optional so
+  // existing test wirings compile untouched; without it there is simply no failover. Ported
+  // from the web sibling (allison-web-iptv v0.72.0), where the operator's provider publishes
+  // a reserve portal and the proxy now fails over to it by itself.
+  getProxyBackupBase?: () => string | null
   // Electron's net.request in production (Chromium's network stack — see the comment on
   // createUpstreamRequest's call site in index.ts for why, not Node's http/https). Anything
   // satisfying UpstreamClientRequest works, which is what makes this testable without Electron.
@@ -141,6 +153,10 @@ export interface ProxyServerDeps {
 export function createProxyServer(deps: ProxyServerDeps): Server {
   const upstreamTimeoutMs = deps.upstreamTimeoutMs ?? 45000
 
+  // The failover memory: which primary bases are currently being failed over from (see
+  // proxyFailover.ts). Scoped to this server instance, so tests get a clean slate.
+  const failoverState = createFailoverState()
+
   function handleProxyRequest(req: IncomingMessage, res: ServerResponse): void {
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
@@ -166,6 +182,13 @@ export function createProxyServer(deps: ProxyServerDeps): Server {
     // any destination directly, bypassing getProxyTargetBase() entirely, while still getting
     // the same CORS/retry/timeout/redirect handling as the Xtream path below.
     let target: URL
+    // The account's backup portal for this request, resolved once — null on /__fetch/ (whose
+    // destination is the encoded URL itself) or when none is configured. lib/proxyFailover.ts
+    // carries the why of the cooldown.
+    let backupUrl: URL | null = null
+    // The base the target resolved against (null on /__fetch/) — the key the failover
+    // cooldown is remembered under.
+    let primaryBase: string | null = null
     if (req.url?.startsWith('/__fetch/')) {
       try {
         target = new URL(decodeURIComponent(req.url.slice('/__fetch/'.length)))
@@ -181,6 +204,7 @@ export function createProxyServer(deps: ProxyServerDeps): Server {
         res.end('No upstream Xtream server configured')
         return
       }
+      primaryBase = proxyTargetBase
 
       // `new URL()` throws synchronously on a malformed base (e.g. a server address typed
       // without "http://", such as "myprovider.com:8080") — left uncaught, that exception
@@ -191,6 +215,17 @@ export function createProxyServer(deps: ProxyServerDeps): Server {
         res.writeHead(502)
         res.end(`Invalid Xtream server address: ${proxyTargetBase}`)
         return
+      }
+
+      // A malformed stored backup must not kill the request the way a malformed primary
+      // would — it just means no failover this time.
+      const backupBase = deps.getProxyBackupBase?.() ?? null
+      if (backupBase) {
+        try {
+          backupUrl = new URL(req.url ?? '/', backupBase)
+        } catch {
+          backupUrl = null
+        }
       }
     }
 
@@ -228,11 +263,23 @@ export function createProxyServer(deps: ProxyServerDeps): Server {
     // attempts at 45s each (90s worst case) still leaves headroom inside startTranscode's
     // overall 240s deadline.
     let retried = false
+    // The backup-portal failover is its own one-shot after the same-target retry: one attempt
+    // against the other portal before the failure is surfaced. Whichever base the CURRENT
+    // attempt addresses is tracked here, so the same-target retry re-tries the right portal
+    // and the response handler knows whose answer it is looking at.
+    let attemptOnBackup = false
+    let failedOver = false
+    // Cooldown: after a failover, later requests skip the dead primary for a short window —
+    // without it every request would pay the primary's connect-timeout before the backup.
+    const backupFirst =
+      backupUrl !== null &&
+      primaryBase !== null &&
+      backupPreferredUntil(failoverState, primaryBase, Date.now()) !== null
 
-    function attemptUpstream(): void {
+    function attemptUpstream(urlOverride?: URL): void {
       let upstreamReq: UpstreamClientRequest
       try {
-        upstreamReq = deps.createUpstreamRequest({ method: req.method, url: target.href })
+        upstreamReq = deps.createUpstreamRequest({ method: req.method, url: (urlOverride ?? target).href })
       } catch (err) {
         res.writeHead(502)
         res.end(`Could not reach upstream server: ${err instanceof Error ? err.message : String(err)}`)
@@ -311,7 +358,25 @@ export function createProxyServer(deps: ProxyServerDeps): Server {
                 .catch(() => {})
             }
           }
-          attemptUpstream()
+          // Re-try the portal this attempt was already addressing — not blindly the primary:
+          // when the cooldown sent this request to the backup first, its retry belongs there.
+          attemptUpstream(attemptOnBackup && backupUrl ? backupUrl : undefined)
+          return
+        }
+        // The same-target retry is spent. One attempt against the OTHER portal before the
+        // failure is surfaced — the failover itself, ported from the web sibling (v0.72.0).
+        if (!failedOver && backupUrl && primaryBase !== null) {
+          failedOver = true
+          if (!attemptOnBackup) {
+            attemptOnBackup = true
+            notePrimaryFailure(failoverState, primaryBase, Date.now())
+            console.warn(`[proxy] primary ${target.host} failed (${err.message}) — failing over to the backup portal`)
+            attemptUpstream(backupUrl)
+          } else {
+            attemptOnBackup = false
+            console.warn(`[proxy] backup ${backupUrl.host} failed (${err.message}) — trying the primary portal`)
+            attemptUpstream()
+          }
           return
         }
         console.error('[proxy] upstream request error:', err)
@@ -336,6 +401,37 @@ export function createProxyServer(deps: ProxyServerDeps): Server {
         gotResponse = true
         settled = true
         clearTimeout(timeout)
+
+        // Failover bookkeeping on the answer itself. A portal that answered below 500 is
+        // alive: a primary answer clears any cooldown (traffic returns to it at once), a
+        // backup answer leaves the cooldown alone (it expires on its own). A 5xx is the
+        // provider down in its most common clothing (a dying portal answers, badly): one
+        // attempt at the OTHER portal before letting the status through, in either direction.
+        // 4xx is deliberately NOT a failover trigger — an auth problem would fail identically
+        // on both portals.
+        if (primaryBase !== null && backupUrl && !failedOver && upstreamRes.statusCode >= 500) {
+          upstreamRes.on('data', () => {}) // Drain the failed body — the other portal's answer is being waited on.
+          failedOver = true
+          if (!attemptOnBackup) {
+            attemptOnBackup = true
+            notePrimaryFailure(failoverState, primaryBase, Date.now())
+            console.warn(
+              `[proxy] primary ${target.host} answered ${upstreamRes.statusCode} — failing over to the backup portal`
+            )
+            attemptUpstream(backupUrl)
+          } else {
+            attemptOnBackup = false
+            console.warn(
+              `[proxy] backup ${backupUrl.host} answered ${upstreamRes.statusCode} — failing over to the primary portal`
+            )
+            attemptUpstream()
+          }
+          return
+        }
+        if (!attemptOnBackup && primaryBase !== null && upstreamRes.statusCode < 500) {
+          notePrimarySuccess(failoverState, primaryBase)
+        }
+
         const headers = { ...upstreamRes.headers }
         headers['access-control-allow-origin'] = '*'
         headers['access-control-allow-headers'] = '*'
@@ -427,6 +523,14 @@ export function createProxyServer(deps: ProxyServerDeps): Server {
     }
 
     req.on('error', (err) => console.error('[proxy] client request error:', err))
+    if (backupFirst && backupUrl) {
+      console.warn(
+        `[proxy] ${primaryBase} is in failover cooldown — trying the backup portal ${backupUrl.host} first`
+      )
+      attemptOnBackup = true
+      attemptUpstream(backupUrl)
+      return
+    }
     attemptUpstream()
   }
 

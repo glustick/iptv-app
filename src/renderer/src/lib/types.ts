@@ -9,6 +9,10 @@ export interface XtreamProfile {
   kind?: ProfileKind
   // Xtream fields — set when kind is 'xtream' or unset, absent for 'm3u'.
   server?: string
+  // Optional reserve portal (same panel + credentials behind a second host) — the proxy
+  // fails over to it automatically when the primary stops answering (see proxyFailover.ts
+  // in the main process, ported from the web sibling).
+  backupServer?: string
   username?: string
   password?: string
   // M3U fields — set when kind is 'm3u', absent for 'xtream'. epgUrl can stay unset even then:

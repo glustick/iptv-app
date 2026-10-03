@@ -730,3 +730,131 @@ describe('createProxyServer', () => {
     expect(res.body).toContain('Upstream request failed')
   }, 10000)
 })
+
+describe('createProxyServer: backup-portal failover', () => {
+  it('fails over to the backup when the primary refuses connections entirely', async () => {
+    // A primary that is DOWN down: a port with nothing listening (start, take the port, close).
+    const dead = await startMockOrigin(() => {})
+    const deadPort = (dead.server.address() as import('net').AddressInfo).port
+    await new Promise<void>((resolve) => dead.server.close(() => resolve()))
+
+    let backupHits = 0
+    const backup = await startMockOrigin((_req, res) => {
+      backupHits += 1
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end('{"ok":true,"source":"backup"}')
+    })
+    openServers.push(backup.server)
+
+    const proxy = await startProxy(
+      makeDeps({
+        getProxyTargetBase: () => `http://127.0.0.1:${deadPort}`,
+        getProxyBackupBase: () => backup.url
+      })
+    )
+
+    const res = await fetchViaProxy(proxy, '/player_api.php?action=get_live_categories')
+
+    expect(res.statusCode).toBe(200)
+    expect(res.body).toBe('{"ok":true,"source":"backup"}')
+    expect(backupHits).toBe(1)
+  })
+
+  it('fails over when the primary answers 5xx, and the cooldown makes the next request skip it', async () => {
+    let primaryHits = 0
+    const primary = await startMockOrigin((_req, res) => {
+      primaryHits += 1
+      res.writeHead(503, { 'content-type': 'text/plain' })
+      res.end('provider is dying')
+    })
+    openServers.push(primary.server)
+    let backupHits = 0
+    const backup = await startMockOrigin((_req, res) => {
+      backupHits += 1
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end('{"ok":true,"source":"backup"}')
+    })
+    openServers.push(backup.server)
+
+    const proxy = await startProxy(
+      makeDeps({
+        getProxyTargetBase: () => primary.url,
+        getProxyBackupBase: () => backup.url
+      })
+    )
+
+    const first = await fetchViaProxy(proxy, '/player_api.php')
+    expect(first.statusCode).toBe(200)
+    expect(first.body).toBe('{"ok":true,"source":"backup"}')
+    expect(primaryHits).toBe(1)
+
+    // The cooldown: the next request goes straight to the backup — the sick primary is not
+    // asked again until the window expires.
+    const second = await fetchViaProxy(proxy, '/player_api.php')
+    expect(second.statusCode).toBe(200)
+    expect(second.body).toBe('{"ok":true,"source":"backup"}')
+    expect(primaryHits).toBe(1)
+    expect(backupHits).toBe(2)
+  })
+
+  it('a primary answer below 500 clears the cooldown once the backup fails in its turn', async () => {
+    let primaryMode: 'sick' | 'healthy' = 'sick'
+    let primaryHits = 0
+    const primary = await startMockOrigin((_req, res) => {
+      primaryHits += 1
+      if (primaryMode === 'sick') {
+        res.writeHead(503)
+        res.end('sick')
+        return
+      }
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end('{"ok":true,"source":"primary"}')
+    })
+    openServers.push(primary.server)
+    let backupMode: 'healthy' | 'sick' = 'healthy'
+    const backup = await startMockOrigin((_req, res) => {
+      if (backupMode === 'healthy') {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end('{"ok":true,"source":"backup"}')
+        return
+      }
+      res.writeHead(503)
+      res.end('backup sick too')
+    })
+    openServers.push(backup.server)
+
+    const proxy = await startProxy(
+      makeDeps({
+        getProxyTargetBase: () => primary.url,
+        getProxyBackupBase: () => backup.url
+      })
+    )
+
+    const duringOutage = await fetchViaProxy(proxy, '/player_api.php')
+    expect(duringOutage.body).toBe('{"ok":true,"source":"backup"}')
+
+    // The primary heals and the backup goes sick in its turn. The next request still rides
+    // the cooldown to the backup, fails over to the now-healthy primary — whose answer (below
+    // 500) clears the cooldown — so the request AFTER that goes straight to the primary.
+    primaryMode = 'healthy'
+    backupMode = 'sick'
+    const healing = await fetchViaProxy(proxy, '/player_api.php')
+    expect(healing.body).toBe('{"ok":true,"source":"primary"}')
+    const recovered = await fetchViaProxy(proxy, '/player_api.php')
+    expect(recovered.body).toBe('{"ok":true,"source":"primary"}')
+    expect(primaryHits).toBe(3) // 1 sick answer + the heal + the recovered request
+  })
+
+  it('without a backup configured, upstream failures surface exactly as before', async () => {
+    const primary = await startMockOrigin((_req, res) => {
+      res.writeHead(503)
+      res.end('down')
+    })
+    openServers.push(primary.server)
+
+    const proxy = await startProxy(makeDeps({ getProxyTargetBase: () => primary.url }))
+    const res = await fetchViaProxy(proxy, '/player_api.php')
+    expect(res.statusCode).toBe(503)
+    expect(res.body).toBe('down')
+  })
+})

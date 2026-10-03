@@ -19,6 +19,7 @@ export function LoginScreen(): JSX.Element {
   const [kind, setKind] = useState<ProfileKind>('xtream')
   const [name, setName] = useState('')
   const [server, setServer] = useState('')
+  const [backupServer, setBackupServer] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [m3uUrl, setM3uUrl] = useState('')
@@ -46,7 +47,14 @@ export function LoginScreen(): JSX.Element {
     e.preventDefault()
     if (kind === 'xtream') {
       if (!server || !username || !password) return
-      await addProfile({ kind: 'xtream', name: name || server, server, username, password })
+      await addProfile({
+        kind: 'xtream',
+        name: name || server,
+        server,
+        backupServer: backupServer.trim() || undefined,
+        username,
+        password
+      })
     } else {
       if (!m3uUrl) return
       await addProfile({ kind: 'm3u', name: name || m3uUrl, m3uUrl, epgUrl: epgUrl || undefined })
@@ -97,6 +105,14 @@ export function LoginScreen(): JSX.Element {
                   onChange={(e) => setServer(e.target.value)}
                   placeholder="http://example.com:8080"
                   required
+                />
+              </label>
+              <label>
+                Backup portal URL (optional)
+                <input
+                  value={backupServer}
+                  onChange={(e) => setBackupServer(e.target.value)}
+                  placeholder="http://backup.example.com:8080 — used automatically when the main server is down"
                 />
               </label>
               <label>

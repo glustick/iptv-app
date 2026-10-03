@@ -56,7 +56,8 @@ const api = {
   },
   proxy: {
     getBaseUrl: () => ipcRenderer.invoke('proxy:getBaseUrl') as Promise<string>,
-    setTarget: (baseUrl: string) => ipcRenderer.invoke('proxy:setTarget', baseUrl) as Promise<void>
+    setTarget: (baseUrl: string, backupUrl?: string) =>
+      ipcRenderer.invoke('proxy:setTarget', baseUrl, backupUrl) as Promise<void>
   },
   transcode: {
     start: (

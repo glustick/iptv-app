@@ -32,7 +32,7 @@ interface NotificationsAPI {
 
 interface ProxyAPI {
   getBaseUrl: () => Promise<string>
-  setTarget: (baseUrl: string) => Promise<void>
+  setTarget: (baseUrl: string, backupUrl?: string) => Promise<void>
 }
 
 interface BackupAPI {

@@ -775,11 +775,16 @@ async function stopVpn(): Promise<void> {
  * tested against a real local HTTP server — see src/main/proxyServer.test.ts.
  */
 let proxyTargetBase: string | null = null
+// The active profile's reserve portal (same panel + credentials, second host). The proxy
+// fails over to it automatically — see lib/proxyFailover.ts / proxyServer.ts, ported from the
+// web sibling (allison-web-iptv v0.72.0). Null when the profile has none configured.
+let proxyBackupBase: string | null = null
 
 function startLocalProxy(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createProxyServer({
       getProxyTargetBase: () => proxyTargetBase,
+      getProxyBackupBase: () => proxyBackupBase,
       // 'manual' (not 'follow') so proxyServer.ts's own 'redirect' listener gets a chance to
       // see every hop's target host before it's taken — 'follow' resolves them invisibly,
       // which is exactly how a provider redirecting stream delivery to an off-tunnel CDN host
@@ -1216,8 +1221,13 @@ app.whenReady().then(async () => {
 
   const proxyPort = await startLocalProxy()
   ipcMain.handle('proxy:getBaseUrl', () => `http://127.0.0.1:${proxyPort}`)
-  ipcMain.handle('proxy:setTarget', (_event, baseUrl: string) => {
+  // The backup rides along with the target: connecting a profile points the proxy at its
+  // server AND arms its reserve portal in the same breath — the two only make sense together.
+  // The backup argument is optional so an older renderer (or an M3U profile, which has no
+  // single base to fail over from) simply clears it.
+  ipcMain.handle('proxy:setTarget', (_event, baseUrl: string, backupUrl?: string) => {
     proxyTargetBase = baseUrl
+    proxyBackupBase = typeof backupUrl === 'string' && backupUrl.trim().length > 0 ? backupUrl.trim() : null
   })
 
   ipcMain.handle(

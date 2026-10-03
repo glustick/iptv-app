@@ -926,7 +926,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     const existing = get().profiles.find((p) =>
       profile.kind === 'm3u'
         ? p.kind === 'm3u' && p.m3uUrl === profile.m3uUrl && p.epgUrl === profile.epgUrl
-        : p.kind !== 'm3u' && p.server === profile.server && p.username === profile.username && p.password === profile.password
+        : p.kind !== 'm3u' &&
+          p.server === profile.server &&
+          p.username === profile.username &&
+          p.password === profile.password &&
+          (p.backupServer ?? '') === (profile.backupServer ?? '')
     )
     if (existing) {
       await get().connect(existing.id)
@@ -962,7 +966,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         // Route every request through the local CORS-proxy (see src/main/index.ts) instead of the
         // real server, since Xtream panels don't send CORS headers for browsers. This is the
         // *primary* playlist's path — see makePlaylistClient for why the others differ.
-        await window.api.proxy.setTarget(profile.server ?? '')
+        await window.api.proxy.setTarget(profile.server ?? '', profile.backupServer)
       }
       const client = makePlaylistClient(profile, proxyBase, false)
       const auth = await client.authenticate()

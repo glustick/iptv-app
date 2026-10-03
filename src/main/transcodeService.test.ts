@@ -1,11 +1,11 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { chmodSync, existsSync, readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync, statSync } from 'fs'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { tmpdir } from 'os'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
 import { spawn } from 'child_process'
 import ffmpegStaticPath from 'ffmpeg-static'
-import { createTranscodeService, type TranscodeService, type TranscodeServiceDeps } from './transcodeService'
+import { AUDIO_CHANNEL_LAYOUT_FILTER, createTranscodeService, type TranscodeService, type TranscodeServiceDeps } from './transcodeService'
 
 const FAKE_FFMPEG = join(import.meta.dirname, 'test-fixtures/fake-ffmpeg.sh')
 chmodSync(FAKE_FFMPEG, 0o755)
@@ -50,6 +50,35 @@ const activeServices: TranscodeService[] = []
 afterEach(() => {
   for (const service of activeServices.splice(0)) service.stopAll()
 })
+
+/**
+ * Reads the AudioSpecificConfig out of an fMP4 init segment's esds box, walking the descriptor
+ * nesting ES_Descriptor (03) → DecoderConfigDescriptor (04) → DecoderSpecificInfo (05), with
+ * 0x80 continuation-marker length bytes accepted. Ported from the web sibling's test of the
+ * same name (allison-web-iptv v0.71.0).
+ */
+function audioSpecificConfigFrom(init: Buffer, esdsTypeOffset: number): Buffer | null {
+  const readDescriptorAt = (at: number): { tag: number; payload: Buffer; payloadOffset: number } | null => {
+    if (at >= init.length - 1) return null
+    const tag = init[at]
+    let cursor = at + 1
+    let length = 0
+    for (let i = 0; i < 4; i++) {
+      const byte = init[cursor]
+      cursor += 1
+      length = (length << 7) | (byte & 0x7f)
+      if ((byte & 0x80) === 0) break
+    }
+    return { tag, payload: init.subarray(cursor, cursor + length), payloadOffset: cursor }
+  }
+  const es = readDescriptorAt(esdsTypeOffset + 8)
+  if (!es || es.tag !== 0x03) return null
+  const dec = readDescriptorAt(es.payloadOffset + 3)
+  if (!dec || dec.tag !== 0x04) return null
+  const dsi = readDescriptorAt(dec.payloadOffset + 13)
+  if (!dsi || dsi.tag !== 0x05) return null
+  return dsi.payload
+}
 
 function track(service: TranscodeService): TranscodeService {
   activeServices.push(service)
@@ -688,6 +717,84 @@ describe('real ffmpeg integration', () => {
       expect(readFileSync(join(dir, 'seg_00000.m4s')).byteLength).toBeGreaterThan(0)
 
       await service.stopTranscode('real-live-1')
+    } finally {
+      server.close()
+      rmSync(fixtureDir, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  // The pinned shape of the channel-layout pin (ported from the web sibling, v0.71.0): a comma
+  // in place of a pipe would split the filtergraph, a renamed layout would make aformat convert
+  // a stream that should pass through. The named layouts are exactly the ones MPEG AAC gives
+  // standard channel configurations to.
+  it('pins the AAC channel-layout filter to standard MPEG channel configurations', () => {
+    expect(AUDIO_CHANNEL_LAYOUT_FILTER).toBe('aformat=channel_layouts=mono|stereo|5.1|7.1')
+    expect(AUDIO_CHANNEL_LAYOUT_FILTER).not.toContain(',')
+    expect(AUDIO_CHANNEL_LAYOUT_FILTER.endsWith('mono|stereo|5.1|7.1')).toBe(true)
+  })
+
+  // Ported from the web sibling (allison-web-iptv v0.71.0), where the provider's E-AC-3
+  // 5.1(side) channels produced an AudioSpecificConfig with channelConfiguration=0 (an in-band
+  // PCE) that Chromium's MSE rejects the fMP4 init segment for — every append failed and hls.js
+  // died before a single fragment buffered. This app used to dodge that via `-ac 2`, at the
+  // cost of folding 5.1 feeds to stereo; the aformat pin keeps the channels AND the standard
+  // configuration. Asserted at the same level as the web proof: the session's init segment
+  // must carry an explicit channel configuration, never the PCE form.
+  it('encodes a 5.1(side) E-AC-3 source to AAC with an explicit channel configuration, not a PCE', async () => {
+    if (!ffmpegStaticPath) throw new Error('ffmpeg-static did not resolve a binary for this platform')
+
+    const fixtureDir = mkdtempSync(join(tmpdir(), 'allisoniptv-pce-fixture-'))
+    const inputPath = join(fixtureDir, 'synthetic-eac3-51side-input.mkv')
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn(ffmpegStaticPath as string, [
+        '-y',
+        '-f', 'lavfi', '-i', 'testsrc=duration=8:size=320x240:rate=10',
+        '-f', 'lavfi', '-i', 'sine=frequency=440:duration=8',
+        '-af', 'aformat=channel_layouts=5.1(side)',
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-g', '10', '-keyint_min', '10',
+        '-c:a', 'eac3',
+        inputPath
+      ])
+      proc.on('error', reject)
+      proc.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`fixture build exited ${code}`))))
+    })
+
+    // Prove the fixture is the 5.1(side) shape this regression exists for.
+    {
+      let stderr = ''
+      await new Promise<void>((resolve) => {
+        const proc = spawn(ffmpegStaticPath as string, ['-i', inputPath])
+        proc.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8') })
+        proc.on('close', () => resolve())
+      })
+      expect(stderr).toMatch(/Audio: eac3/)
+      expect(stderr).toMatch(/5\.1\(side\)/)
+    }
+
+    const { url: originUrl, server } = await startSyntheticOrigin(inputPath)
+    try {
+      const service = track(
+        createTranscodeService({
+          resolveFfmpegPath: resolverFor(ffmpegStaticPath as string),
+          liveDeadlineMs: 30000,
+          pollIntervalMs: 200
+        })
+      )
+
+      const result = await service.startTranscode(originUrl, false, 'real-audio-pce')
+      const init = readFileSync(join(dirname(result.playlistPath), 'init.mp4'))
+
+      const esds = init.indexOf(Buffer.from('esds'))
+      expect(esds).toBeGreaterThan(0)
+      const asc = audioSpecificConfigFrom(init, esds)
+      expect(asc).not.toBeNull()
+      const audioObjectType = asc![0] >> 3
+      const channelConfiguration = (asc![1] >> 3) & 0x0f
+      expect(audioObjectType).toBe(2) // AAC-LC
+      expect(channelConfiguration).not.toBe(0) // 0 = in-band PCE — the form Chromium's MSE rejects
+      expect(channelConfiguration).toBe(6) // 5.1 — the standard configuration, channels kept
+
+      await service.stopTranscode('real-audio-pce')
     } finally {
       server.close()
       rmSync(fixtureDir, { recursive: true, force: true })
