@@ -6,6 +6,7 @@ import { PlayerStatsOverlay } from './PlayerStatsOverlay'
 import { PlayerSeekBar } from './PlayerSeekBar'
 import { VpnWarnings } from './VpnWarnings'
 import { useTranscodeFallback } from '../lib/useTranscodeFallback'
+import { createPlaylistStallTracker } from '../lib/playlistStall'
 import { useNumericChannelEntry } from '../lib/useNumericChannelEntry'
 import { useToolbarOverflow } from '../lib/useToolbarOverflow'
 import { useHoverAutoHide } from '../lib/useHoverAutoHide'
@@ -199,6 +200,14 @@ export function Player(): JSX.Element | null {
   // of how wide the window is otherwise.
   const [controlsRef, headerCompact] = useToolbarOverflow<HTMLDivElement>()
   const [playbackError, setPlaybackError] = useState<string | null>(null)
+  // A transient, self-clearing line for events the player handles on its own (a dead session
+  // being replaced mid-view) — distinct from `playbackError`, which wants a decision. Ported
+  // from the web sibling (allison-web-iptv v0.74.0).
+  const [statusNotice, setStatusNotice] = useState<string | null>(null)
+  // The stall detector's handler closes over `playbackError` from its registration render;
+  // this ref is how it sees an error that landed later in this same effect's lifetime.
+  const playbackErrorRef = useRef<string | null>(null)
+  playbackErrorRef.current = playbackError
   const [buffering, setBuffering] = useState(false)
   const [pipActive, setPipActive] = useState(false)
   const [reloadTick, setReloadTick] = useState(0)
@@ -390,6 +399,12 @@ export function Player(): JSX.Element | null {
     setHlsLevels([])
     setActiveHlsLevel(-1)
     beginTranscodeRun()
+    // "This channel isn't broadcasting" — ported from the web sibling (v0.74.0). A live
+    // playlist whose window never changes answers 200 forever while the buffer drains; the
+    // tracker declares the frozen window once, and the declaration below pauses the ladder
+    // instead of spending reloads and provider connections on a channel with no signal.
+    const playlistStall = createPlaylistStallTracker()
+    let sessionReplacements = 0
     let networkRetryCount = 0
     let mediaErrorRecoveryCount = 0
     let stallErrorRecoveries = 0
@@ -556,6 +571,8 @@ export function Player(): JSX.Element | null {
             }
           )
         ) {
+          sessionReplacements += 1
+          setStatusNotice('The stream session ended — restarting it…')
           return
         }
         setPlaybackError('Playback stalled and could not be recovered.')
@@ -706,6 +723,39 @@ export function Player(): JSX.Element | null {
       hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_event, data) => {
         setActiveHlsAudioTrack(data.id)
       })
+      hls.on(Hls.Events.FRAG_BUFFERED, () => {
+        // Fragments are flowing — whatever transient notice was up (a dead session being
+        // replaced) has resolved.
+        setStatusNotice(null)
+      })
+      // The not-broadcasting detector (see playlistStall above): only a frozen window whose
+      // playhead has drained to the buffer's end counts — a window sitting still while there
+      // is still buffer to play is just the live edge being quiet.
+      hls.on(Hls.Events.LEVEL_UPDATED, (_event, data) => {
+        const details = data.details
+        if (!details || playbackErrorRef.current) return
+        const stalled = playlistStall.sample({
+          at: Date.now(),
+          live: details.live,
+          startSN: details.startSN,
+          endSN: details.endSN
+        })
+        if (!stalled) return
+        const el = videoRef.current
+        if (!el || el.paused) return
+        const bufferedEnd = el.buffered.length > 0 ? el.buffered.end(el.buffered.length - 1) : 0
+        if (el.currentTime < bufferedEnd - 0.5) return
+        console.warn(
+          `[player] playlist window frozen at ${details.startSN}-${details.endSN} — declaring the channel not broadcasting`
+        )
+        if (hasFallbackActive) resetTranscodeFallback()
+        hls.destroy()
+        el.pause()
+        setPlaybackError(
+          'This channel does not appear to be broadcasting right now — its playlist has not advanced for 30 seconds. ' +
+            'Automatic retries are paused to spare the provider connection; press play to check again.'
+        )
+      })
       // Quality levels: hls.js exposes its own variant list, and only reports a *switch* — the
       // set itself has to be read from the instance once the manifest is parsed. Auto is hls.js's
       // own -1, kept as an explicit option rather than implied, because on a multi-variant source
@@ -821,8 +871,22 @@ export function Player(): JSX.Element | null {
                   }
                 )
               ) {
+                sessionReplacements += 1
+                // The replacement used to be silent — an unexplained freeze while a new ffmpeg
+                // spun up. Name it; the line clears itself when fragments flow again.
+                setStatusNotice('The stream session ended — restarting it…')
                 setPlaybackError(null)
                 return
+              }
+              if (hasFallbackActive) {
+                // A session channel whose restart budget is spent: the provider is dropping
+                // this channel, and replaying it cannot change that.
+                resetTranscodeFallback()
+                setPlaybackError(
+                  'The stream session keeps ending — the provider appears to be dropping this channel. Press play to try again.'
+                )
+                hls.destroy()
+                break
               }
               setPlaybackError(`Playback error: ${data.details} (gave up after ${MAX_NETWORK_RETRIES} retries)`)
               hls.destroy()
@@ -1939,6 +2003,9 @@ export function Player(): JSX.Element | null {
           <div className="player-error">No network connection — will resume automatically once you're back online.</div>
         )}
         {playbackError && isOnline && <div className="player-error">{playbackError}</div>}
+        {!playbackError && statusNotice && isOnline && (
+          <div className="player-error" role="status">{statusNotice}</div>
+        )}
         {transcoding && !playbackError && (
           <div className="player-buffering">
             <div className="spinner" />
