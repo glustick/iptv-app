@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ErrorData } from 'hls.js'
 import { clientCanDecodeHevc } from './hevcSupport'
 import { rememberedAudioIndex, pruneTranscodeMemory, transcodeMemoryKey } from './transcodeMemory'
+import { loadQualityMaxHeight } from './qualityPref'
 import { useAppStore } from '../store/useAppStore'
 import type { TranscodeMemoryEntry } from './types'
 
@@ -150,7 +151,7 @@ export function useTranscodeFallback(): {
   attemptRemuxRecovery: (originalUrl: string, onReload: () => void, onError?: (message: string) => void) => boolean
   // Why the current/last fallback run started — drives the status wording in Player.tsx. null
   // while nothing has run (or after reset()).
-  transcodeReason: 'audio' | 'raw-stream' | null
+  transcodeReason: 'audio' | 'raw-stream' | 'quality' | null
   tryFallbackForSilentAudio: (
     originalUrl: string,
     onReload: () => void,
@@ -214,6 +215,11 @@ export function useTranscodeFallback(): {
     onReload: () => void,
     onError?: (message: string) => void
   ) => void
+  // Stops the active live fallback and starts a fresh one (which re-derives the HEVC remedy, so
+  // a re-encode session comes back at the viewer's newly-chosen quality ceiling). True = a
+  // restart was issued (or one is already spawning); false = nothing to restart. Deliberately
+  // does NOT spend the remux-recovery budget — see restartLiveForQuality's own comment.
+  restartLiveForQuality: (originalUrl: string, onReload: () => void, onError?: (message: string) => void) => boolean
   // VOD/series equivalent of the live probe above — every audio and subtitle track the file
   // itself actually carries, probed once automatically on load (see probeVodTracks' own
   // comment for why this is proactive/automatic here but manual for Live TV). null until the
@@ -246,7 +252,7 @@ export function useTranscodeFallback(): {
   const chainRestartsUsedRef = useRef(0)
   const [transcoding, setTranscoding] = useState(false)
   const [hasFallbackActive, setHasFallbackActive] = useState(false)
-  const [transcodeReason, setTranscodeReason] = useState<'audio' | 'raw-stream' | null>(null)
+  const [transcodeReason, setTranscodeReason] = useState<'audio' | 'raw-stream' | 'quality' | null>(null)
   const [liveAudioTracks, setLiveAudioTracks] = useState<AudioTrackInfo[] | null>(null)
   const [probingLiveAudio, setProbingLiveAudio] = useState(false)
   const [activeLiveAudioTrackIndex, setActiveLiveAudioTrackIndex] = useState<number | null>(null)
@@ -330,7 +336,7 @@ export function useTranscodeFallback(): {
       onReload: () => void,
       onError?: (message: string) => void,
       audioStreamIndex = 0,
-      reason: 'audio' | 'raw-stream' = 'audio',
+      reason: 'audio' | 'raw-stream' | 'quality' = 'audio',
       // Runs once the session's output actually exists — the same moment onReload fires. The
       // remembered-outcome writes need success, not intent: recording a fix whose remux then
       // failed would make every later open skip detection and fail the same way with no
@@ -352,8 +358,14 @@ export function useTranscodeFallback(): {
       // connection slot with whatever plays next.
       const sessionId = crypto.randomUUID()
       transcodeSessionIdRef.current = sessionId
+      // The viewer's quality ceiling rides along on live sessions only (v0.75.0 port): read at
+      // post time so a choice made moments ago is the one that applies, and by every start path
+      // that funnels through here — the main process honors it only on the re-encode path, where
+      // a reshape is even possible; a copy session and every VOD remux (video is always copied
+      // there) ignore it.
+      const maxHeightOverride = isVod ? undefined : (loadQualityMaxHeight() ?? undefined)
       window.api.transcode
-        .start(originalUrl, isVod, sessionId, subtitleStreamIndex, audioStreamIndex)
+        .start(originalUrl, isVod, sessionId, subtitleStreamIndex, audioStreamIndex, maxHeightOverride)
         .then(({ url }) => {
           transcodedUrlRef.current = url
           setHasFallbackActive(true)
@@ -609,6 +621,35 @@ export function useTranscodeFallback(): {
     }
   }, [])
 
+  // Deliberately a restart, not a spend of the remux-recovery budget: changing the quality is a
+  // choice the viewer made, not a failure the chain recovered from, so chainRestartsUsedRef is
+  // untouched — the recovery ladder's give-up logic stays about dead sessions. Returns the same
+  // shapes attemptRemuxRecovery does: true when a session was restarted (or a spawn is already
+  // in flight, whose outcome the caller should wait out — its own cap was read when it started,
+  // exactly like the web sibling's hasSession() gate), false when there is no live fallback to
+  // restart. awaitingTranscodeRef alone cannot gate this: it stays true for an ACTIVE session's
+  // whole lifetime (cleared only by reset/beginRun/failure), and a playing session is precisely
+  // what this restart exists to replace.
+  const restartLiveForQuality = useCallback(
+    (originalUrl: string, onReload: () => void, onError?: (message: string) => void): boolean => {
+      if (!hasFallbackActive && !transcodeSessionIdRef.current) return false
+      if (!hasFallbackActive && awaitingTranscodeRef.current) return true
+      const staleSessionId = transcodeSessionIdRef.current
+      if (staleSessionId) {
+        window.api.transcode
+          .stop(staleSessionId)
+          .catch((err) => console.error('[transcode] failed to stop session before quality restart:', err))
+      }
+      triedTranscodeRef.current = false
+      awaitingTranscodeRef.current = false
+      transcodedUrlRef.current = null
+      setHasFallbackActive(false)
+      startFallback(originalUrl, false, 0, onReload, onError, 0, 'quality')
+      return true
+    },
+    [startFallback, hasFallbackActive]
+  )
+
   // Restarts the whole transcode fallback to remux a specific raw audio track (same underlying
   // mechanism as switchLiveAudioTrack, just isVod: true) — carries the currently-selected
   // subtitle track (if any) along unchanged, rather than resetting it back to "off" every time
@@ -662,6 +703,7 @@ export function useTranscodeFallback(): {
     probedLiveSubtitleTrackCount,
     probeLiveAudioTracks,
     switchLiveAudioTrack,
+    restartLiveForQuality,
     vodAudioTracks,
     vodSubtitleTracks,
     probingVodTracks,

@@ -65,7 +65,8 @@ const api = {
       isVod: boolean,
       sessionId: string,
       subtitleStreamIndex?: number,
-      audioStreamIndex?: number
+      audioStreamIndex?: number,
+      maxHeight?: number
     ) =>
       ipcRenderer.invoke(
         'transcode:start',
@@ -73,7 +74,8 @@ const api = {
         isVod,
         sessionId,
         subtitleStreamIndex,
-        audioStreamIndex
+        audioStreamIndex,
+        maxHeight
       ) as Promise<{
         sessionId: string
         url: string

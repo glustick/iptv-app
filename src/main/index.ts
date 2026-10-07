@@ -1238,7 +1238,10 @@ app.whenReady().then(async () => {
       isVod: boolean,
       sessionId: string,
       subtitleStreamIndex?: number,
-      audioStreamIndex?: number
+      audioStreamIndex?: number,
+      // The viewer's quality ceiling (v0.75.0 port): passed through raw — transcodeService's
+      // normalizeMaxHeight is the one place that decides what is a cap, so garbage dies there.
+      maxHeight?: number
     ) => {
       // playlistPath's filename varies: usually playlist.m3u8, but master.m3u8 when
       // startTranscode detected and included a subtitle rendition (see transcodeService.ts) —
@@ -1250,7 +1253,11 @@ app.whenReady().then(async () => {
         isVod,
         sessionId,
         subtitleStreamIndex,
-        audioStreamIndex
+        audioStreamIndex,
+        undefined,
+        undefined,
+        undefined,
+        maxHeight
       )
       return {
         sessionId,

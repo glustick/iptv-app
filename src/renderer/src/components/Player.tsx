@@ -6,6 +6,7 @@ import { PlayerStatsOverlay } from './PlayerStatsOverlay'
 import { PlayerSeekBar } from './PlayerSeekBar'
 import { VpnWarnings } from './VpnWarnings'
 import { useTranscodeFallback } from '../lib/useTranscodeFallback'
+import { loadQualityMaxHeight, saveQualityMaxHeight } from '../lib/qualityPref'
 import { createPlaylistStallTracker } from '../lib/playlistStall'
 import { useNumericChannelEntry } from '../lib/useNumericChannelEntry'
 import { useToolbarOverflow } from '../lib/useToolbarOverflow'
@@ -304,6 +305,10 @@ export function Player(): JSX.Element | null {
   // change — i.e. playback genuinely moving — resets the ladder.
   const stallLadderRef = useRef({ lastSignature: '', lastProgressAt: 0, recoveries: 0, ignoreNextProgress: false })
   const [transcodeElapsedSeconds, setTranscodeElapsedSeconds] = useState(0)
+  // The viewer's quality ceiling for the re-encode tier (v0.75.0 port): Source keeps what the
+  // provider sent; 1080p/720p caps the picture only on channels this machine plays through the
+  // video re-encode. Persisted per device, so it applies to every later session.
+  const [qualityMaxHeight, setQualityMaxHeight] = useState<number | null>(() => loadQualityMaxHeight())
 
   const {
     transcoding,
@@ -322,6 +327,7 @@ export function Player(): JSX.Element | null {
     probedLiveSubtitleTrackCount,
     probeLiveAudioTracks,
     switchLiveAudioTrack,
+    restartLiveForQuality,
     vodAudioTracks,
     vodSubtitleTracks,
     probingVodTracks,
@@ -1757,6 +1763,36 @@ export function Player(): JSX.Element | null {
                 </select>
               </label>
             )}
+            {// The viewer's quality ceiling for the re-encode tier (v0.75.0 port). Applies only
+            // to channels this machine plays through the video re-encode — the one path where
+            // anything reshapes the picture; native playback, copy remuxes and VOD are untouched.
+            // Changing it while a live fallback is playing restarts that session at the new
+            // height (the fresh session re-derives the HEVC remedy itself); on any other channel
+            // it is armed for whenever that tier engages.
+            nowPlaying.kind === 'live' && (
+              <label className="player-track-select" title="Re-encode quality">
+                <span aria-hidden="true">🎬</span>
+                <span className="control-label">Re-encode</span>
+                <select
+                  value={qualityMaxHeight ?? ''}
+                  title="Caps the picture only on channels this machine plays through the video re-encode — Source keeps the provider's own resolution."
+                  onChange={(e) => {
+                    const value = e.target.value === '' ? null : Number(e.target.value)
+                    setQualityMaxHeight(value)
+                    saveQualityMaxHeight(value)
+                    restartLiveForQuality(
+                      nowPlaying.url,
+                      () => setReloadTick((t) => t + 1),
+                      (message) => setPlaybackError(`Could not restart the stream at the new quality: ${message}`)
+                    )
+                  }}
+                >
+                  <option value="">Source</option>
+                  <option value="1080">1080p</option>
+                  <option value="720">720p</option>
+                </select>
+              </label>
+            )}
             {// hls.js's own, free/instant alternate-audio renditions — every option here is
             // already loaded in the current source's own playlist, so picking one is just
             // `hls.audioTrack = id`, no restart of anything.
@@ -2011,7 +2047,11 @@ export function Player(): JSX.Element | null {
             <div className="spinner" />
             <span>
               {nowPlaying.kind === 'live' ? (
-                transcodeReason === 'raw-stream' ? (
+                transcodeReason === 'quality' ? (
+                  // A deliberate quality change restarted this session (see the Re-encode
+                  // select) — name it, or it reads identically to a failure recovery.
+                  `Restarting this channel at the new quality… (${formatElapsed(transcodeElapsedSeconds)})`
+                ) : transcodeReason === 'raw-stream' ? (
                   // The provider serves this channel as a raw MPEG-TS byte stream with no HLS
                   // playlist at all (see isRawStreamManifestError) — say what's actually
                   // happening rather than implying an audio problem.

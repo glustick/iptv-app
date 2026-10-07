@@ -175,7 +175,21 @@ export interface TranscodeService {
     // map. Unlike subtitles this applies to Live TV too, not just VOD/series — see
     // AUDIO_STREAM_PATTERN's own comment for why a live channel needs this at all. Defaults to
     // the first audio stream, matching every existing call site's previous hardcoded behavior.
-    audioStreamIndex?: number
+    audioStreamIndex?: number,
+    // Internal — set only by startTranscode's own HEVC respawns below; external callers pass
+    // undefined. Lossless copy + hvc1 tag when the client can decode HEVC.
+    tagHvc1?: boolean,
+    // Internal — set only by the timeout retry's fresh-attempt respawn below; external callers
+    // pass undefined.
+    isRetry?: boolean,
+    // Internal — set only by the HEVC self-restart's re-encode path (see canDecodeHevc); this
+    // attempt encodes video to H.264 instead of copying it. Mutually exclusive with tagHvc1.
+    reencodeVideo?: boolean,
+    // The viewer's quality ceiling (v0.75.0 port): a per-session height cap honored only by the
+    // video re-encode path — a copy cannot reshape, so every copy session (hvc1 respawns
+    // included) and every VOD remux ignores it. Normalized by normalizeMaxHeight; null/absent
+    // means Source — the provider's own resolution, never silently changed.
+    maxHeightOverride?: number | null
   ): Promise<{ sessionId: string; playlistPath: string; subtitleTracks: SubtitleTrackInfo[] }>
   stopTranscode(sessionId: string): Promise<void>
   serveTranscodeFile(url: string, res: ServerResponse): Promise<void>
@@ -209,6 +223,29 @@ const LIVE_H264_REENCODE_ARGS = [
   '-force_key_frames',
   'expr:gte(t,n_forced*4)'
 ]
+
+// The viewer's quality ceiling (ported from the web sibling's v0.75.0): only a sane positive
+// integer in these bounds is a cap — anything else reads as "not set", so a malformed value can
+// never reach the encoder's filter chain. 240 is the smallest height still worth encoding;
+// 2160 covers every source this provider serves.
+export const MAX_HEIGHT_MIN = 240
+export const MAX_HEIGHT_MAX = 2160
+
+export function normalizeMaxHeight(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= MAX_HEIGHT_MIN && value <= MAX_HEIGHT_MAX
+    ? Math.round(value)
+    : null
+}
+
+// The `-vf` for a capped re-encode. `min(<cap>,ih)` means a source at or under the cap is
+// passed through at its own resolution — the app never silently *upscales* — and only a taller
+// source is scaled down. `-2` keeps the aspect ratio and lands on an even width, which h264
+// requires. The single quotes are ffmpeg's own filtergraph quoting (stripped by its filter
+// parser, not by a shell — this argv is spawned directly), the exact shape the web sibling's
+// re-encode tier verified against a real 480p source (allison-web-iptv v0.75.0: cap 240 → 320x240).
+export function videoHeightScaleFilter(maxHeight: number): string {
+  return `scale=-2:'min(${Math.round(maxHeight)},ih)'`
+}
 
 // The layouts the AAC audio encode is pinned to — see the `-af` call site's comment for the
 // measured PCE/channelConfiguration=0 failure this prevents (web sibling, allison-web-iptv
@@ -293,7 +330,12 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
     isRetry = false,
     // Internal: set by the HEVC self-restart's re-encode path below (see canDecodeHevc) — this
     // attempt encodes video to H.264 instead of copying it. Mutually exclusive with tagHvc1.
-    reencodeVideo = false
+    reencodeVideo = false,
+    // The viewer's quality ceiling (v0.75.0 port), armed by the renderer on session start and
+    // carried through every respawn below. It applies ONLY where a reshape is even possible —
+    // the re-encode path; a copy cannot reshape, so the hvc1-copy respawn ignores it. Normalized
+    // here (not at the IPC boundary) so this is the one place that decides what is a cap.
+    maxHeightOverride: number | null = null
   ): Promise<{ sessionId: string; playlistPath: string; subtitleTracks: SubtitleTrackInfo[] }> {
     const ffmpegPath = await deps.resolveFfmpegPath()
     if (!ffmpegPath) {
@@ -307,6 +349,10 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
     }
     const dir = await mkdtemp(join(tmpdir(), 'allisoniptv-transcode-'))
     const playlistFile = join(dir, 'playlist.m3u8')
+    // One normalization, here: the cap only exists on the re-encode path (a copy cannot
+    // reshape), and anything outside the sane bounds reads as "not set" rather than reaching
+    // the filter chain (see normalizeMaxHeight).
+    const heightCap = reencodeVideo ? normalizeMaxHeight(maxHeightOverride) : null
 
     const proc = spawn(ffmpegPath, [
       '-y',
@@ -368,6 +414,10 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
       // Only for the HEVC-on-a-client-that-cannot-decode-it case (see canDecodeHevc): a copy
       // cannot be used there, so the picture exists at all only if the video is re-encoded.
       ...(reencodeVideo ? LIVE_H264_REENCODE_ARGS : []),
+      // The viewer's quality cap rides only on the re-encode (see the parameter's doc): a copy
+      // session — including every hvc1 respawn — never reshapes, so no filter there regardless
+      // of what the viewer chose.
+      ...(reencodeVideo && heightCap ? ['-vf', videoHeightScaleFilter(heightCap)] : []),
       // Chromium's MSE rejects ffmpeg's default hev1 sample entry for HEVC (see
       // VIDEO_STREAM_PATTERN) — this tag is what its fMP4 HEVC support actually requires. Only
       // ever set after the source is KNOWN to be HEVC (the self-restart below): tagging an
@@ -667,17 +717,8 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
           // would show nothing at all. Either one disarms the watcher above for this second
           // attempt, so this cannot loop.
           return (deps.canDecodeHevc?.() ?? true)
-            ? startTranscode(sourceUrl, isVod, sessionId, subtitleStreamIndex, audioStreamIndex, true)
-            : startTranscode(
-                sourceUrl,
-                isVod,
-                sessionId,
-                subtitleStreamIndex,
-                audioStreamIndex,
-                false,
-                false,
-                true
-              )
+            ? startTranscode(sourceUrl, isVod, sessionId, subtitleStreamIndex, audioStreamIndex, true, false, false, maxHeightOverride)
+            : startTranscode(sourceUrl, isVod, sessionId, subtitleStreamIndex, audioStreamIndex, false, false, true, maxHeightOverride)
         }
         // ffmpeg can legitimately exit clean (code 0, e.g. a very short clip) after writing the
         // video/audio playlist but before the subtitle rendition catches up — that's still a
@@ -694,7 +735,7 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
         // whole fallback exists for. subtitleStreamIndex >= 0 guards against retrying forever —
         // the retry itself always passes -1, which can never hit this same failure again.
         if (subtitleStreamIndex >= 0 && SUBTITLE_CODEC_INCOMPATIBLE_PATTERN.test(session.stderrTail.join('\n'))) {
-          return startTranscode(sourceUrl, isVod, sessionId, -1, audioStreamIndex)
+          return startTranscode(sourceUrl, isVod, sessionId, -1, audioStreamIndex, false, false, false, maxHeightOverride)
         }
         // A fast-enough transcode can also finish before this loop has *observed* the playlist at
         // all, which leaves videoReadyAt null even though ffmpeg wrote everything it was asked for
@@ -751,7 +792,8 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
         audioStreamIndex,
         tagHvc1,
         true,
-        reencodeVideo
+        reencodeVideo,
+        maxHeightOverride
       )
     }
     log(`[transcode] session ${sessionId}: gave up — no output after retry`)

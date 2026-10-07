@@ -59,7 +59,11 @@ interface TranscodeAPI {
     isVod: boolean,
     sessionId: string,
     subtitleStreamIndex?: number,
-    audioStreamIndex?: number
+    audioStreamIndex?: number,
+    // The viewer's quality ceiling (v0.75.0 port): caps the re-encode tier's height when this
+    // client can only play a channel through it. Null/absent = Source. Only ever honored by
+    // the video re-encode path — a copy session cannot reshape.
+    maxHeight?: number
   ) => Promise<{ sessionId: string; url: string; subtitleTracks: SubtitleTrackInfo[] }>
   stop: (sessionId: string) => Promise<void>
   // One-shot: tells the main process whether this client can decode HEVC from fragmented MP4,

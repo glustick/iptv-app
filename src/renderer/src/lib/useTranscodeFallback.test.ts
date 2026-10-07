@@ -14,6 +14,7 @@ import {
 } from './useTranscodeFallback'
 import { useAppStore } from '../store/useAppStore'
 import { DEFAULT_SETTINGS } from './types'
+import { saveQualityMaxHeight } from './qualityPref'
 import { TRANSCODE_MEMORY_MAX_ENTRIES } from './transcodeMemory'
 import type { TranscodeMemoryEntry } from './types'
 import type { ErrorData } from 'hls.js'
@@ -200,7 +201,7 @@ describe('transcode memory (VOD/series)', () => {
     await act(async () => {
       result.current.startRememberedVodFallback(PLAY_URL, 2, onReload)
     })
-    expect(startMock).toHaveBeenCalledWith(PLAY_URL, true, expect.any(String), 0, 2)
+    expect(startMock).toHaveBeenCalledWith(PLAY_URL, true, expect.any(String), 0, 2, undefined)
     expect(onReload).toHaveBeenCalled()
     // Success re-confirms the entry (fresh confirmedAt) rather than dropping or duplicating it.
     const entry = useAppStore.getState().settings.transcodeMemory['movie:1234']
@@ -274,7 +275,7 @@ describe('transcode memory (VOD/series)', () => {
     await act(async () => {
       result.current.tryFallbackForSilentAudio(PLAY_URL, onReload)
     })
-    expect(startMock).toHaveBeenCalledWith(PLAY_URL, true, expect.any(String), 0, 0)
+    expect(startMock).toHaveBeenCalledWith(PLAY_URL, true, expect.any(String), 0, 0, undefined)
     expect(useAppStore.getState().settings.transcodeMemory['movie:1234']).toMatchObject({
       kind: 'audio',
       audioIndex: 0,
@@ -325,5 +326,115 @@ describe('transcode memory (VOD/series)', () => {
     expect(next['movie:0']).toBeUndefined()
     expect(next['movie:1']).toBeDefined()
     expect(next['movie:77777']).toBeDefined()
+  })
+})
+
+// --- the viewer's quality ceiling (v0.75.0 port) ---------------------------------------------
+//
+// The cap is read at post time inside startFallback and forwarded as transcode:start's sixth
+// argument; the main process honors it only on the re-encode path. What these pin down: a live
+// start carries the viewer's current choice (and a choice made between starts is the one the
+// next start sees), a VOD start never carries one (its video is always copied), and the
+// quality-change restart stops the stale session and starts a fresh live one without touching
+// the remux-recovery budget.
+describe('quality ceiling (live re-encode cap)', () => {
+  const PLAY_URL = 'http://provider.example:8080/live/user/pass/42'
+
+  let startMock: ReturnType<typeof vi.fn>
+  let stopMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    startMock = vi.fn(() => Promise.resolve({ url: 'http://127.0.0.1:9/transcode/session/playlist.m3u8' }))
+    stopMock = vi.fn(() => Promise.resolve())
+    ;(window as unknown as { api: unknown }).api = {
+      transcode: {
+        setHevcSupport: vi.fn(() => Promise.resolve()),
+        start: startMock,
+        stop: stopMock
+      },
+      store: { get: vi.fn(() => Promise.resolve(undefined)), set: vi.fn(() => Promise.resolve()) }
+    }
+    useAppStore.setState({ nowPlaying: null, settings: DEFAULT_SETTINGS })
+    saveQualityMaxHeight(null)
+  })
+
+  afterEach(() => {
+    saveQualityMaxHeight(null)
+    cleanup()
+  })
+
+  it('forwards the viewer\'s ceiling on a live start', async () => {
+    saveQualityMaxHeight(720)
+    const { result } = renderHook(() => useTranscodeFallback())
+    await act(async () => {
+      result.current.tryFallbackForSilentAudio(PLAY_URL, vi.fn(), undefined, false)
+    })
+    expect(startMock).toHaveBeenCalledWith(PLAY_URL, false, expect.any(String), 0, 0, 720)
+  })
+
+  it('never carries a ceiling on a VOD start — its video is always copied', async () => {
+    saveQualityMaxHeight(720)
+    useAppStore.setState({
+      nowPlaying: {
+        kind: 'movie',
+        streamId: 1234,
+        name: 'A Movie',
+        url: PLAY_URL,
+        extension: 'mkv',
+        tvArchive: 0,
+        icon: ''
+      }
+    })
+    const { result } = renderHook(() => useTranscodeFallback())
+    await act(async () => {
+      result.current.startRememberedVodFallback(PLAY_URL, 0, vi.fn())
+    })
+    expect(startMock).toHaveBeenCalledWith(PLAY_URL, true, expect.any(String), 0, 0, undefined)
+  })
+
+  it('reads the choice at post time — a change between starts is the one the next start applies', async () => {
+    const { result } = renderHook(() => useTranscodeFallback())
+    saveQualityMaxHeight(1080)
+    await act(async () => {
+      result.current.tryFallbackForSilentAudio(PLAY_URL, vi.fn(), undefined, false)
+    })
+    // The next start models a fresh open of the channel: reset() is what a channel change (or
+    // the player's own re-attach) runs, and the pref is read again at that start, not cached.
+    saveQualityMaxHeight(720)
+    await act(async () => {
+      result.current.reset()
+      result.current.tryFallbackForSilentAudio(PLAY_URL, vi.fn(), undefined, false)
+    })
+    expect(startMock).toHaveBeenNthCalledWith(1, PLAY_URL, false, expect.any(String), 0, 0, 1080)
+    expect(startMock).toHaveBeenNthCalledWith(2, PLAY_URL, false, expect.any(String), 0, 0, 720)
+  })
+
+  it('restartLiveForQuality stops the stale session and starts a fresh live one', async () => {
+    saveQualityMaxHeight(720)
+    const { result } = renderHook(() => useTranscodeFallback())
+    await act(async () => {
+      result.current.tryFallbackForSilentAudio(PLAY_URL, vi.fn(), undefined, false)
+    })
+    expect(startMock).toHaveBeenCalledTimes(1)
+    const firstSessionId = startMock.mock.calls[0][2]
+    let restarted = false
+    await act(async () => {
+      restarted = result.current.restartLiveForQuality(PLAY_URL, vi.fn())
+    })
+    expect(restarted).toBe(true)
+    expect(stopMock).toHaveBeenCalledWith(firstSessionId)
+    expect(startMock).toHaveBeenCalledTimes(2)
+    expect(startMock).toHaveBeenLastCalledWith(PLAY_URL, false, expect.any(String), 0, 0, 720)
+  })
+
+  it('restartLiveForQuality reports false when nothing is playing through the fallback', () => {
+    const { result } = renderHook(() => useTranscodeFallback())
+    let restarted = true
+    act(() => {
+      restarted = result.current.restartLiveForQuality(PLAY_URL, vi.fn())
+    })
+    expect(restarted).toBe(false)
+    expect(startMock).not.toHaveBeenCalled()
+    expect(stopMock).not.toHaveBeenCalled()
   })
 })

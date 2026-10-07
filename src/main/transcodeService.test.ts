@@ -5,7 +5,14 @@ import { tmpdir } from 'os'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
 import { spawn } from 'child_process'
 import ffmpegStaticPath from 'ffmpeg-static'
-import { AUDIO_CHANNEL_LAYOUT_FILTER, createTranscodeService, type TranscodeService, type TranscodeServiceDeps } from './transcodeService'
+import {
+  AUDIO_CHANNEL_LAYOUT_FILTER,
+  createTranscodeService,
+  normalizeMaxHeight,
+  videoHeightScaleFilter,
+  type TranscodeService,
+  type TranscodeServiceDeps
+} from './transcodeService'
 
 const FAKE_FFMPEG = join(import.meta.dirname, 'test-fixtures/fake-ffmpeg.sh')
 chmodSync(FAKE_FFMPEG, 0o755)
@@ -344,6 +351,127 @@ describe('startTranscode', () => {
       rmSync(argvFile, { force: true })
       rmSync(`${argvFile}.hevc-restarted`, { force: true })
     }
+  })
+
+  // The viewer's quality ceiling (v0.75.0 port): the cap reaches the re-encode respawn through
+  // every internal recursion (the HEVC self-restart is the only path that ever re-encodes), and
+  // a copy — which cannot reshape — never grows a filter, whatever the viewer chose.
+  describe('quality cap (maxHeightOverride)', () => {
+    it('caps the re-encode respawn at the requested height', async () => {
+      const service = track(
+        makeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG), canDecodeHevc: () => false })
+      )
+      const argvFile = join(tmpdir(), `allisoniptv-argv-${process.pid}-${Math.random().toString(16).slice(2)}`)
+      try {
+        await withFakeFfmpegMode('capture_argv_hevc', () =>
+          withEnv({ FAKE_FFMPEG_ARGV_FILE: argvFile }, () =>
+            service.startTranscode('irrelevant-source', false, 's1', 0, 0, false, false, false, 720)
+          )
+        )
+        const respawnedArgv = readFileSync(argvFile, 'utf8').split('\n').filter(Boolean)
+        expect(respawnedArgv[respawnedArgv.indexOf('-c:v') + 1]).toBe('libx264')
+        expect(respawnedArgv[respawnedArgv.indexOf('-vf') + 1]).toBe(videoHeightScaleFilter(720))
+        await service.stopTranscode('s1')
+      } finally {
+        rmSync(argvFile, { force: true })
+        rmSync(`${argvFile}.hevc-restarted`, { force: true })
+      }
+    })
+
+    it('leaves the re-encode uncapped when no ceiling is set', async () => {
+      const service = track(
+        makeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG), canDecodeHevc: () => false })
+      )
+      const argvFile = join(tmpdir(), `allisoniptv-argv-${process.pid}-${Math.random().toString(16).slice(2)}`)
+      try {
+        await withFakeFfmpegMode('capture_argv_hevc', () =>
+          withEnv({ FAKE_FFMPEG_ARGV_FILE: argvFile }, () =>
+            service.startTranscode('irrelevant-source', false, 's1')
+          )
+        )
+        const respawnedArgv = readFileSync(argvFile, 'utf8').split('\n').filter(Boolean)
+        expect(respawnedArgv[respawnedArgv.indexOf('-c:v') + 1]).toBe('libx264')
+        expect(respawnedArgv).not.toContain('-vf')
+        await service.stopTranscode('s1')
+      } finally {
+        rmSync(argvFile, { force: true })
+        rmSync(`${argvFile}.hevc-restarted`, { force: true })
+      }
+    })
+
+    it('reads an out-of-range ceiling as Source, never as a broken filter', async () => {
+      const service = track(
+        makeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG), canDecodeHevc: () => false })
+      )
+      const argvFile = join(tmpdir(), `allisoniptv-argv-${process.pid}-${Math.random().toString(16).slice(2)}`)
+      try {
+        await withFakeFfmpegMode('capture_argv_hevc', () =>
+          withEnv({ FAKE_FFMPEG_ARGV_FILE: argvFile }, () =>
+            service.startTranscode('irrelevant-source', false, 's1', 0, 0, false, false, false, 5000)
+          )
+        )
+        const respawnedArgv = readFileSync(argvFile, 'utf8').split('\n').filter(Boolean)
+        expect(respawnedArgv[respawnedArgv.indexOf('-c:v') + 1]).toBe('libx264')
+        expect(respawnedArgv).not.toContain('-vf')
+        await service.stopTranscode('s1')
+      } finally {
+        rmSync(argvFile, { force: true })
+        rmSync(`${argvFile}.hevc-restarted`, { force: true })
+      }
+    })
+
+    it('never caps a copy session — the hvc1 respawn included', async () => {
+      const service = track(makeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG), canDecodeHevc: () => true }))
+      const argvFile = join(tmpdir(), `allisoniptv-argv-${process.pid}-${Math.random().toString(16).slice(2)}`)
+      try {
+        await withFakeFfmpegMode('capture_argv_hevc', () =>
+          withEnv({ FAKE_FFMPEG_ARGV_FILE: argvFile }, () =>
+            service.startTranscode('irrelevant-source', false, 's1', 0, 0, false, false, false, 720)
+          )
+        )
+        const respawnedArgv = readFileSync(argvFile, 'utf8').split('\n').filter(Boolean)
+        expect(respawnedArgv).toContain('hvc1')
+        expect(respawnedArgv).not.toContain('-vf')
+        await service.stopTranscode('s1')
+      } finally {
+        rmSync(argvFile, { force: true })
+        rmSync(`${argvFile}.hevc-restarted`, { force: true })
+      }
+    })
+
+    it('ignores the cap on an ordinary copy session entirely', async () => {
+      const service = track(makeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG) }))
+      const argvFile = join(tmpdir(), `allisoniptv-argv-${process.pid}-${Math.random().toString(16).slice(2)}`)
+      try {
+        await withFakeFfmpegMode('capture_argv', () =>
+          withEnv({ FAKE_FFMPEG_ARGV_FILE: argvFile }, () =>
+            service.startTranscode('irrelevant-source', false, 's1', 0, 0, false, false, false, 720)
+          )
+        )
+        const argv = readFileSync(argvFile, 'utf8').split('\n').filter(Boolean)
+        expect(argv[argv.indexOf('-c:v') + 1]).toBe('copy')
+        expect(argv).not.toContain('-vf')
+        await service.stopTranscode('s1')
+      } finally {
+        rmSync(argvFile, { force: true })
+      }
+    })
+
+    it('normalizeMaxHeight accepts only sane integers inside the bounds', () => {
+      expect(normalizeMaxHeight(720)).toBe(720)
+      expect(normalizeMaxHeight(720.4)).toBe(720)
+      expect(normalizeMaxHeight(240)).toBe(240)
+      expect(normalizeMaxHeight(2160)).toBe(2160)
+      expect(normalizeMaxHeight(0)).toBeNull()
+      expect(normalizeMaxHeight(-720)).toBeNull()
+      expect(normalizeMaxHeight(239)).toBeNull()
+      expect(normalizeMaxHeight(2161)).toBeNull()
+      expect(normalizeMaxHeight(Number.NaN)).toBeNull()
+      expect(normalizeMaxHeight(Number.POSITIVE_INFINITY)).toBeNull()
+      expect(normalizeMaxHeight('720')).toBeNull()
+      expect(normalizeMaxHeight(null)).toBeNull()
+      expect(normalizeMaxHeight(undefined)).toBeNull()
+    })
   })
 
   // Confirmed live 2026-09-26: the provider's live edge intermittently accepts a connection
@@ -977,6 +1105,72 @@ describe('real ffmpeg integration', () => {
       rmSync(fixtureDir, { recursive: true, force: true })
     }
   }, 30000)
+
+  // The quality cap's end-to-end proof, mirroring the web sibling's (allison-web-iptv v0.75.0):
+  // a 640x480 source re-encoded with a 240 ceiling must come out 320x240 — actually reshaped,
+  // aspect preserved, and only ever DOWN. The height is read from the produced init segment's
+  // own avc1 sample entry (width/height are fixed-offset fields in the VisualSampleEntry: 24 and
+  // 26 bytes into the box body), not from any log line.
+  it('caps a real re-encode at the requested height', async () => {
+    if (!ffmpegStaticPath) throw new Error('ffmpeg-static did not resolve a binary for this platform')
+
+    const fixtureDir = mkdtempSync(join(tmpdir(), 'allisoniptv-test-fixture-'))
+    const inputPath = join(fixtureDir, 'synthetic-480p-input.mkv')
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn(ffmpegStaticPath as string, [
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        'testsrc=duration=8:size=640x480:rate=10',
+        '-f',
+        'lavfi',
+        '-i',
+        'sine=frequency=440:duration=8',
+        '-c:v',
+        'libx264',
+        '-preset',
+        'ultrafast',
+        '-g',
+        '10',
+        '-keyint_min',
+        '10',
+        '-c:a',
+        'ac3',
+        inputPath
+      ])
+      proc.on('error', reject)
+      proc.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`fixture build exited ${code}`))))
+    })
+
+    const { url: originUrl, server } = await startSyntheticOrigin(inputPath)
+    try {
+      const service = track(
+        createTranscodeService({
+          resolveFfmpegPath: resolverFor(ffmpegStaticPath as string),
+          liveDeadlineMs: 30000,
+          pollIntervalMs: 200
+        })
+      )
+
+      // reencodeVideo is an internal parameter (the production path is the HEVC self-restart),
+      // driven directly here so the real encoder runs the exact argv a capped re-encode builds.
+      const result = await service.startTranscode(originUrl, false, 'real-cap', 0, 0, false, false, true, 240)
+
+      expect(readFileSync(result.playlistPath, 'utf8')).toContain('#EXTM3U')
+      const dir = join(result.playlistPath, '..')
+      const init = readFileSync(join(dir, 'init.mp4'))
+      const avc1 = init.indexOf('avc1')
+      expect(avc1).toBeGreaterThan(0)
+      expect(init.readUInt16BE(avc1 + 4 + 24)).toBe(320)
+      expect(init.readUInt16BE(avc1 + 4 + 26)).toBe(240)
+
+      await service.stopTranscode('real-cap')
+    } finally {
+      server.close()
+      rmSync(fixtureDir, { recursive: true, force: true })
+    }
+  }, 45000)
 
   // Runs a real ffmpeg pass over one already-produced HLS segment and returns its RMS amplitude,
   // computed directly from raw decoded PCM samples — not by scraping ffmpeg's own free-text log
