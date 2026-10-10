@@ -417,6 +417,20 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
   `node_modules`/`out`/`dist`/`.git` to local disk, symlink `node_modules` back, build there) —
   electron-vite writes `out/` onto the SMB share and electron-builder reading it straight back is
   the stale-read corruption class; one such bundle shipped-hung before this was understood.
+  **The blocker, precisely (2026-10-11): the verification machine now blocks the CDP path
+  itself.** Inbound loopback data to these app bundles stops being serviced — a `--remote-
+  debugging-port` listener binds and prints its URL, TCP handshakes complete at kernel level, and
+  the DevTools thread then waits on its kqueue forever; identical for the **v0.13.0 release
+  artifact** (which verified cleanly over CDP on 2026-10-07) and fresh builds, sandboxed or not,
+  macOS firewall off, renderer helpers alive and the app's own event loop running. The failure
+  then moved layers during the 2026-10-11 session: CDP over `--remote-debugging-pipe` worked for
+  a window (browser-level commands answered instantly, proving the app's CDP surface itself is
+  healthy), and later page targets stopped appearing at all. This is machine state, not app code
+  — it started mid-session with no repo change (the `spawn /bin/zsh ENOENT` wedge and AppleEvent
+  timeouts of the same hours point the same direction), and a reboot or whatever OS-level thing
+  changed is the honest next step, not more app-side work. The smoke harness now runs CDP over
+  the pipe transport (commit `0f95867`) — bounded per request, loud on failure — so whenever the
+  machine cooperates again, the whole pass runs unchanged.
 
 - **Cache the guide and the sports fixtures — once a day, not once a launch (requested 2026-09-28;
   the guide half is DONE 2026-09-28, sports remains).**
