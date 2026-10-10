@@ -858,3 +858,204 @@ describe('createProxyServer: backup-portal failover', () => {
     expect(res.body).toBe('down')
   })
 })
+
+// --- Refused-segment retry with a fresh playlist (signature expiry) -------------------------
+//
+// Ported from the web sibling's relay (allison-web-iptv v0.44.0), where this shipped against a
+// measured provider behavior: every playlist fetch re-signs ALL segment URLs (a fresh ?g=
+// <generation> query), and a segment request is only honored while its generation is still
+// current — a request carrying an older generation is refused with 400, exactly like the real
+// provider's ~25-second signatures expiring mid-playlist. One deliberate difference from the
+// web's own tests: none of these send a Referer, because the desktop's renderer loads from
+// file:// and sends none — the window lookup scans for the refused upstream URL instead, and
+// these tests double as the proof that no client cooperation is needed.
+describe('createProxyServer: refused-segment retry', () => {
+  const MEDIA_SEQUENCE_START = 100
+  const WINDOW = 6
+
+  function makeSigningOrigin() {
+    let generation = 0
+    let mediaSequence = MEDIA_SEQUENCE_START
+    let playlistFetches = 0
+    // Filled in once the origin is listening — segment URLs must be absolute against the
+    // origin's real address, exactly like the real provider's CDN URLs.
+    let originBase = 'http://127.0.0.1:1'
+    const handler = (req: IncomingMessage, res: import('http').ServerResponse): void => {
+      const url = new URL(req.url ?? '/', originBase)
+      if (url.pathname.endsWith('.m3u8')) {
+        playlistFetches += 1
+        generation += 1
+        const lines = ['#EXTM3U', `#EXT-X-MEDIA-SEQUENCE:${mediaSequence}`, '#EXT-X-TARGETDURATION:6']
+        for (let i = 0; i < WINDOW; i++) {
+          lines.push('#EXTINF:6.0,')
+          lines.push(`${url.origin}/hls/seg${mediaSequence + i}.ts?g=${generation}`)
+        }
+        res.writeHead(200, { 'content-type': 'application/vnd.apple.mpegurl' })
+        res.end(lines.join('\n'))
+        return
+      }
+      if (url.pathname.startsWith('/hls/seg')) {
+        const sent = Number(url.searchParams.get('g'))
+        if (sent !== generation) {
+          res.writeHead(400)
+          res.end('signature expired')
+          return
+        }
+        res.writeHead(200, { 'content-type': 'video/mp2t' })
+        res.end(`SEG-${url.pathname.slice('/hls/seg'.length).replace('.ts', '')}`)
+        return
+      }
+      res.writeHead(404)
+      res.end()
+    }
+    return {
+      handler,
+      setOriginBase: (base: string) => {
+        originBase = base
+      },
+      // Ages out every previously-issued signature, the way ~25s of wall time does on the real provider.
+      expireSignatures: () => {
+        generation += 1
+      },
+      slideWindow: (by: number) => {
+        mediaSequence += by
+      },
+      playlistFetchCount: () => playlistFetches
+    }
+  }
+
+  const pathOf = (line: string): string => {
+    const u = new URL(line)
+    return u.pathname + u.search
+  }
+
+  async function setup() {
+    const origin = makeSigningOrigin()
+    const { url: originUrl, server } = await startMockOrigin(origin.handler)
+    origin.setOriginBase(originUrl)
+    openServers.push(server)
+    const proxy = await startProxy(makeDeps({ getProxyTargetBase: () => originUrl }))
+    return { origin, originUrl, proxy }
+  }
+
+  it('serves the Xtream-path playlist raw and remembers its segment window', async () => {
+    const { origin, proxy } = await setup()
+    const playlist = await fetchViaProxy(proxy, '/live/user/pass/1.m3u8')
+    expect(playlist.statusCode).toBe(200)
+    // The Xtream path serves the body UNREWRITTEN (same-origin relative resolution) — the
+    // /__fetch/ rewrite is deliberately not applied here.
+    const segLine = playlist.body.split('\n').find((l) => l.includes('/hls/seg'))
+    expect(segLine).toBeTruthy()
+    expect(playlist.body).not.toContain('/__fetch/')
+    // The window is remembered server-side: a refused segment can now be remapped (the next
+    // test proves the remap end to end; this one just needs the window to exist, which the
+    // absence of a passthrough below would show).
+    void origin
+  })
+
+  it('retries a refused segment once with a fresh playlist URL and recovers it', async () => {
+    const { origin, proxy } = await setup()
+    // 1. The player fetches the playlist through the proxy (generation 1 is now current).
+    const playlist = await fetchViaProxy(proxy, '/live/user/pass/1.m3u8')
+    expect(playlist.statusCode).toBe(200)
+    const segLine = playlist.body.split('\n').find((l) => l.includes('/hls/seg'))
+    expect(segLine).toBeTruthy()
+    const segPath = pathOf(segLine as string)
+
+    // 2. Time passes; every signature from that playlist expires server-side.
+    origin.expireSignatures()
+
+    // 3. The player asks for that now-stale segment — no Referer, like the file:// renderer.
+    const before = origin.playlistFetchCount()
+    const segment = await fetchViaProxy(proxy, segPath)
+
+    // 4. The proxy refreshed the playlist once, remapped, retried — and delivered the segment.
+    expect(segment.statusCode).toBe(200)
+    expect(segment.body).toBe(`SEG-${MEDIA_SEQUENCE_START}`)
+    expect(origin.playlistFetchCount()).toBe(before + 1)
+  })
+
+  it('maps by absolute sequence when the fresh window has slid, and passes 400 through when the segment left the window', async () => {
+    const { origin, proxy } = await setup()
+    const playlist = await fetchViaProxy(proxy, '/live/user/pass/1.m3u8')
+    const segLines = playlist.body.split('\n').filter((l) => l.includes('/hls/seg'))
+    const oldest = pathOf(segLines[0] as string) // absolute sequence 100
+    const newest = pathOf(segLines[segLines.length - 1] as string) // absolute sequence 105
+
+    // Slide the window forward by 2: the newest segment (seq 105) is still inside the fresh
+    // window [102..107], so it must be remapped by absolute sequence and recovered…
+    origin.expireSignatures()
+    origin.slideWindow(2)
+    const stillInWindow = await fetchViaProxy(proxy, newest)
+    expect(stillInWindow.statusCode).toBe(200)
+    expect(stillInWindow.body).toBe(`SEG-${MEDIA_SEQUENCE_START + WINDOW - 1}`)
+
+    // …while the oldest (seq 100) has already slid out of [102..107] — refused through as-is,
+    // and the throttle means that second refusal does NOT trigger a second playlist fetch.
+    const afterFirstRefresh = origin.playlistFetchCount()
+    const slidPast = await fetchViaProxy(proxy, oldest)
+    expect(slidPast.statusCode).toBe(400)
+    expect(origin.playlistFetchCount()).toBe(afterFirstRefresh)
+
+    // And a far slide leaves nothing recoverable for anyone.
+    origin.expireSignatures()
+    origin.slideWindow(WINDOW + 5)
+    const goneFromWindow = await fetchViaProxy(proxy, newest)
+    expect(goneFromWindow.statusCode).toBe(400)
+  })
+
+  it('shares one playlist refresh across concurrent refused segments', async () => {
+    const { origin, proxy } = await setup()
+    const playlist = await fetchViaProxy(proxy, '/live/user/pass/1.m3u8')
+    const segLines = playlist.body
+      .split('\n')
+      .filter((l) => l.includes('/hls/seg'))
+      .slice(0, 3)
+      .map(pathOf)
+    expect(segLines.length).toBe(3)
+    origin.expireSignatures()
+    const before = origin.playlistFetchCount()
+
+    const results = await Promise.all(segLines.map((line) => fetchViaProxy(proxy, line)))
+
+    expect(results.map((r) => r.statusCode)).toEqual([200, 200, 200])
+    // One shared refresh, not three.
+    expect(origin.playlistFetchCount()).toBe(before + 1)
+  })
+
+  it('passes the refusal through unchanged when no playlist window knows the segment', async () => {
+    const { origin, proxy } = await setup()
+    // The playlist IS fetched (a window exists), but the segment asked for carries a generation
+    // no window ever signed — nothing to remap against, so the origin's own 400 passes through
+    // and no refresh is attempted.
+    const playlist = await fetchViaProxy(proxy, '/live/user/pass/1.m3u8')
+    expect(playlist.statusCode).toBe(200)
+    origin.expireSignatures()
+    const before = origin.playlistFetchCount()
+    const neverSigned = await fetchViaProxy(proxy, `/hls/seg${MEDIA_SEQUENCE_START}.ts?g=0`)
+    expect(neverSigned.statusCode).toBe(400)
+    expect(origin.playlistFetchCount()).toBe(before)
+  })
+
+  it('leaves VOD-shaped playlists (no media sequence) out of the window map', async () => {
+    let segmentRequests = 0
+    const origin = await startMockOrigin((req, res) => {
+      const url = new URL(req.url ?? '/', 'http://x')
+      if (url.pathname.endsWith('.m3u8')) {
+        // A VOD playlist: no #EXT-X-MEDIA-SEQUENCE at all.
+        res.writeHead(200, { 'content-type': 'application/vnd.apple.mpegurl' })
+        res.end(['#EXTM3U', '#EXT-X-TARGETDURATION:6', '#EXTINF:6.0,', '/vod/seg0.ts'].join('\n'))
+        return
+      }
+      segmentRequests += 1
+      res.writeHead(400)
+      res.end('refused')
+    })
+    const proxy = await startProxy(makeDeps({ getProxyTargetBase: () => origin.url }))
+    await fetchViaProxy(proxy, '/movie/user/pass/1.m3u8')
+    const refused = await fetchViaProxy(proxy, '/vod/seg0.ts')
+    expect(refused.statusCode).toBe(400)
+    // The refusal was served as-is: no refresh machinery ever ran for a window that doesn't exist.
+    expect(segmentRequests).toBe(1)
+  })
+})

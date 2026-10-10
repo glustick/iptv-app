@@ -231,6 +231,46 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.15.0** the refused-segment retry — the signature-expiry rescue, ported from the web sibling's
+  relay (allison-web-iptv v0.44.0) into this app's local proxy. **The problem, measured on the web
+  sibling against the same provider family:** segment URLs are signed for roughly 25 seconds, and
+  a slow fetch or a pause-and-resume can put an old segment URL in flight after its signature has
+  gone; the answer is a bare **400/403**. This app's player treated the resulting fatal fragment
+  error through 0.7.113's recovery ladder — a full remux-session restart, an expensive answer to
+  what is really a *token refresh*. The fix lives in the proxy, where the tokens are consumed:
+  every served live playlist's **segment window** (its absolute upstream segment URLs +
+  `#EXT-X-MEDIA-SEQUENCE`) is now remembered, and when a segment request comes back 400/403, the
+  proxy re-fetches that playlist (fresh signatures), maps the refused segment to the same
+  **absolute sequence number** in the fresh window, and retries exactly once. The refresh is
+  throttled to one per 2s and shared across concurrent refusals (a burst of 400s must not become
+  a burst of playlist downloads), one-deep window history covers refusals that straddle a
+  refresh, out-of-window segments pass the refusal through, and master/VOD playlists (no media
+  sequence) are never windows. The player's own recovery remains the backstop for channels this
+  cannot save.
+  **The port's one structural difference from the web: no Referer keying.** The web's relay named
+  a segment's playlist by the Referer its browser client sent — this renderer loads from `file://`
+  and sends none. Instead, windows are remembered at serve time on **both** proxy paths (the
+  /__fetch/ M3U path, already buffered for rewriting, and the Xtream path, now buffered too —
+  small documents, and the raw-MPEG-TS content-type guard keeps live TS away from the buffer),
+  and the refused segment is located by **scanning the ≤32 windows × ≤2 generations for its
+  upstream URL**, which the proxy always knows. No client cooperation needed; the desktop tests
+  deliberately send no Referer, doubling as the proof. Also like the web: the retry is a separate
+  one-shot from the proxy's transport-level same-target retry — a retried segment that is refused
+  again passes through.
+  **Verification:** six new wire tests against a signing-URL origin that re-signs on every
+  playlist fetch and refuses stale generations exactly like the real provider — recovery,
+  absolute-sequence remap across a window slide (with the out-of-window refusal passing through
+  and the throttle provably not re-fetching), one shared refresh across a stampede of three
+  concurrent refusals, unknown-segment pass-through, VOD-shaped (no-media-sequence) playlists
+  excluded, and the Xtream path serving its playlist un-rewritten — 663 tests across all 44
+  files, typecheck (node + web) and lint clean, CI green. **Not live-verified** against the real
+  provider (the CDP blocker below still stands; a real session will show the
+  `[proxy] segment refused (signature expired?); retrying once` line doing its work in
+  allisoniptv.log). **Also rides along: jsdom 25 → 29** — the recorded stale pin (30's engine
+  floor is `^22.22.2`; 29's is `^22.13.0`, comfortably inside CI's Node 22), done here as the
+  test-tooling ride-along the roadmap asked it to wait for. Suite 657 → 663; component tests
+  22/22 on the new jsdom.
+
 - **0.14.0** the Sports tab's day list, made navigable: **league subsections** and **country/league
   filters** (2026-10-11 request). A real Saturday renders 100+ games across a dozen-plus
   competitions in one flat sorted list — the picture was honest but unreadable. Two changes, one
