@@ -49,34 +49,44 @@ function isoLocal(epochSeconds: number): string {
   return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`
 }
 
-const NOW = Math.floor(Date.now() / 1000)
-const PROGRAMME_START = NOW - 1800 // started half an hour ago
-const PROGRAMME_END = NOW + 1800 // …and runs for another half hour
-const NEXT_START = PROGRAMME_END
-const NEXT_END = PROGRAMME_END + 3600
+// The programme window is computed PER REQUEST, not at server start: a session that outlives a
+// fixed window (the smoke harness keeps one server up across many runs) would otherwise serve a
+// guide whose "current" programme ended long ago, and the app would honestly render
+// "No programme data" for the rest of the day. Always-current windows make the fixture's
+// now-playing rows deterministic no matter how long the server has been up.
+function programmeWindow(): { start: number; end: number; nextStart: number; nextEnd: number } {
+  const now = Math.floor(Date.now() / 1000)
+  const start = now - 1800 // started half an hour ago
+  const end = now + 1800 // …and runs for another half hour
+  return { start, end, nextStart: end, nextEnd: end + 3600 }
+}
 
-// The provider's own guide: covers two of the three channels (one by matching epg_channel_id, one
-// by the relaxed name tier), and deliberately says nothing about a third.
-const PROVIDER_GUIDE = `<?xml version="1.0" encoding="UTF-8"?>
+function providerGuideXml(): string {
+  const { start, end, nextStart, nextEnd } = programmeWindow()
+  return `<?xml version="1.0" encoding="UTF-8"?>
 <tv>
   <channel id="one.hd"><display-name>One HD</display-name></channel>
   <channel id="two.uk"><display-name>Two</display-name></channel>
   <channel id="one.news"><display-name>Channel One News</display-name></channel>
-  <programme start="${xmltvTime(PROGRAMME_START)}" stop="${xmltvTime(PROGRAMME_END)}" channel="one.hd"><title>One's Show</title></programme>
-  <programme start="${xmltvTime(NEXT_START)}" stop="${xmltvTime(NEXT_END)}" channel="one.hd"><title>One's Next</title></programme>
-  <programme start="${xmltvTime(PROGRAMME_START)}" stop="${xmltvTime(PROGRAMME_END)}" channel="two.uk"><title>Two's Show</title></programme>
-  <programme start="${xmltvTime(PROGRAMME_START)}" stop="${xmltvTime(PROGRAMME_END)}" channel="one.news"><title>News at One</title></programme>
+  <programme start="${xmltvTime(start)}" stop="${xmltvTime(end)}" channel="one.hd"><title>One's Show</title></programme>
+  <programme start="${xmltvTime(nextStart)}" stop="${xmltvTime(nextEnd)}" channel="one.hd"><title>One's Next</title></programme>
+  <programme start="${xmltvTime(start)}" stop="${xmltvTime(end)}" channel="two.uk"><title>Two's Show</title></programme>
+  <programme start="${xmltvTime(start)}" stop="${xmltvTime(end)}" channel="one.news"><title>News at One</title></programme>
 </tv>`
+}
 
 // A user-added third-party guide, reachable through the app's `/__fetch/` passthrough. It is the
 // only source that knows about the channel the provider's guide misses.
-const CUSTOM_GUIDE = `<?xml version="1.0" encoding="UTF-8"?>
+function customGuideXml(): string {
+  const { start, end } = programmeWindow()
+  return `<?xml version="1.0" encoding="UTF-8"?>
 <tv>
   <channel id="custom.missing"><display-name>Unmatched Channel</display-name></channel>
-  <programme start="${xmltvTime(PROGRAMME_START)}" stop="${xmltvTime(PROGRAMME_END)}" channel="custom.missing"><title>Found Only Here</title></programme>
+  <programme start="${xmltvTime(start)}" stop="${xmltvTime(end)}" channel="custom.missing"><title>Found Only Here</title></programme>
   <channel id="custom.news"><display-name>Channel One News</display-name></channel>
-  <programme start="${xmltvTime(PROGRAMME_START)}" stop="${xmltvTime(PROGRAMME_END)}" channel="custom.news"><title>News Elsewhere</title></programme>
+  <programme start="${xmltvTime(start)}" stop="${xmltvTime(end)}" channel="custom.news"><title>News Elsewhere</title></programme>
 </tv>`
+}
 
 const ids = {
   categoryLive: '10',
@@ -244,12 +254,12 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
     // passthrough, which means the fixture sees a request for the *registered* URL's path — so any
     // path mentioning "custom" serves that guide, the same rule the /__fetch/ branch below uses.
     if (url.pathname.includes('custom')) {
-      text(CUSTOM_GUIDE)
+      text(customGuideXml())
       return
     }
 
     if (url.pathname === '/xmltv.php') {
-      text(PROVIDER_GUIDE)
+      text(providerGuideXml())
       return
     }
 
@@ -258,7 +268,7 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
     if (url.pathname.startsWith('/__fetch/')) {
       const target = decodeURIComponent(url.pathname.slice('/__fetch/'.length))
       if (target.includes('custom')) {
-        text(CUSTOM_GUIDE)
+        text(customGuideXml())
         return
       }
       res.writeHead(404)
@@ -355,6 +365,7 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
         return
       case 'get_short_epg': {
         const streamId = url.searchParams.get('stream_id')
+        const { start, end } = programmeWindow()
         json({
           epg_listings:
             streamId === String(ids.channelMatchedById)
@@ -364,12 +375,12 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
                     epg_id: 'one.hd',
                     title: Buffer.from('Short EPG Title').toString('base64'),
                     lang: '',
-                    start: isoLocal(PROGRAMME_START),
-                    end: isoLocal(PROGRAMME_END),
+                    start: isoLocal(start),
+                    end: isoLocal(end),
                     description: Buffer.from('Desc').toString('base64'),
                     channel_id: 'one.hd',
-                    start_timestamp: String(PROGRAMME_START),
-                    stop_timestamp: String(PROGRAMME_END)
+                    start_timestamp: String(start),
+                    stop_timestamp: String(end)
                   }
                 ]
               : []

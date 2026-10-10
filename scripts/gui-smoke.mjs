@@ -12,9 +12,10 @@
 // Prerequisites: the synthetic provider running (`node scripts/mock-provider.mjs 8123`) and a
 // profile pointing at it (see docs/STATE.md). Exits non-zero if any assertion fails.
 import { execFileSync, spawn } from 'child_process'
-import { existsSync, openSync, readFileSync, writeFileSync } from 'fs'
-import { join } from 'path'
+import { existsSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
+import { dirname, join } from 'path'
 import { homedir, tmpdir } from 'os'
+import { fileURLToPath } from 'url'
 import WebSocket from 'ws'
 
 const PORT = 9222
@@ -24,6 +25,9 @@ const APP = process.env.SMOKE_APP ?? join(homedir(), 'Applications/AllisonIPTV.a
 // silent transcode failure (ffmpeg refusing a subtitle mapping, say, which the app then retries
 // without subtitles) diagnosable instead of invisible.
 const APP_LOG = process.env.SMOKE_APP_LOG ?? join(tmpdir(), 'allisoniptv-smoke-app.log')
+// The app's persisted config — the reset below edits it between runs, and the Sports section
+// reads it to know whether an api-football key is configured.
+const CFG_PATH = join(homedir(), 'Library/Application Support/iptv-app/config.json')
 const probe = process.argv.includes('--probe')
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -59,9 +63,18 @@ function quitApp() {
  * reason.
  */
 function resetTestMappings() {
-  const cfgPath = join(homedir(), 'Library/Application Support/iptv-app/config.json')
-  const storagePath = join(homedir(), 'Desktop/Development/iptv-app/src/renderer/src/lib/storage.ts')
-  if (!existsSync(cfgPath) || !existsSync(storagePath)) return
+  const cfgPath = CFG_PATH
+  // Resolved from THIS script's own location (…/scripts/../src/...), not a hardcoded machine path —
+  // the repo has moved before (~/Desktop/Development → /Volumes/AGENT/Development), and a stale
+  // path here made the whole reset a silent no-op: the runs kept every mapping, every hidden
+  // source and every playlist a previous run left behind, which is exactly how the guide-mapping
+  // assertions came to fail "on this machine regardless of provider" (recorded at 0.7.109, root
+  // cause found 2026-10-10).
+  const storagePath = join(dirname(fileURLToPath(import.meta.url)), '../src/renderer/src/lib/storage.ts')
+  if (!existsSync(cfgPath) || !existsSync(storagePath)) {
+    console.log(`reset skipped: config or storage.ts not found (${cfgPath}, ${storagePath})`)
+    return
+  }
   try {
     const keys = Object.fromEntries(
       [...readFileSync(storagePath, 'utf8').matchAll(/const (\w+_KEY) = '([^']+)'/g)].map((m) => [m[1], m[2]])
@@ -83,13 +96,49 @@ function resetTestMappings() {
     settings.hiddenEpgSourceUrls = (settings.hiddenEpgSourceUrls ?? []).filter(
       (url) => !String(url).includes('127.0.0.1:8123')
     )
-    if (settings.epgChannelMappings.length !== before) {
+    // Write when ANYTHING was reset — gating the write on the mappings alone let a run that left
+    // no mappings but a hidden source (this section's own natural end state before the show
+    // check) keep that source hidden for every run after it.
+    const mappingsReset = before - settings.epgChannelMappings.length
+    const hiddenReset = hiddenBefore - settings.hiddenEpgSourceUrls.length
+    if (mappingsReset > 0 || hiddenReset > 0) {
       writeFileSync(cfgPath, JSON.stringify(cfg, null, 2))
-      console.log(`reset ${before - settings.epgChannelMappings.length} mapping(s) left by a previous run`)
+      console.log(`reset state left by a previous run: ${mappingsReset} mapping(s), ${hiddenReset} hidden source(s)`)
     }
   } catch (err) {
     console.log('could not reset test mappings:', err.message.slice(0, 60))
   }
+}
+
+/**
+ * Clears the guide-cache entries the synthetic provider owns. The mock's guide is built around
+ * the SERVER's start clock (its programmes run NOW±30 minutes, fixed at server start), so a
+ * cached copy from an earlier session is fresh by the app's own 24h TTL yet describes a
+ * programme window that has already ended — and the grid honestly reports "No programme data"
+ * for the rest of the day. That stale-cache render is a real-app correctness property (a real
+ * provider's guide stays current across a day; see 0.10.0's stale-first design), so the FIX
+ * belongs here, not in the app: drop exactly the synthetic entries (identified by their sidecar
+ * keys — a real provider's cached guide is never touched) and every run fetches a current guide.
+ */
+function resetGuideCache() {
+  const cacheDir = join(dirname(CFG_PATH), 'guide-cache')
+  if (!existsSync(cacheDir)) return
+  let removed = 0
+  for (const name of readdirSync(cacheDir)) {
+    if (!name.endsWith('.json')) continue
+    try {
+      const sidecar = JSON.parse(readFileSync(join(cacheDir, name), 'utf8'))
+      const key = String(sidecar?.key ?? '')
+      if (!key.includes('127.0.0.1:8123') && !key.startsWith('provider-guide:mock-test-1')) continue
+      rmSync(join(cacheDir, name))
+      const payload = name.replace(/\.json$/, '.xml')
+      if (existsSync(join(cacheDir, payload))) rmSync(join(cacheDir, payload))
+      removed += 1
+    } catch {
+      // An unreadable sidecar is not ours to judge — the app treats it as absent anyway.
+    }
+  }
+  if (removed > 0) console.log(`cleared ${removed} synthetic guide-cache entr${removed === 1 ? 'y' : 'ies'}`)
 }
 
 async function findTarget() {
@@ -150,6 +199,7 @@ async function main() {
   if (!existsSync(APP)) throw new Error(`app not found at ${APP} — build/install it or set SMOKE_APP`)
   quitApp()
   resetTestMappings()
+  resetGuideCache()
   await sleep(2500)
   // Launched as the bundled binary directly rather than through `open`, so stdout/stderr can be
   // captured (see APP_LOG). Same executable `open` would run, same arguments.
@@ -515,9 +565,15 @@ async function main() {
     `!!document.querySelector('.channel-match-score--strong') || !!document.querySelector('.channel-match-score--possible')`,
     20000
   )
-  // Pick the top candidate and map it — the whole point of the panel.
+  // Pick the top candidate and map it — the whole point of the panel. The button reads
+  // "Replace mapping" when a mapping already exists for this channel+source (the bulk apply
+  // above may have placed one) — clicking only "Add mapping" silently no-opped there and left
+  // the panel open, which read as a close-button failure for years.
   await evaluate(cdp, `(() => { const b = document.querySelector('.channel-match-option'); if (b) b.click(); return !!b })()`)
-  await evaluate(cdp, `[...document.querySelectorAll('.channel-match-add-row button')].find((b) => /Add mapping/.test(b.textContent))?.click() || true`)
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('.channel-match-add-row button')].find((b) => /Add mapping|Replace mapping/.test(b.textContent))?.click() || true`
+  )
   await check('mapping from the panel closes it', '!document.querySelector(".channel-match-card")', 8000)
   await evaluate(cdp, `document.querySelector("button.icon-button[title='Guide & EPG']")?.click() || true`)
   await sleep(1500)
@@ -554,6 +610,11 @@ async function main() {
   // expected to be flagged. This drives the whole path: a lazily-probed manifest verdict, a badge
   // on the row, the explanation in the preview, and the filter.
   await check('a channel whose feed is not live is flagged in the grid', '!!document.querySelector(".epg-health-badge")', 30000)
+  // Open a flagged row's preview deliberately: the note renders in the preview panel, and the
+  // panel's state here depends on everything the earlier sections did to the row it had open
+  // (that channel was hidden and restored mid-run) — depending on the leftover panel made this
+  // check flaky rather than meaningful.
+  await evaluate(cdp, `document.querySelector('.epg-row .epg-health-badge')?.closest('.epg-row')?.click() || true`)
   await check(
     'the preview explains why that channel behaves oddly',
     `document.querySelector('.epg-health-note')?.innerText.includes('rather than a live feed') ?? false`,
@@ -815,10 +876,16 @@ async function main() {
     20000
   )
 
-  // --- Sports tab: category → day → game → channels drill-down (lib/sports.ts + SportsView) ---
-  // The mock fixture spreads one fixture across two football categories with distinct feed
-  // annotations — exactly the real-provider shape the drill-down collapses. The 3pm kickoffs
-  // roll to "Tomorrow" on late runs, so the finder steps days until it finds the game.
+  // --- Sports tab: the api-sports family rebuild (0.11.0 — SPORT_SOURCES + SportsView) ---------
+  // The tab's middle pane is fed by api-football.com/api-sports.com through the settings API key,
+  // NOT by the provider schedule the pre-rebuild tab showed — so the old drill-down (find the
+  // Arsenal vs Chelsea game row, click a feed, watch it play) needs a real API key and a real
+  // day's fixtures and cannot run against the mock provider. What CAN be asserted keylessly is
+  // the rebuilt tab's honest shape: the platform's own sport categories in the left pane with
+  // football first, the day nav, and — with no key configured, this config's permanent state —
+  // the empty state that says exactly where to put one. The full event → feeds → play path is
+  // pinned by the lib/fixtureMatch unit tests and remains on the roadmap's live-verification
+  // list (same standing caveat as the fixtures cache: this config has no api-football key).
   await pressEscape()
   await sleep(800)
   await evaluate(
@@ -827,38 +894,54 @@ async function main() {
   )
   await sleep(1200)
   await check(
-    'the Sports tab lists Football / Soccer first',
-    `(() => { const first = document.querySelector('.sports-sports .sports-item'); return !!first && first.textContent.includes('Football / Soccer') })()`,
+    'the Sports tab lists the api-sports family with Football first',
+    `(() => { const first = document.querySelector('.sports-sports .sports-item'); return !!first && first.textContent.trim() === 'Football' })()`,
     8000
   )
-  await evaluate(cdp, `document.querySelector('.sports-sports .sports-item')?.click() || true`)
-  await sleep(900)
-  const foundGame = await evaluate(cdp, `(async () => {
-    const find = () => [...document.querySelectorAll('.sports-games .sports-item')].find((b) => b.textContent.includes('Arsenal vs Chelsea'))
-    for (let i = 0; i < 3; i++) {
-      const hit = find()
-      if (hit) { hit.click(); return true }
-      document.querySelector('.sports-day-nav button[title="Later"]')?.click()
-      await new Promise((r) => setTimeout(r, 600))
+  await check(
+    'the rebuilt tab shows more than one sport source',
+    `document.querySelectorAll('.sports-sports .sports-item').length > 3`,
+    8000
+  )
+  await check(
+    'the day nav is present (earlier/later)',
+    `!!document.querySelector('.sports-day-nav button[title="Earlier"]') && !!document.querySelector('.sports-day-nav button[title="Later"]')`,
+    8000
+  )
+  // The middle pane's honest render depends on whether this machine's config carries an
+  // api-football key — it does (saved through Settings during 0.8.0's live verification), so the
+  // pane really fetches: rows when the day has games, the in-band error line when the API says
+  // no, and "No games listed for this day." when it answers empty. All three are honest; a blank
+  // pane is not. When no key is configured the pane must instead show exactly where to add one.
+  // (The keyless branch also holds for every other sport; with a key the other sports are left
+  // alone here so a smoke run never spends the free API tier's daily quota.)
+  const smokeHasKey = (() => {
+    try {
+      return Boolean(JSON.parse(readFileSync(CFG_PATH, 'utf8'))?.settings?.apiFootballKey)
+    } catch {
+      return false
     }
-    return false
-  })()`)
-  if (!foundGame) throw new Error('Sports: the Arsenal vs Chelsea game was not found within three days')
-  await sleep(900)
-  await check(
-    'the game lists its feeds across both football categories (3 channels)',
-    `[...document.querySelectorAll('.sports-channels .sports-item')].filter((b) => b.textContent.includes('Arsenal vs Chelsea')).length === 3`,
-    8000
-  )
-  await evaluate(
-    cdp,
-    `[...document.querySelectorAll('.sports-channels .sports-item')].find((b) => b.textContent.includes('FBL01'))?.click() || true`
-  )
-  await check(
-    'clicking a game channel mounts the player and plays',
-    `(() => { const v = document.querySelector('video.player-video'); return !!v && v.readyState >= 2 })()`,
-    30000
-  )
+  })()
+  if (smokeHasKey) {
+    await check(
+      'the middle pane renders an honest day (rows, an in-band error, or an empty-day line)',
+      `!!document.querySelector('.sports-games .sports-item') || !!document.querySelector('.sports-games .sports-empty')`,
+      20000
+    )
+  } else {
+    await check(
+      'with no API key the middle pane says where to add one',
+      `document.querySelector('.sports-games .sports-empty')?.textContent.includes('api-football.com key in Settings') ?? false`,
+      8000
+    )
+    await evaluate(cdp, `[...document.querySelectorAll('.sports-sports .sports-item')].find((b) => b.textContent.trim() === 'Basketball')?.click() || true`)
+    await sleep(600)
+    await check(
+      'switching sport keeps the honest no-key state',
+      `document.querySelector('.sports-games .sports-empty')?.textContent.includes('api-football.com key in Settings') ?? false`,
+      8000
+    )
+  }
   await pressEscape()
 
   const finalText = await text()

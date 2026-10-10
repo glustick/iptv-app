@@ -231,6 +231,54 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **2026-10-10, between releases — the smoke harness brought back to green against current main,
+  and two records corrected.** No app-facing change; harness + test-fixture only, so no version
+  bump and no release.
+  **(1) The Sports-tab rebuild finally has its record.** The three-pane rebuild (the api-sports
+  family: `SPORT_SOURCES` left pane, the API's own day list in the middle, `lib/fixtureMatch.ts`'s
+  two-tier event→game join and team-word channel fallback in the right pane, play-on-click through
+  the ordinary `play()` path) shipped **in 0.11.0** — commits `40f37f7`/`3c40c97`/`6772956`,
+  2026-09-29 — but never got a roadmap entry, and 0.8.0's "known alpha limits" line ("fixtures are
+  display-only, no click-through to a channel yet") therefore stayed wrong ever since: the
+  click-through has existed since 0.11.0. What the rebuild's own commit already recorded remains
+  true, though: the rebuilt tab has never been live-verified against the real API, and that now
+  sits on the live-verification list below with a sharpened shape — this machine's config DOES
+  carry an api-football key (saved through Settings during 0.8.0's live verification; the 0.13.0
+  entry's "this config never having an api-football key" note was wrong), so the drill-down is
+  testable live, not blocked.
+  **(2) The three guide-mapping smoke checks failing "on this machine regardless of provider"
+  since 0.7.109 are solved — it was the harness, in three layers.** (a) `resetTestMappings`
+  resolved the repo's `storage.ts` from a hardcoded `~/Desktop/Development/...` path that stopped
+  existing when the repo moved to `/Volumes/AGENT/Development` — the whole reset became a silent
+  no-op, so every run inherited whatever state the last one left. (b) Even before the move, the
+  reset's disk write was gated on the *mappings* delta alone, so a run that left no mappings but a
+  hidden source — this section's own natural end state — kept that source hidden forever; the
+  custom source in the saved config was stuck hidden, which zeroed its match stats (a hidden source
+  reports nothing, by design) and killed the "by manual mapping" assertion, while "offers to hide"
+  saw an already-"Show guide" button. (c) The panel-close assertion clicked `/Add mapping/` — but
+  once the bulk apply has mapped the panel's own channel, the button reads **"Replace mapping"**,
+  the click silently no-opped, and the panel never closed. All three fixed: the reset resolves
+  storage.ts from the script's own location and writes when anything it manages changed; the click
+  accepts both labels.
+  **(3) A new failure class the fixes then exposed: the mock fixture's programme windows.**
+  `mockXtreamServer.ts` pinned its programmes to NOW±30 minutes **at server start**, and the app's
+  24h guide cache (0.10.0) then served that dead window all day — the grid honestly reported "No
+  programme data" for the relaxed-tier channel even though the match report counted the match.
+  Fixed on both sides: the fixture computes its windows **per request** now, and the harness's
+  reset clears the synthetic guide-cache entries (identified by their sidecar keys, so a real
+  provider's cached guide is never touched).
+  **(4) The Sports smoke section was rewritten for the rebuilt tab.** The old section drove the
+  pre-rebuild provider-schedule drill-down (find "Arsenal vs Chelsea", click a feed, watch it
+  play), which the rebuilt tab replaced with API-fed rows. What runs now is the keyless-invariant
+  set: Football first in the left pane, several sport sources, the day nav, and the middle pane
+  rendering an honest day (rows, the in-band API error, or the empty-day line when a key exists;
+  the exact "add your key" message when one doesn't). The full event→feeds→play drill-down needs a
+  real API response and stays on the live-verification list. With a key configured the other
+  sports are deliberately left unstepped so a smoke run never spends the free API tier's quota.
+  Verified: **65/65 smoke checks twice consecutively** (the second run starting from the first
+  run's leftovers — the reset demonstrably reclaims mappings, hidden sources and cache entries
+  between runs), full suite 642/642, typecheck (node + web) and lint clean.
+
 - **0.13.0** the quality choice, ported from the web sibling's v0.75.0 — the re-encode tier's height was fixed by the encoder argv with no viewer lever, and the app's standing decision (inherited from the web sibling's v0.46.3) is that the picture the provider sent is never *silently* downscaled. Now it is downscaled only when the viewer says so: a **Re-encode: Source/1080p/720p select** in the live player header, persisted per device (`lib/qualityPref.ts`, localStorage, validated 240–2160 on both write and load — garbage reads as Source, never as a broken filter; Source *removes* the stored key so absence stays the natural default). The ceiling rides `transcode:start`'s new sixth argument, read at post time so a choice made moments ago is the one that applies, and — the port's one structural difference from the web — lands on the *service-side* decision point: the desktop's re-encode tier is chosen inside transcodeService (the HEVC self-restart spawns it when the client cannot decode HEVC), so `maxHeightOverride` is threaded through all three internal respawns (HEVC hvc1-copy, HEVC re-encode, starved-connection retry) and honored only where a reshape is even possible — a copy cannot reshape, and every VOD remux (video always copied) sends nothing. The filter itself is the web sibling's proven shape, `scale=-2:'min(<cap>,ih)'` (never upscales; even width), placed after the re-encode args. Changing it while a live fallback plays restarts that session via a new `restartLiveForQuality` — deliberately NOT a spend of the remux-recovery budget (a viewer choice is not a failure), gated on "a session exists" rather than awaitingTranscodeRef (which stays true for an *active* session's whole lifetime and would have made the restart a permanent no-op — caught by its own tests); a spawning session is absorbed like everywhere else, its cap read when it started (the web's hasSession() gate, restated for this hook's lifecycle). The restart shows its own status line ("Restarting this channel at the new quality…") so it never reads as a failure recovery. Proven: argv pins through the real HEVC self-restart flow (cap reaches the re-encode respawn; no cap and out-of-range both leave it uncapped; copy and hvc1 respawns never grow a filter; the plain copy session ignores it entirely), normalizeMaxHeight's bounds table, a **real-ffmpeg integration test** — 640x480 source, per-session 240 cap, real re-encode — asserting 320x240 read from the produced init segment's own avc1 sample-entry fields, pref round-trip/normalization/corrupt-storage tests, and hook tests pinning the live-carries/VOD-never-carries/post-time-read/stops-stale-session/no-op-when-idle contract. 642 tests (18 new); typecheck and lint clean.
 
   **Live-verified 2026-10-07 (current main, packaged dir build, driven over CDP against the real account):** the app connects and renders; the 0.10.0 guide cache served from disk with its "Last updated: 1 hour ago" stamp and Refresh button (closing that feature's live-verification debt for the guide half); search → channel preview → fullscreen Player mounts with the Re-encode select present in the header; and the real ffmpeg logs confirmed the production copy-path argv exactly (HEVC → hvc1 copy, EAC-3 → AAC, no filter — a copy never reshapes, cap or no cap). **Not exercised live:** the interactive 720p→restart→re-encode flow — the provider was delivering this channel at a measured ~0.3x realtime that evening (every remux session ran `speed=0.29x`, produced a few seconds of media, and died; the 0.12.0 recovery ladder behaved exactly as designed through the whole storm: named session restarts cycling to the session-budget message). The mechanism stays pinned by the argv tests through the real HEVC self-restart and the real-ffmpeg 320x240 reshape test. Two smaller notes from the same session: the fixtures-cache live check is blocked on this config never having an api-football key (data, not code — the cache plumbing holds one cached day from an earlier run), and building a runnable local dir-build requires a LOCAL output directory — the SMB share corrupts electron-builder's staged Electron template (a symptom-free `icudtl.dat not found` crash), and an unsigned dir build also needs an ad-hoc `codesign --force --deep -s -` to survive macOS's signature check at exec.
@@ -259,6 +307,10 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 machine regardless of provider (match-report wording, panel-close after apply, hide-listings
 offer) — they failed identically against the real provider before any Sports change; a real
 drift between the harness and the current app worth its own investigation.
+**[RESOLVED 2026-10-10 — it was the harness's own reset, dead in three layers since the repo
+moved to `/Volumes/AGENT` (a hardcoded `~/Desktop/Development` path), plus a write-gating bug
+that kept a source stuck hidden and a click that no longer matched the button's label. Full
+account in the 2026-10-10 entry at the top of "Current release".]**
 
 ## Next up
 
@@ -304,6 +356,16 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
   if it recurs.
 
 ### Code, in the order I would take it
+
+- **A live-verification pass over the features that shipped without one (recorded 2026-10-10).**
+  Several shipped features still carry the roadmap's own "not live-verified" caveat, and the
+  2026-10-10 harness work made one of them newly reachable: **this machine's config carries a real
+  api-football key**, so the rebuilt Sports tab's full drill-down (a real day's games → the
+  fixture→game join → a feed click reaching the player — the rebuilt tab's own commit names this
+  as its next step) can be driven live over CDP, exactly the way 0.13.0's verification ran. The
+  rest of the list, from the entries that own each caveat: the 0.10.0 caches (guide-cache skip,
+  transcode-memory poll skip, fixtures cache), 0.9.0's two-playlist identity against a real second
+  account, and 0.12.0's not-broadcasting detector against a genuinely off-air channel.
 
 - **Cache the guide and the sports fixtures — once a day, not once a launch (requested 2026-09-28;
   the guide half is DONE 2026-09-28, sports remains).**
