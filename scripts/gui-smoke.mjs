@@ -16,9 +16,7 @@ import { existsSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync 
 import { dirname, join } from 'path'
 import { homedir, tmpdir } from 'os'
 import { fileURLToPath } from 'url'
-import WebSocket from 'ws'
 
-const PORT = 9222
 const APP = process.env.SMOKE_APP ?? join(homedir(), 'Applications/AllisonIPTV.app')
 // The app's own stdout/stderr, captured from the launch below. This is the only place the main
 // process's ffmpeg commands and their stderr appear — `open` discards both — and it is what makes a
@@ -49,11 +47,23 @@ function quitApp() {
   } catch {
     // nothing to kill
   }
-  try {
-    execFileSync('sleep', ['2'])
-  } catch {
-    // sleep is always present; ignore
+  // A dying instance holds the app's userData singleton lock, and a new instance spawned beside
+  // it can sit idle waiting for the lock — looking exactly like "launched but never started"
+  // (unresponsive CDP, 0% CPU). Wait for the process to actually be gone rather than guessing
+  // at a fixed sleep.
+  for (let i = 0; i < 20; i++) {
+    try {
+      execFileSync('pgrep', ['-x', 'AllisonIPTV'], { stdio: 'ignore', timeout: 3000 })
+    } catch {
+      return // pgrep found nothing: the app is gone
+    }
+    try {
+      execFileSync('sleep', ['1'])
+    } catch {
+      // sleep is always present; ignore
+    }
   }
+  console.log('warning: an AllisonIPTV process was still alive 20s after quit — continuing anyway')
 }
 
 /**
@@ -141,44 +151,94 @@ function resetGuideCache() {
   if (removed > 0) console.log(`cleared ${removed} synthetic guide-cache entr${removed === 1 ? 'y' : 'ies'}`)
 }
 
-async function findTarget() {
-  for (let i = 0; i < 30; i++) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${PORT}/json`)
-      const targets = await res.json()
-      const page = targets.find((t) => t.type === 'page' && t.webSocketDebuggerUrl)
-      if (page) return page
-    } catch {
-      // devtools endpoint not up yet
-    }
-    await sleep(500)
-  }
-  throw new Error('CDP endpoint never came up — is the app launching?')
-}
+/**
+ * Spawns the app with CDP over `--remote-debugging-pipe` — JSON messages over inherited fds 3/4,
+ * no TCP listener — and attaches to the renderer's page, returning the usual { ready, send, close }
+ * shape with send() pre-bound to the page session.
+ *
+ * Why the pipe and not `--remote-debugging-port`: on this machine (macOS 26, observed from
+ * 2026-10-10 evening), inbound connections to a CDP listener bind fine and complete the TCP
+ * handshake at kernel level but are never serviced — the app's DevTools thread waits on its
+ * kqueue forever, identically for old and new bundles, sandboxed or not, while the app's own
+ * event loop runs. Whatever the OS layer is doing to loopback data for these bundles, the pipe
+ * transport has no listener to block and answers instantly. (`ws` is gone from this script for
+ * the same reason.)
+ */
+let cdpMsgId = 0
+async function spawnAndConnect(appLog) {
+  const child = spawn(join(APP, 'Contents/MacOS/AllisonIPTV'), ['--remote-debugging-pipe'], {
+    detached: true,
+    stdio: ['ignore', appLog, appLog, 'pipe', 'pipe']
+  })
+  child.unref()
+  const fds = [child.stdio[3], child.stdio[4]]
+  if (fds.some((f) => !f)) throw new Error('app did not provide CDP pipe fds')
 
-function connect(url) {
-  const ws = new WebSocket(url)
-  let id = 0
+  let buf = ''
   const pending = new Map()
-  ws.on('message', (raw) => {
-    const msg = JSON.parse(raw.toString())
-    const entry = pending.get(msg.id)
-    if (entry) {
-      pending.delete(msg.id)
-      entry(msg)
+  fds[1].on('data', (chunk) => {
+    buf += chunk.toString()
+    let idx
+    while ((idx = buf.indexOf('\0')) >= 0) {
+      const raw = buf.slice(0, idx)
+      buf = buf.slice(idx + 1)
+      if (!raw.trim()) continue
+      let msg
+      try {
+        msg = JSON.parse(raw)
+      } catch {
+        continue // not a CDP message; the pipe carries nothing else, but be safe
+      }
+      const entry = pending.get(msg.id)
+      if (entry) {
+        pending.delete(msg.id)
+        entry(msg)
+      }
     }
   })
-  const ready = new Promise((resolve, reject) => {
-    ws.on('open', resolve)
-    ws.on('error', reject)
+  fds[1].on('error', () => {
+    for (const entry of pending.values()) entry({}) // fail every waiter rather than hanging
+    pending.clear()
   })
-  const send = (method, params) =>
-    new Promise((resolve) => {
-      const msgId = ++id
-      pending.set(msgId, resolve)
-      ws.send(JSON.stringify({ id: msgId, method, params }))
+  const request = (method, params, sessionId) =>
+    new Promise((resolve, reject) => {
+      const id = ++cdpMsgId
+      // A dead app must fail the run loudly, not hang it: every request is bounded.
+      const timer = setTimeout(() => {
+        pending.delete(id)
+        reject(new Error(`CDP request timed out after 30s: ${method}`))
+      }, 30_000)
+      pending.set(id, (msg) => {
+        clearTimeout(timer)
+        resolve(msg)
+      })
+      const msg = { id, method }
+      if (params !== undefined) msg.params = params
+      if (sessionId) msg.sessionId = sessionId
+      fds[0].write(Buffer.from(JSON.stringify(msg) + '\0'))
     })
-  return { ready, send, close: () => ws.close() }
+
+  // The renderer's page target appears once the window exists; the login screen is up by then.
+  let page = null
+  for (let i = 0; i < 60 && !page; i++) {
+    const reply = await request('Target.getTargets')
+    page = (reply?.result?.targetInfos ?? []).find((t) => t.type === 'page')
+    if (!page) await sleep(500)
+  }
+  if (!page) throw new Error('CDP page target never appeared — is the app launching?')
+  const attach = await request('Target.attachToTarget', { targetId: page.targetId, flatten: true })
+  const sessionId = attach?.result?.sessionId
+  if (!sessionId) throw new Error(`could not attach to the app page: ${JSON.stringify(attach)}`)
+  return {
+    send: (method, params) => request(method, params, sessionId),
+    close: () => {
+      try {
+        fds[0].end()
+      } catch {
+        // already gone
+      }
+    }
+  }
 }
 
 async function evaluate(cdp, expression) {
@@ -202,15 +262,9 @@ async function main() {
   resetGuideCache()
   await sleep(2500)
   // Launched as the bundled binary directly rather than through `open`, so stdout/stderr can be
-  // captured (see APP_LOG). Same executable `open` would run, same arguments.
+  // captured (see APP_LOG). CDP rides the pipe transport — see spawnAndConnect.
   const appLog = openSync(APP_LOG, 'w')
-  spawn(join(APP, 'Contents/MacOS/AllisonIPTV'), [`--remote-debugging-port=${PORT}`], {
-    detached: true,
-    stdio: ['ignore', appLog, appLog]
-  }).unref()
-  const target = await findTarget()
-  const cdp = connect(target.webSocketDebuggerUrl)
-  await cdp.ready
+  const cdp = await spawnAndConnect(appLog)
 
   // Wait for the renderer to be alive.
   for (let i = 0; i < 40; i++) {
