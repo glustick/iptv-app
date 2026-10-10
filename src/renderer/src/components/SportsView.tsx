@@ -17,6 +17,14 @@ import {
   type FixtureFetchResult
 } from '../lib/api-football'
 import { channelsMentioningTeams, matchEventsToGames } from '../lib/fixtureMatch'
+import {
+  countryOptions,
+  filterEvents,
+  groupEventsByLeague,
+  leagueGroupLabel,
+  leagueOptions,
+  leaguePairLabel
+} from '../lib/sportsGroups'
 import { localKickoffLabel } from '../lib/gameTimes'
 import { useResizableWidth } from '../lib/useResizableWidth'
 import type { Category, LiveStream } from '../lib/types'
@@ -29,6 +37,11 @@ import type { Category, LiveStream } from '../lib/types'
 // selected game in the provider's own catalogue (paired by team names, with a conservative
 // name-search fallback — see lib/fixtureMatch.ts) and plays them on click through the existing
 // play() path, so player wiring, history and Escape handling all come for free.
+//
+// Since 0.14.0 the middle pane's day list is grouped into league subsections (lib/sportsGroups —
+// groups follow the list's own live-first ordering, so live competitions surface first), with a
+// country and a league filter above them; the filters persist across days within a sport (stepping
+// days while filtered is the point) and reset when the sport changes.
 //
 // Football keeps its own request path and per-day cache (lib/api-football.ts — the settings
 // sportsFixturesCache and the Refresh button semantics shipped in 0.10.0 are untouched); every
@@ -110,6 +123,11 @@ export function SportsView(): JSX.Element {
   const [selectedSportId, setSelectedSportId] = useState<string>(DEFAULT_SPORT_ID)
   const [dayOffset, setDayOffset] = useState(0)
   const [selectedEventKey, setSelectedEventKey] = useState<string | null>(null)
+  // The league/country filters ('' = all). They persist across days within a sport — stepping
+  // days while filtered is the point — and reset when the sport changes, since another sport's
+  // competitions are different names entirely.
+  const [countryFilter, setCountryFilter] = useState('')
+  const [leagueFilter, setLeagueFilter] = useState('')
   // Bumped by the refresh button: forces the day's games to be requested again even where a
   // cache would otherwise answer (0.10.0's per-day cache for football; the session cache below
   // for the other sports).
@@ -265,6 +283,26 @@ export function SportsView(): JSX.Element {
 
   const dayKey = fixtureDateParam(new Date(Date.now() + dayOffset * 86_400_000))
 
+  // The filters and the subsections. Options come from the day's own list (a filter can only
+  // ever offer what exists), the league list narrowed by the chosen country; a selection that
+  // the narrowed list no longer contains stays readable via its own label (leaguePairLabel) —
+  // it just shows the honest "no games match" line until a day that has it again.
+  const filteredEvents = useMemo(() => filterEvents(events, leagueFilter, countryFilter), [events, leagueFilter, countryFilter])
+  const groups = useMemo(() => groupEventsByLeague(filteredEvents), [filteredEvents])
+  const countries = useMemo(() => countryOptions(events), [events])
+  const leagues = useMemo(() => leagueOptions(events, countryFilter), [events, countryFilter])
+
+  function selectCountry(next: string): void {
+    setCountryFilter(next)
+    // A league pair encodes its country; a country switch can orphan the selection, and an
+    // orphaned pair filter matches nothing by construction.
+    if (leagueFilter && next && !leagueFilter.startsWith(`${next}\u001f`)) setLeagueFilter('')
+  }
+
+  function selectLeague(next: string): void {
+    setLeagueFilter(next)
+  }
+
   // Pair every listed event with at most one provider game (exact, then loose only when
   // unambiguous). Inverted to event → game; when the same pair appears on more than one parsed
   // day (a baseball series), the game whose own day matches the event's wins.
@@ -320,6 +358,8 @@ export function SportsView(): JSX.Element {
   function selectSport(sportId: string): void {
     setSelectedSportId(sportId)
     setSelectedEventKey(null)
+    setCountryFilter('')
+    setLeagueFilter('')
     setRefreshNonce(0)
   }
 
@@ -374,6 +414,29 @@ export function SportsView(): JSX.Element {
           <span className="sports-day-label">{formatDayLabel(dayKey)}</span>
           <button onClick={() => selectDay(dayOffset + 1)} title="Later">▶</button>
         </div>
+        {/* The country/league filters. Rendered only when the day has games; their options are
+            the day's own values, plus the current selection when today's list doesn't carry it
+            (a filter chosen on one day must stay readable on days without its league). */}
+        {apiFootballKey && events.length > 0 && (
+          <div className="sports-filters">
+            <select value={countryFilter} onChange={(e) => selectCountry(e.target.value)} title="Show only games from one country">
+              <option value="">All countries</option>
+              {!countries.includes(countryFilter) && countryFilter ? <option value={countryFilter}>{countryFilter}</option> : null}
+              {countries.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+            <select value={leagueFilter} onChange={(e) => selectLeague(e.target.value)} title="Show only one competition">
+              <option value="">All leagues</option>
+              {!leagues.some((o) => o.key === leagueFilter) && leagueFilter ? (
+                <option value={leagueFilter}>{leaguePairLabel(leagueFilter)}</option>
+              ) : null}
+              {leagues.map((o) => (
+                <option key={o.key} value={o.key}>{o.label}</option>
+              ))}
+            </select>
+          </div>
+        )}
         <div className="sports-list">
           {!apiFootballKey ? (
             <div className="sports-empty">
@@ -392,19 +455,45 @@ export function SportsView(): JSX.Element {
           ) : events.length === 0 ? (
             <div className="sports-empty">No games listed for this day.</div>
           ) : null}
-          {apiFootballKey &&
-            events.slice(0, MAX_GAMES_RENDERED).map((event) => (
-              <GameRow
-                key={`${event.sportId}:${event.id}`}
-                event={event}
-                hour12={hour12}
-                selected={`${event.sportId}:${event.id}` === selectedEventKey}
-                onSelect={() => setSelectedEventKey(`${event.sportId}:${event.id}` === selectedEventKey ? null : `${event.sportId}:${event.id}`)}
-              />
-            ))}
-          {apiFootballKey && events.length > MAX_GAMES_RENDERED && (
-            <div className="sports-empty">…and {events.length - MAX_GAMES_RENDERED} more games</div>
+          {apiFootballKey && events.length > 0 && filteredEvents.length === 0 && (
+            <div className="sports-empty">No games match the current filters.</div>
           )}
+          {apiFootballKey &&
+            (() => {
+              // The cap spans the whole pane, headers included: a league whose rows would land
+              // past it contributes only what fits, and the tail line counts what didn't.
+              let rendered = 0
+              const nodes: JSX.Element[] = []
+              for (const group of groups) {
+                if (rendered >= MAX_GAMES_RENDERED) break
+                const rows = group.events.slice(0, MAX_GAMES_RENDERED - rendered)
+                nodes.push(
+                  <div className="sports-section-label" key={group.key}>
+                    <span>{group.league ? leagueGroupLabel(group.league, group.country) : 'Other'}</span>
+                    {group.liveCount > 0 ? <span className="sports-live">LIVE</span> : null}
+                  </div>
+                )
+                for (const event of rows) {
+                  const rowKey = `${event.sportId}:${event.id}`
+                  nodes.push(
+                    <GameRow
+                      key={rowKey}
+                      event={event}
+                      hour12={hour12}
+                      selected={rowKey === selectedEventKey}
+                      onSelect={() => setSelectedEventKey(rowKey === selectedEventKey ? null : rowKey)}
+                    />
+                  )
+                }
+                rendered += rows.length
+              }
+              if (filteredEvents.length > rendered) {
+                nodes.push(
+                  <div key="sports-more" className="sports-empty">…and {filteredEvents.length - rendered} more games</div>
+                )
+              }
+              return nodes
+            })()}
         </div>
       </div>
 

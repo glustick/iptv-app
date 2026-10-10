@@ -231,6 +231,50 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.14.0** the Sports tab's day list, made navigable: **league subsections** and **country/league
+  filters** (2026-10-11 request). A real Saturday renders 100+ games across a dozen-plus
+  competitions in one flat sorted list — the picture was honest but unreadable. Two changes, one
+  pure module:
+  - **League subsections** — `lib/sportsGroups.ts`'s `groupEventsByLeague` runs *after* the pane's
+    existing sort (live first, then upcoming by kickoff, then finished), so each subsection keeps
+    that order inside it and the subsections appear in the order the sorted list first reaches
+    them — live competitions surface to the top on their own. Grouping is by the
+    **(country, league) pair**, not the bare name: "Premier League" is not only England's, and two
+    same-named competitions on one day must be two sections (pinned by test). Events without a
+    league name (rare; some feeds) sink into one "Other" section at the end rather than promoting
+    their obscurity. Each header is the revived `.sports-section-label` language — small,
+    uppercase, dim — carrying a **LIVE** chip at the right edge when any of the group's games is
+    in play (`liveCount`, also test-pinned).
+  - **The filters** — two selects between the day nav and the list (`All countries` /
+    `All leagues`), their options built from the day's own events so they never offer an empty
+    choice. The league filter keys the full pair (same-named competitions stay two options,
+    distinguishable by their "League · Country" labels); the country filter narrows the league
+    list, and picking a country that orphans the chosen league clears it rather than leaving a
+    filter that can match nothing. Selections **persist across days within a sport** — stepping
+    days while filtered is the point ("show me this league's games through the week") — and reset
+    when the sport changes, because another sport's competitions are different names entirely. A
+    selection whose competition has no games today stays readable in its select
+    (`leaguePairLabel` renders the stored pair) while the list shows an honest "No games match the
+    current filters." — distinct from "No games listed for this day." The 300-row render cap now
+    spans whole sections (headers included), with the "…and N more games" tail counting against
+    the filtered set. All grouping/filter logic is pure (no window/document/Electron) and pinned
+    by 16 new tests in `lib/sportsGroups.test.ts`; the right pane, the fixture→game join
+    (`lib/fixtureMatch.ts`) and the click-to-play path are untouched.
+  - **Verification, honestly:** suite 657 (602 in the pooled run + 55 in the three heavy files
+    vitest's forks pool timed out starting on the SMB share — all 44 files green across the two
+    runs; the collection-gap class is recorded below), typecheck (node + web) and lint clean, CI
+    green on the release push. **The live CDP pass did not run** — the verification machine's
+    whole automation stack failed during this session (shell spawns ENOENT, AppleEvents timing
+    out, and the app's DevTools endpoint binding but never servicing HTTP — reproducible across
+    two independently built bundles, one of them built entirely on local disk to rule out the
+    SMB stale-read class), so the real-API rendering, the filters against a real day's data and
+    the drill-down under filters are **not live-verified**; they ride the standing
+    live-verification item below together with the rest of the rebuilt Sports tab's debt. The
+    build recipe gained a real improvement out of the session, recorded there too: **build the
+    app from a local-disk mirror of the repo** (electron-vite writes `out/` to the project root,
+    and electron-builder reading it straight back off the SMB share is the stale-read class that
+    corrupted bundles).
+
 - **2026-10-10, between releases — the smoke harness brought back to green against current main,
   and two records corrected.** No app-facing change; harness + test-fixture only, so no version
   bump and no release.
@@ -365,7 +409,14 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
   as its next step) can be driven live over CDP, exactly the way 0.13.0's verification ran. The
   rest of the list, from the entries that own each caveat: the 0.10.0 caches (guide-cache skip,
   transcode-memory poll skip, fixtures cache), 0.9.0's two-playlist identity against a real second
-  account, and 0.12.0's not-broadcasting detector against a genuinely off-air channel.
+  account, and 0.12.0's not-broadcasting detector against a genuinely off-air channel. **0.14.0
+  adds to this list:** the league subsections and the country/league filters against a real day's
+  API data (its own entry carries the session's account of why the pass didn't run — the
+  verification machine's automation stack failed mid-session, reproducibly across two bundles).
+  **Also recorded there: build the app from a local-disk mirror** (`rsync` the repo minus
+  `node_modules`/`out`/`dist`/`.git` to local disk, symlink `node_modules` back, build there) —
+  electron-vite writes `out/` onto the SMB share and electron-builder reading it straight back is
+  the stale-read corruption class; one such bundle shipped-hung before this was understood.
 
 - **Cache the guide and the sports fixtures — once a day, not once a launch (requested 2026-09-28;
   the guide half is DONE 2026-09-28, sports remains).**

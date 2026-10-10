@@ -3597,6 +3597,33 @@ body.resizing-col {
   text-align: center;
 }
 
+/* The league/country filters, between the day nav and the list. Two quiet selects in a row —
+   they narrow a long day, they are not a primary action, so they sit at the day-nav's own
+   scale in the panel's plain look. */
+.sports-filters {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.sports-filters select {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel-bg-alt, #1a1d26);
+  border: 1px solid var(--panel-border, #23262f);
+  border-radius: 6px;
+  color: var(--text, #c9ccd3);
+  font-size: 12px;
+  padding: 3px 6px;
+}
+
+/* The league subsection header. Reuses the section-label language the old tab's sections used —
+   small, uppercase, dim — with the LIVE chip at the right edge when any of the group's games is
+   in play. */
+.sports-section-label .sports-live {
+  font-size: 9px;
+}
+
 .sports-section-label {
   font-size: 11px;
   text-transform: uppercase;
