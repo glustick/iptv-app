@@ -86,7 +86,9 @@ describe('loadSettings', () => {
   it('treats an "enc:"-prefixed PIN as unrecoverable without Electron rather than throwing', async () => {
     localStorage.setItem('settings', JSON.stringify({ parentalPin: 'enc:c29tZWNpcGhlcnRleHQ=' }))
     const loaded = await loadSettings()
-    expect(loaded.parentalPin).toBeNull()
+    // Unset in memory (fail-open) — and since the hardening, the stored ciphertext survives
+    // persistence too (see the undecryptable-secrets block below).
+    expect(loaded.parentalPin).toBe('')
   })
 })
 
@@ -109,5 +111,115 @@ describe('favorites / recently-watched round trip', () => {
 
   it('loads an empty array of favorite groups when nothing has been saved yet', async () => {
     expect(await loadFavoriteGroups()).toEqual([])
+  })
+})
+
+// --- Undecryptable secrets survive persistence ----------------------------------------------
+//
+// The real incident (2026-10-11): a background/smoke launch of the app couldn't answer the
+// macOS keychain prompt, every safeStorage decrypt failed, the values loaded as unset — and the
+// next settings save wrote those empty values back over the real ciphertexts, wiping them. The
+// fix records undecryptable ciphertexts at load and restores them at save unless a replacement
+// has been entered. These tests drive the failure path through a window.api stub whose decrypt
+// always rejects.
+describe('undecryptable secrets survive persistence', () => {
+  const CIPHER_PIN = 'enc:pin-ciphertext'
+  const CIPHER_KEY = 'enc:api-key-ciphertext'
+
+  function installFailingSafeStorage(): { stored: Map<string, unknown> } {
+    const stored = new Map<string, unknown>()
+    ;(globalThis as unknown as { window: unknown }).window = {
+      api: {
+        store: {
+          get: async (key: string) => stored.get(key),
+          set: async (key: string, value: unknown) => {
+            stored.set(key, value)
+          }
+        },
+        safeStorage: {
+          isAvailable: async () => true,
+          encrypt: async (plain: string) => `re-encrypted(${plain})`,
+          // The keychain denial: every decrypt of stored ciphertext fails.
+          decrypt: async () => {
+            throw new Error('Decryption is not available')
+          }
+        }
+      }
+    }
+    return { stored }
+  }
+
+  it('keeps the stored ciphertext on disk while the app reads the secret as unset', async () => {
+    const { stored } = installFailingSafeStorage()
+    stored.set('settings', { ...DEFAULT_SETTINGS, parentalPin: CIPHER_PIN, apiFootballKey: CIPHER_KEY })
+
+    const loaded = await loadSettings()
+    expect(loaded.parentalPin).toBe('')
+    expect(loaded.apiFootballKey).toBe('')
+
+    // Any unrelated settings change persists everything — this is the write that used to wipe.
+    await saveSettings({ ...loaded, sidebarWidth: 321 })
+
+    const onDisk = stored.get('settings') as { parentalPin: string; apiFootballKey: string }
+    expect(onDisk.parentalPin).toBe(CIPHER_PIN)
+    expect(onDisk.apiFootballKey).toBe(CIPHER_KEY)
+
+    // And a launch that CAN decrypt (a healthy GUI launch) gets the real secrets back: the
+    // same stub with a working decrypt reads the surviving ciphertexts.
+    ;(globalThis as unknown as { window: unknown }).window = {
+      api: {
+        store: {
+          get: async (key: string) => stored.get(key),
+          set: async (key: string, value: unknown) => {
+            stored.set(key, value)
+          }
+        },
+        safeStorage: {
+          isAvailable: async () => true,
+          encrypt: async (plain: string) => `re-encrypted(${plain})`,
+          decrypt: async (base64: string) => `decrypted(${base64})`
+        }
+      }
+    }
+    const healthy = await loadSettings()
+    expect(healthy.parentalPin).toBe('decrypted(pin-ciphertext)')
+    expect(healthy.apiFootballKey).toBe('decrypted(api-key-ciphertext)')
+  })
+
+  it('drops the record and re-encrypts when the user enters a replacement', async () => {
+    const { stored } = installFailingSafeStorage()
+    stored.set('settings', { ...DEFAULT_SETTINGS, apiFootballKey: CIPHER_KEY })
+    const loaded = await loadSettings()
+    expect(loaded.apiFootballKey).toBe('')
+
+    // The user re-enters the key in Settings.
+    await saveSettings({ ...loaded, apiFootballKey: 'my-real-key' })
+    const onDisk = stored.get('settings') as { apiFootballKey: string }
+    expect(onDisk.apiFootballKey).toBe('enc:re-encrypted(my-real-key)')
+
+    // The old ciphertext is obsolete: the record must not resurrect it on the next save.
+    await saveSettings({ ...(await loadSettings()), sidebarWidth: 250 })
+    const after = stored.get('settings') as { apiFootballKey: string }
+    expect(after.apiFootballKey).toBe('enc:re-encrypted(my-real-key)')
+  })
+
+  it('restores undecryptable VPN credentials per profile and forgets removed ones', async () => {
+    const { stored } = installFailingSafeStorage()
+    stored.set('settings', {
+      ...DEFAULT_SETTINGS,
+      vpnProfiles: [
+        { id: 'vpn-1', name: 'Tunnel', ovpnContent: 'cert-only', username: 'enc:user-cipher', password: 'enc:pass-cipher' },
+        { id: 'vpn-2', name: 'Cleared', ovpnContent: 'cert-only', username: null, password: null }
+      ]
+    })
+    const loaded = await loadSettings()
+    expect(loaded.vpnProfiles[0].username).toBeNull()
+    expect(loaded.vpnProfiles[0].password).toBeNull()
+
+    await saveSettings({ ...loaded, sidebarWidth: 300 })
+    const onDisk = stored.get('settings') as { vpnProfiles: Array<{ id: string; username: string | null; password: string | null }> }
+    expect(onDisk.vpnProfiles[0].username).toBe('enc:user-cipher')
+    expect(onDisk.vpnProfiles[0].password).toBe('enc:pass-cipher')
+    expect(onDisk.vpnProfiles[1].username).toBeNull()
   })
 })

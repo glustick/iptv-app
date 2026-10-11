@@ -231,6 +231,42 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.15.1** undecryptable secrets survive persistence — a data-loss fix born of a real incident
+  in this release's own verification session. **The incident:** after the reboot that cleared the
+  CDP blocker (see below), the smoke harness's launch of the app — a background launch, which the
+  macOS keychain denies the safeStorage prompt to — logged `safeStorage:decrypt → "Decryption is
+  not available"` for every stored secret, the fail-open contract read each as unset, and the
+  next settings save then **persisted those empty values over the real ciphertexts**, wiping the
+  operator's api-football key (and any PIN/VPN credentials the same sweep touched). The operator
+  must re-enter the api-football key in Settings → Sports data; this entry is the disclosure as
+  much as the fix. **The fix:** `loadSettings` now records the stored ciphertext of every secret
+  that fails to decrypt (module-scoped `undecryptableSecrets`), and `saveSettings` **restores it
+  for any field still unset in memory** — so a background launch's saves can no longer erase what
+  it couldn't read, and the next launch that CAN decrypt (a normal GUI launch) gets the real
+  secret back. A user-entered replacement drops the record and encrypts normally; a removed VPN
+  profile's record goes with it. The fail-open in-memory contract itself is unchanged (an
+  undecryptable value still reads as unset — the established "no permanent lock" rule). Three
+  new storage tests drive the exact incident through a rejecting-safeStorage stub: ciphertexts
+  survive an unrelated save and decrypt on the next healthy launch; a re-entered key re-encrypts
+  and its record is not resurrected; per-profile VPN credentials restore by profile id and
+  forgotten records die with removed profiles. 666 tests; typecheck and lint clean. Shipped as
+  0.15.1 because it protects whatever the operator re-enters from the very next background
+  launch.
+  **Verification debt it closed (post-reboot):** the reboot **did** clear the CDP blocker —
+  exactly as hypothesised; the app needed a longer boot window (~20s) before the pipe transport
+  answered, after which everything ran unchanged. The full GUI smoke passed **66/66** against
+  the 0.15.0 build and again against this one; and the harness's `--live` mode ran against the
+  real provider: 194 sidebar categories, 17 channel rows with listings, **a real live channel
+  decoded and advanced (readyState 4, currentTime 11.26s, no playback error) through the
+  0.15.0/0.15.1 proxy with the refused-segment retry active in the code path** — the
+  real-provider playback sanity the previous entries carried as open, now closed. Still open,
+  and now precisely scoped: the Sports tab's subsections/filters against **real api-football
+  data** (needs the operator's key re-entered — the fixtures cache path also requires a non-empty
+  key, and today's cache is unreachable by design, "today always refetches"), the refused-segment
+  retry's line appearing in the wild (organic — signatures are consumed young in a short
+  session; the machinery is wire-proven), and 0.9.0's two-playlist identity against a real
+  second account.
+
 - **0.15.0** the refused-segment retry — the signature-expiry rescue, ported from the web sibling's
   relay (allison-web-iptv v0.44.0) into this app's local proxy. **The problem, measured on the web
   sibling against the same provider family:** segment URLs are signed for roughly 25 seconds, and
@@ -457,20 +493,20 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
   `node_modules`/`out`/`dist`/`.git` to local disk, symlink `node_modules` back, build there) —
   electron-vite writes `out/` onto the SMB share and electron-builder reading it straight back is
   the stale-read corruption class; one such bundle shipped-hung before this was understood.
-  **The blocker, precisely (2026-10-11): the verification machine now blocks the CDP path
-  itself.** Inbound loopback data to these app bundles stops being serviced — a `--remote-
-  debugging-port` listener binds and prints its URL, TCP handshakes complete at kernel level, and
-  the DevTools thread then waits on its kqueue forever; identical for the **v0.13.0 release
-  artifact** (which verified cleanly over CDP on 2026-10-07) and fresh builds, sandboxed or not,
-  macOS firewall off, renderer helpers alive and the app's own event loop running. The failure
-  then moved layers during the 2026-10-11 session: CDP over `--remote-debugging-pipe` worked for
-  a window (browser-level commands answered instantly, proving the app's CDP surface itself is
-  healthy), and later page targets stopped appearing at all. This is machine state, not app code
-  — it started mid-session with no repo change (the `spawn /bin/zsh ENOENT` wedge and AppleEvent
-  timeouts of the same hours point the same direction), and a reboot or whatever OS-level thing
-  changed is the honest next step, not more app-side work. The smoke harness now runs CDP over
-  the pipe transport (commit `0f95867`) — bounded per request, loud on failure — so whenever the
-  machine cooperates again, the whole pass runs unchanged.
+  **The blocker, precisely (2026-10-11): the verification machine was blocking the CDP path
+  itself — RESOLVED by a reboot the same day, as hypothesised.** Inbound loopback data to these
+  app bundles stopped being serviced: a `--remote-debugging-port` listener bound and printed its
+  URL, TCP handshakes completed at kernel level, and the DevTools thread then waited on its
+  kqueue forever; identical for the **v0.13.0 release artifact** (which verified cleanly over CDP
+  on 2026-10-07) and fresh builds, sandboxed or not, macOS firewall off, renderer helpers alive
+  and the app's own event loop running. The failure moved layers while degrading — CDP over
+  `--remote-debugging-pipe` worked for a window (browser-level commands answered instantly,
+  proving the app's CDP surface itself was healthy), then page targets stopped appearing at all.
+  Nothing about the app's code was involved; a reboot cleared it completely, and the whole
+  verification pass ran unchanged afterwards (the 0.15.1 entry records the results — including
+  the boot-window lesson: the app needs ~20s up before the pipe answers). The harness stays on
+  the pipe transport (commit `0f95867`) — bounded per request, loud on failure, no listener for
+  the OS layer to eat.
 
 - **Cache the guide and the sports fixtures — once a day, not once a launch (requested 2026-09-28;
   the guide half is DONE 2026-09-28, sports remains).**

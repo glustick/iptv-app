@@ -107,6 +107,19 @@ export async function saveEpgReminders(reminders: EpgReminder[]): Promise<void> 
 // just a local access PIN, so they use the exact same treatment rather than a weaker one.
 const ENCRYPTED_PREFIX = 'enc:'
 
+/**
+ * The stored ciphertexts of secrets that failed to decrypt at load time — a different machine's
+ * key (a copied userData folder), or the OS keychain denying this particular launch (a
+ * background/smoke launch of the app can't answer the keychain prompt, observed live
+ * 2026-10-11: every such launch failed to decrypt, and the NEXT settings save then wrote the
+ * dropped values back as empty, wiping the real secrets). The in-memory value reads as unset —
+ * that part is the established fail-open contract — but the STORED form must survive
+ * persistence, or the secret is gone for the next launch that CAN decrypt it. saveSettings
+ * restores these wherever the field is still unset, and drops the record the moment a real
+ * replacement has been entered.
+ */
+const undecryptableSecrets = new Map<string, string>()
+
 async function encryptSecret(value: string): Promise<string> {
   if (!hasElectronApi()) return value
   const available = await window.api.safeStorage.isAvailable().catch(() => false)
@@ -191,14 +204,30 @@ export async function loadSettings(): Promise<AppSettings> {
   let needsMigration = false
   if (result.parentalPin) {
     const wasLegacyPlaintext = !result.parentalPin.startsWith(ENCRYPTED_PREFIX)
-    result.parentalPin = await decryptSecret(result.parentalPin, 'parental PIN')
-    if (wasLegacyPlaintext && result.parentalPin) needsMigration = true
+    const stored = result.parentalPin
+    const decrypted = await decryptSecret(stored, 'parental PIN')
+    if (decrypted === null) {
+      // Undecryptable here — see undecryptableSecrets: the app reads it as unset, persistence
+      // keeps the stored ciphertext for a launch that can decrypt it.
+      undecryptableSecrets.set('parentalPin', stored)
+      result.parentalPin = ''
+    } else {
+      result.parentalPin = decrypted
+      if (wasLegacyPlaintext && decrypted) needsMigration = true
+    }
   }
   // api-football.com key for the Sports tab — same secret treatment as the PIN.
   if (result.apiFootballKey) {
     const wasLegacyPlaintext = !result.apiFootballKey.startsWith(ENCRYPTED_PREFIX)
-    result.apiFootballKey = await decryptSecret(result.apiFootballKey, 'api-football key')
-    if (wasLegacyPlaintext && result.apiFootballKey) needsMigration = true
+    const stored = result.apiFootballKey
+    const decrypted = await decryptSecret(stored, 'api-football key')
+    if (decrypted === null) {
+      undecryptableSecrets.set('apiFootballKey', stored)
+      result.apiFootballKey = ''
+    } else {
+      result.apiFootballKey = decrypted
+      if (wasLegacyPlaintext && result.apiFootballKey) needsMigration = true
+    }
   }
   // Each saved VPN profile carries its own optional username/password (some .ovpn files are
   // cert-only and need neither) — decrypted the same way as the PIN, independently per profile,
@@ -210,10 +239,18 @@ export async function loadSettings(): Promise<AppSettings> {
         (!!profile.username && !profile.username.startsWith(ENCRYPTED_PREFIX)) ||
         (!!profile.password && !profile.password.startsWith(ENCRYPTED_PREFIX))
       if (wasLegacyPlaintext) needsMigration = true
+      const username = profile.username ? await decryptSecret(profile.username, `VPN username (${profile.name})`) : null
+      const password = profile.password ? await decryptSecret(profile.password, `VPN password (${profile.name})`) : null
+      if (profile.username && username === null) {
+        undecryptableSecrets.set(`vpnProfiles:${profile.id}:username`, profile.username)
+      }
+      if (profile.password && password === null) {
+        undecryptableSecrets.set(`vpnProfiles:${profile.id}:password`, profile.password)
+      }
       return {
         ...profile,
-        username: profile.username ? await decryptSecret(profile.username, `VPN username (${profile.name})`) : null,
-        password: profile.password ? await decryptSecret(profile.password, `VPN password (${profile.name})`) : null
+        username,
+        password
       }
     })
   )
@@ -241,5 +278,31 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
       password: profile.password ? await encryptSecret(profile.password) : null
     }))
   )
+  // Undecryptable secrets survive persistence (see undecryptableSecrets): restore the stored
+  // ciphertext wherever the field is still unset in memory, and drop the record the moment a
+  // real replacement has been entered (a non-empty value encrypts normally and makes the old
+  // ciphertext obsolete). A removed profile's record goes with it.
+  for (const [path, stored] of [...undecryptableSecrets]) {
+    if (path === 'parentalPin' || path === 'apiFootballKey') {
+      if (toSave[path]) {
+        undecryptableSecrets.delete(path)
+      } else {
+        toSave[path] = stored
+      }
+      continue
+    }
+    const rest = path.slice('vpnProfiles:'.length)
+    const sep = rest.lastIndexOf(':')
+    const id = rest.slice(0, sep)
+    const field = rest.slice(sep + 1) as 'username' | 'password'
+    const profile = toSave.vpnProfiles.find((p) => p.id === id)
+    if (!profile) {
+      undecryptableSecrets.delete(path)
+    } else if (profile[field]) {
+      undecryptableSecrets.delete(path)
+    } else {
+      profile[field] = stored
+    }
+  }
   return saveJson(SETTINGS_KEY, toSave)
 }
