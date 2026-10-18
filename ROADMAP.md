@@ -231,6 +231,34 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.15.2** the probe stopped racing the player — the Sky Sports FHD fix, ported from the web
+  sibling's v0.79.1 (same live report, 2026-10-18: "Sky Sports+ / Sky Sports FHD doesn't play").
+  **What the audit found here:** this app never had the web's worst failure — its live probe was
+  manual-only (a button), precisely because the ffmpeg probe is a second sustained connection to
+  the origin and this app has genuinely been used against a `max_connections: 1` account. What
+  an E-AC-3-first channel (the provider's Sky Sports FHD shape: eac3, eac3, aac, aac in the
+  PMT) actually cost on first open was the full discovery sequence: a few seconds of genuinely
+  silent playback while the decode-counter poll confirmed the symptom, the pause/release dance,
+  then the remux warm-up — every second of it a silent frozen frame with nothing on screen. **The
+  port:** `src/main/tsProgramMap.ts` — a pure PAT/PMT parser (verified against the same real
+  Sky Sports segments as the web fix: identical codec lists) — and a fast path in
+  `probeTracks` that follows master → variant → the first 256KB of one segment (~1-3s, one
+  short connection, no ffmpeg), falling back to the ffmpeg probe on any doubt. With the probe
+  that cheap, the renderer now **asks proactively on a live channel's first open** (a new
+  Player effect): the probe runs in parallel with the attach so a healthy channel starts
+  playing immediately and never waits on it; an undecodable-first-codec verdict starts the
+  remux at once instead of after the silent-playback wait, and records the same remembered
+  audio fix the watchdog's own success path writes (so every later open goes straight to it).
+  The verdict is also cached per channel (`lib/liveAudioFacts.ts`, localStorage, host+pathname
+  source matching like transcodeMemory — the "ask once" rule that keeps single-connection
+  accounts safe), and the silent-audio watchdog stays untouched as the safety net. **And the
+  notice:** every conversion-start path — the proactive probe, the watchdog, the error-shaped
+  fallbacks, the raw-stream remux, the remembered-fix apply, the hand-picked audio track, both
+  VOD paths — now shows "converting it now (usually ready within 15 seconds)" instead of a
+  silent frozen frame, cleared the moment fragments flow. 694 tests (28 new: the PMT parser,
+  the playlist navigation helpers, the fast path's fetch-stubbed chain with its ffmpeg
+  fallbacks, the facts cache, the codec-support decision); typecheck and lint clean.
+
 - **0.15.1** undecryptable secrets survive persistence — a data-loss fix born of a real incident
   in this release's own verification session. **The incident:** after the reboot that cleared the
   CDP blocker (see below), the smoke harness's launch of the app — a background launch, which the

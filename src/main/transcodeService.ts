@@ -3,6 +3,7 @@ import { mkdtemp, rm, readFile, writeFile } from 'fs/promises'
 import { existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, extname } from 'path'
+import { parseTsProgramStreams } from './tsProgramMap'
 import type { ServerResponse } from 'http'
 
 // Matches ffmpeg's own "Input #0 ... Stream #0:N(lang): Subtitle: codec ..." line, printed once
@@ -271,6 +272,101 @@ const TRANSCODE_MIME_TYPES: Record<string, string> = {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** True when the first bytes are an HLS playlist rather than a raw TS stream. Pure, so it is testable. */
+export function looksLikePlaylist(bytes: Uint8Array | undefined): boolean {
+  if (!bytes || bytes.length === 0) return false
+  return new TextDecoder().decode(bytes.slice(0, 7)) === '#EXTM3U'
+}
+
+/** A playlist that points at another playlist (a master) rather than at media segments. Pure. */
+export function isMasterPlaylistText(text: string): boolean {
+  return text.includes('#EXT-X-STREAM-INF')
+}
+
+/**
+ * The first URI a playlist points at — its first variant (a master) or its first segment (a
+ * media playlist), whichever comes first. Byte-range segments are deliberately refused: their
+ * media needs an #EXT-X-BYTERANGE pairing this hop does not track. Pure, so the playlist
+ * navigation is testable against real playlist texts without a provider.
+ */
+export function firstUriInPlaylist(text: string): string | null {
+  if (text.includes('#EXT-X-BYTERANGE')) return null
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed.length === 0 || trimmed.startsWith('#')) continue
+    return trimmed
+  }
+  return null
+}
+
+// The fast probe's two budgets (ported from the web sibling, allison-web-iptv v0.79.1, where
+// they were measured against the same provider's real segments). Playlists are a few KB; 64KB
+// is generous. The PAT/PMT sit in the very first packets of any TS segment and repeat
+// throughout the stream, so 256KB — under a second of even the provider's FHD tier — is an
+// order of magnitude more headroom than any PMT needs while keeping the request short enough
+// not to contend with the player's own loads of the same channel.
+const FAST_PROBE_PLAYLIST_BYTES = 65_536
+const FAST_PROBE_SEGMENT_BYTES = 262_144
+const FAST_PROBE_TIMEOUT_MS = 5000
+
+/** Read at most capBytes of a URL, aborting the download the moment the cap is reached. */
+async function fetchCapped(
+  url: string,
+  capBytes: number,
+  headers?: Record<string, string>
+): Promise<Buffer | null> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), FAST_PROBE_TIMEOUT_MS)
+  try {
+    const res = await fetch(url, { signal: controller.signal, headers })
+    if (!res.ok || !res.body) return null
+    const reader = res.body.getReader()
+    const chunks: Buffer[] = []
+    let total = 0
+    while (total < capBytes) {
+      const { done, value } = await reader.read()
+      if (done) break
+      chunks.push(Buffer.from(value))
+      total += value.byteLength
+    }
+    return Buffer.concat(chunks).subarray(0, capBytes)
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+    controller.abort()
+  }
+}
+
+/**
+ * The leading bytes of an MPEG-TS multiplex behind an HLS (or raw-TS) source URL: follow at
+ * most master → variant → first segment, then read the head of that segment. Null whenever the
+ * chain is anything this hop cannot resolve (byte-range segments, a second master, a fetch
+ * failure) — the caller falls back to the ffmpeg probe rather than guessing.
+ */
+async function fetchLeadingTsBytes(url: string): Promise<Buffer | null> {
+  const first = await fetchCapped(url, FAST_PROBE_PLAYLIST_BYTES)
+  if (!first) return null
+  // A raw-TS source answers the playlist URL with the multiplex itself.
+  if (!looksLikePlaylist(first)) return first.subarray(0, FAST_PROBE_SEGMENT_BYTES)
+  let playlistUrl = url
+  let text = first.toString('utf8')
+  if (isMasterPlaylistText(text)) {
+    const variant = firstUriInPlaylist(text)
+    if (!variant) return null
+    const variantUrl = new URL(variant, playlistUrl).href
+    const variantBytes = await fetchCapped(variantUrl, FAST_PROBE_PLAYLIST_BYTES)
+    if (!variantBytes || !looksLikePlaylist(variantBytes) || isMasterPlaylistText(variantBytes.toString('utf8'))) {
+      return null
+    }
+    playlistUrl = variantUrl
+    text = variantBytes.toString('utf8')
+  }
+  const segment = firstUriInPlaylist(text)
+  if (!segment) return null
+  return fetchCapped(new URL(segment, playlistUrl).href, FAST_PROBE_SEGMENT_BYTES)
 }
 
 export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeService {
@@ -837,6 +933,36 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
   async function probeTracks(
     sourceUrl: string
   ): Promise<{ audioTracks: AudioTrackInfo[]; subtitleTracks: SubtitleTrackInfo[] }> {
+    // The fast path first (ported from the web sibling, allison-web-iptv v0.79.1): one playlist
+    // hop plus the head of one segment answers the same question from the PAT/PMT in ~1-3s with
+    // no ffmpeg, where the probe below is a whole second sustained connection to the same origin
+    // the player may itself be loading — measured live on the provider's Sky Sports FHD tier,
+    // where that race could pin the probe to its full 30s backstop. With this cheap, the
+    // renderer can afford to ask proactively on a channel's first open instead of waiting out
+    // the silent-audio watchdog. Any doubt here (fMP4, byte-range, exotic stream types, a
+    // refused fetch) returns null and the ffmpeg probe below runs exactly as before.
+    try {
+      const leadingBytes = await fetchLeadingTsBytes(sourceUrl)
+      if (leadingBytes) {
+        const parsed = parseTsProgramStreams(leadingBytes)
+        if (parsed) {
+          return {
+            // The PMT states codecs and order but not language or channel layout — the fields
+            // exist for the track *picker*, and this result's consumers (the silent-audio
+            // decision, the track dropdowns) read neither until a track is actually chosen.
+            audioTracks: parsed.audioCodecs.map((codec, index) => ({
+              index,
+              language: null,
+              codec,
+              channelLayout: 'unknown'
+            })),
+            subtitleTracks: []
+          }
+        }
+      }
+    } catch {
+      // Fall through to the ffmpeg probe — the fast path is an optimization, never a verdict.
+    }
     const ffmpegPath = await deps.resolveFfmpegPath()
     if (!ffmpegPath) {
       throw new Error('ffmpeg binary not available on this platform')

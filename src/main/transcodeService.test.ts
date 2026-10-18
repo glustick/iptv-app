@@ -8,6 +8,8 @@ import ffmpegStaticPath from 'ffmpeg-static'
 import {
   AUDIO_CHANNEL_LAYOUT_FILTER,
   createTranscodeService,
+  firstUriInPlaylist,
+  isMasterPlaylistText,
   normalizeMaxHeight,
   videoHeightScaleFilter,
   type TranscodeService,
@@ -628,7 +630,10 @@ describe('probeTracks', () => {
   it('throws when no ffmpeg binary is available', async () => {
     const service = createTranscodeService({ resolveFfmpegPath: resolverFor(null) })
 
-    await expect(service.probeTracks('http://example.com/stream.ts')).rejects.toThrow('ffmpeg binary not available')
+    // Deliberately not an http(s) URL: since the PMT fast path landed, a real-looking URL would
+    // be fetched before ffmpeg is ever consulted, and a unit test must not depend on the
+    // network. 'not-a-url' is refused by the fast path and reaches the ffmpeg branch directly.
+    await expect(service.probeTracks('not-a-url')).rejects.toThrow('ffmpeg binary not available')
   })
 
   it('reports every audio track found, including one with no language tag', async () => {
@@ -681,6 +686,153 @@ describe('probeTracks', () => {
     const result = await withFakeFfmpegMode('hang_forever', () => service.probeTracks('irrelevant-source'))
 
     expect(result).toEqual({ audioTracks: [], subtitleTracks: [] })
+  })
+
+  // The fast path (v0.15.2, ported from the web sibling's v0.79.1): master → variant → the
+  // head of the first segment, parsed from its PMT with no ffmpeg at all. These tests stub
+  // globalThis.fetch — the one network boundary the fast path crosses — and prove both that it
+  // answers and that its failures fall through to the ffmpeg probe above unchanged.
+  const SOURCE = 'https://provider.example/live/1.m3u8'
+  const VARIANT = 'https://provider.example/live/variant.m3u8'
+  const SEGMENT = 'https://provider.example/live/seg1.ts'
+
+  // The smallest multiplex parseTsProgramStreams accepts: one program, h264 + aac + eac3.
+  function minimalTsBytes(): Buffer {
+    const packetOf = (pid: number, payload: Buffer): Buffer => {
+      const afLength = 188 - 5 - payload.length
+      const header = Buffer.alloc(4)
+      header.writeUInt8(0x47, 0)
+      header.writeUInt8(0x40 | ((pid >> 8) & 0x1f), 1)
+      header.writeUInt8(pid & 0xff, 2)
+      header.writeUInt8(0x30, 3)
+      const af = Buffer.alloc(1 + afLength)
+      af.writeUInt8(afLength, 0)
+      return Buffer.concat([header, af, payload])
+    }
+    const section = (tableId: number, fixed: Buffer, entries: Buffer): Buffer =>
+      Buffer.concat([
+        Buffer.from([0]),
+        Buffer.from([tableId, 0xb0, fixed.length + entries.length + 4]),
+        fixed,
+        entries,
+        Buffer.alloc(4)
+      ])
+    const fixed = Buffer.from([0, 1, 0xc1, 0, 0])
+    const pat = section(0x00, fixed, Buffer.from([0, 1, 0xf0, 0x00]))
+    const pmtEntries: Buffer[] = []
+    for (const [streamType, pid] of [[0x1b, 0x100], [0x0f, 0x101], [0x87, 0x102]] as const) {
+      pmtEntries.push(Buffer.from([streamType, 0xe0, pid & 0xff, 0xf0, 0x00]))
+    }
+    const pmt = section(0x02, Buffer.concat([fixed, Buffer.from([0xe1, 0xff, 0xf0, 0x00])]), Buffer.concat(pmtEntries))
+    return Buffer.concat([packetOf(0x0000, pat), packetOf(0x1000, pmt)])
+  }
+
+  function withFetchStub<T>(routes: Record<string, string | Buffer | number>, fn: () => Promise<T>): Promise<T> {
+    const original = globalThis.fetch
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      const route = routes[url]
+      if (route === undefined) throw new Error(`unexpected fetch in test: ${url}`)
+      const status = typeof route === 'number' ? route : 200
+      // Uint8Array.from re-wraps the Buffer in a plain ArrayBuffer-backed view — this project's
+      // DOM typings don't accept Buffer as BodyInit even though it is a Uint8Array subclass.
+      const body = typeof route === 'number' ? null : typeof route === 'string' ? route : Uint8Array.from(route)
+      return new Response(body, { status })
+    }) as typeof fetch
+    return Promise.resolve(fn()).finally(() => {
+      globalThis.fetch = original
+    })
+  }
+
+  it('answers from the first segment’s PMT without touching ffmpeg', async () => {
+    // The resolver throws if reached — the whole point is that the fast path never falls back.
+    const service = createTranscodeService({
+      resolveFfmpegPath: () => Promise.reject(new Error('ffmpeg must not be reached'))
+    })
+
+    const result = await withFetchStub(
+      {
+        [SOURCE]: '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nvariant.m3u8\n',
+        [VARIANT]: '#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:3.84,\nseg1.ts\n',
+        [SEGMENT]: minimalTsBytes()
+      },
+      () => service.probeTracks(SOURCE)
+    )
+
+    expect(result.audioTracks).toEqual([
+      { index: 0, language: null, codec: 'aac', channelLayout: 'unknown' },
+      { index: 1, language: null, codec: 'eac3', channelLayout: 'unknown' }
+    ])
+    expect(result.subtitleTracks).toEqual([])
+  })
+
+  it('answers from a raw-TS source that answers the playlist URL with the multiplex itself', async () => {
+    const service = createTranscodeService({ resolveFfmpegPath: () => Promise.reject(new Error('ffmpeg must not be reached')) })
+
+    const result = await withFetchStub({ [SOURCE]: minimalTsBytes() }, () => service.probeTracks(SOURCE))
+
+    expect(result.audioTracks.map((track) => track.codec)).toEqual(['aac', 'eac3'])
+  })
+
+  it('falls back to the ffmpeg probe when the fast path cannot fetch the source', async () => {
+    const service = createTranscodeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG) })
+
+    const result = await withFetchStub({ [SOURCE]: 502 }, () =>
+      withFakeFfmpegMode('probe_multi_audio', () => service.probeTracks(SOURCE))
+    )
+
+    expect(result.audioTracks.map((track) => track.codec)).toEqual(['aac', 'eac3', 'eac3'])
+  })
+
+  it('falls back to the ffmpeg probe when the media playlist needs byte ranges', async () => {
+    const service = createTranscodeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG) })
+
+    const result = await withFetchStub(
+      {
+        [SOURCE]: '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nvariant.m3u8\n',
+        [VARIANT]: '#EXTM3U\n#EXT-X-BYTERANGE:4000@0\nseg1.ts\n'
+      },
+      () => withFakeFfmpegMode('probe_multi_audio', () => service.probeTracks(SOURCE))
+    )
+
+    expect(result.audioTracks.map((track) => track.codec)).toEqual(['aac', 'eac3', 'eac3'])
+  })
+
+  it('falls back to the ffmpeg probe when the segment is not a TS multiplex', async () => {
+    const service = createTranscodeService({ resolveFfmpegPath: resolverFor(FAKE_FFMPEG) })
+
+    const result = await withFetchStub(
+      {
+        [SOURCE]: '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nvariant.m3u8\n',
+        [VARIANT]: '#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:3.84,\nseg1.m4s\n',
+        [SEGMENT]: Buffer.from('ftypisom — an fMP4 segment, no PMT anywhere')
+      },
+      () => withFakeFfmpegMode('probe_multi_audio', () => service.probeTracks(SOURCE))
+    )
+
+    expect(result.audioTracks.map((track) => track.codec)).toEqual(['aac', 'eac3', 'eac3'])
+  })
+})
+
+describe('playlist navigation helpers', () => {
+  it('names a master by its variant lines and a media playlist by their absence', () => {
+    expect(isMasterPlaylistText('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nv.m3u8\n')).toBe(true)
+    expect(isMasterPlaylistText('#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:3.84,\nseg1.ts\n')).toBe(false)
+    expect(isMasterPlaylistText('')).toBe(false)
+  })
+
+  it('returns the first URI line, skipping comments and blanks', () => {
+    const master = '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\n\nvariant.m3u8\n# comment\nlater.ts\n'
+    expect(firstUriInPlaylist(master)).toBe('variant.m3u8')
+    expect(firstUriInPlaylist('#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:3.84,\nseg1.ts\nseg2.ts\n')).toBe('seg1.ts')
+  })
+
+  it('refuses byte-range playlists rather than guessing a range', () => {
+    expect(firstUriInPlaylist('#EXTM3U\n#EXT-X-BYTERANGE:4000@0\nseg1.ts\n')).toBeNull()
+  })
+
+  it('answers null for a playlist with no URI lines at all', () => {
+    expect(firstUriInPlaylist('#EXTM3U\n#EXT-X-TARGETDURATION:6\n')).toBeNull()
   })
 })
 

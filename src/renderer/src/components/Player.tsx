@@ -6,6 +6,8 @@ import { PlayerStatsOverlay } from './PlayerStatsOverlay'
 import { PlayerSeekBar } from './PlayerSeekBar'
 import { VpnWarnings } from './VpnWarnings'
 import { useTranscodeFallback } from '../lib/useTranscodeFallback'
+import { canDecodeAudioCodec } from '../lib/audioCodecSupport'
+import { liveAudioFactKey, rememberLiveAudioFact, rememberedLiveAudioFact } from '../lib/liveAudioFacts'
 import { loadQualityMaxHeight, saveQualityMaxHeight } from '../lib/qualityPref'
 import { createPlaylistStallTracker } from '../lib/playlistStall'
 import { useNumericChannelEntry } from '../lib/useNumericChannelEntry'
@@ -68,6 +70,13 @@ const SKIP_SECONDS_LONG = 60
 // silent-tick check ever got a chance to run.
 const SILENT_AUDIO_CHECK_INTERVAL_MS = 1000
 const SILENT_AUDIO_MAX_CHECK_ATTEMPTS = 90
+// What the viewer sees while a conversion session starts (ported from the web sibling's
+// v0.79.1). The session takes real seconds of ffmpeg reading the live source before its first
+// segment exists, and until now every one of those seconds was a silent frozen frame — the
+// shape "Sky Sports FHD doesn't play" read as from the sofa. Cleared the moment fragments
+// flow (the FRAG_BUFFERED handler); an error replaces it.
+const CONVERSION_NOTICE =
+  'This channel’s audio can’t play in this app directly — converting it now (usually ready within 15 seconds)…'
 // Some Xtream accounts cap concurrent connections at exactly 1 (confirmed against the real test
 // account via get_server_info — max_connections: "1") — pausing/detaching the original <video>
 // stops the browser from requesting more of it, but doesn't guarantee the origin server has
@@ -795,6 +804,9 @@ export function Player(): JSX.Element | null {
             }
           )
         ) {
+          // tryFallback only answers true when it actually started a conversion — say so,
+          // rather than leaving a frozen frame for the seconds its session needs.
+          setStatusNotice(CONVERSION_NOTICE)
           setPlaybackError(null)
           return
         }
@@ -823,6 +835,7 @@ export function Player(): JSX.Element | null {
             }
           )
         ) {
+          setStatusNotice(CONVERSION_NOTICE)
           setPlaybackError(null)
           return
         }
@@ -986,6 +999,7 @@ export function Player(): JSX.Element | null {
         hls.stopLoad()
         silentAudioCheckTimer = setTimeout(() => {
           silentAudioCheckTimer = null
+          setStatusNotice(CONVERSION_NOTICE)
           const started = tryFallbackForSilentAudio(
             nowPlaying.url,
             () => {
@@ -1056,6 +1070,7 @@ export function Player(): JSX.Element | null {
 
         silentAudioCheckTimer = setTimeout(() => {
           silentAudioCheckTimer = null
+          setStatusNotice(CONVERSION_NOTICE)
           startRememberedVodFallback(
             nowPlaying.url,
             rememberedAudioIndex,
@@ -1116,6 +1131,7 @@ export function Player(): JSX.Element | null {
 
           silentAudioCheckTimer = setTimeout(() => {
             silentAudioCheckTimer = null
+            setStatusNotice(CONVERSION_NOTICE)
             tryFallbackForSilentAudio(
               nowPlaying.url,
               () => setReloadTick((t) => t + 1),
@@ -1170,6 +1186,7 @@ export function Player(): JSX.Element | null {
     const fix =
       liveAudioFixes[channelKey(nowPlaying.playbackPlaylistId, nowPlaying.streamId, primaryPlaylistId)]
     if (!fix || fix.url !== nowPlaying.url) return
+    setStatusNotice(CONVERSION_NOTICE)
     switchLiveAudioTrack(
       nowPlaying.url,
       fix.audioIndex,
@@ -1186,6 +1203,68 @@ export function Player(): JSX.Element | null {
       }
     )
   }, [nowPlaying, liveAudioFixes, hasFallbackActive, transcoding, switchLiveAudioTrack, rememberLiveAudioFix, forgetLiveAudioFix])
+
+  // A live channel's first open asks the main process what its first audio track carries, and
+  // converts immediately when this build can't decode it (v0.15.2, ported from the web
+  // sibling's v0.79.1 fix for the same Sky Sports FHD report). Before this, an E-AC-3-first
+  // channel paid the full discovery sequence every first visit: a few seconds of genuinely
+  // silent playback while the poll below confirmed the symptom, then the pause-and-release
+  // dance, then the remux — all on a channel whose PMT states the answer outright. The probe
+  // is the PMT fast path (~1-3s, one short segment fetch — no second sustained ffmpeg
+  // connection, which is exactly why it used to be manual-only), it runs in parallel with the
+  // attach so a healthy channel starts playing immediately and never waits on it, and its
+  // verdict is remembered per channel (lib/liveAudioFacts.ts) so a channel is only ever asked
+  // once. The silent-audio watchdog stays exactly as it is — the safety net for a probe that
+  // failed, lied, or never ran — and every guard below exists to keep the two from doubling up.
+  useEffect(() => {
+    if (!nowPlaying || nowPlaying.kind !== 'live') return
+    if (hasFallbackActive || transcoding) return
+    // A remembered fix already knows this channel needs the remux — its own effect above is
+    // starting it; asking the provider anything would only add a connection.
+    const fixKey = channelKey(nowPlaying.playbackPlaylistId, nowPlaying.streamId, primaryPlaylistId)
+    if (liveAudioFixes[fixKey]) return
+    const factKey = liveAudioFactKey({
+      playlistId: nowPlaying.playbackPlaylistId,
+      streamId: nowPlaying.streamId,
+      primaryPlaylistId
+    })
+    if (rememberedLiveAudioFact(factKey, nowPlaying.url)) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const { audioTracks } = await window.api.transcode.probeTracks(nowPlaying.url)
+        if (cancelled) return
+        rememberLiveAudioFact(factKey, nowPlaying.url, audioTracks[0]?.codec ?? null)
+        const firstCodec = audioTracks[0]?.codec
+        if (!firstCodec) return
+        const mseProbe = (mimeType: string): boolean =>
+          typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported(mimeType)
+        if (canDecodeAudioCodec(firstCodec, mseProbe)) return
+        console.warn(`[player] first audio track is ${firstCodec}, which this app cannot decode; converting`)
+        setStatusNotice(CONVERSION_NOTICE)
+        tryFallbackForSilentAudio(
+          nowPlaying.url,
+          () => {
+            // The same record the watchdog's own success path writes — the next open of this
+            // channel goes straight to the remux without probing or detecting anything.
+            rememberLiveAudioFix(nowPlaying.streamId, 0, nowPlaying.url)
+            setReloadTick((t) => t + 1)
+          },
+          (message) => {
+            setPlaybackError(`Audio codec not supported by this player, and automatic transcoding failed: ${message}`)
+          },
+          false
+        )
+      } catch {
+        // A failed probe is not evidence of anything — the watchdog below owns this channel.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+    // reloadTick is deliberately absent: an internal reload mid-conversion must not re-probe
+    // (the hook's own tried/awaiting flags already absorb a doubled fallback attempt).
+  }, [nowPlaying, liveAudioFixes, hasFallbackActive, transcoding, primaryPlaylistId, tryFallbackForSilentAudio, rememberLiveAudioFix])
 
   // Keep the display from sleeping while something is genuinely being watched — an IPTV app
   // that lets the OS blank the screen mid-match is missing something every hardware set-top
@@ -1863,6 +1942,7 @@ export function Player(): JSX.Element | null {
                     onChange={(e) => {
                       const index = Number(e.target.value)
                       if (index === (activeLiveAudioTrackIndex ?? 0)) return
+                      setStatusNotice(CONVERSION_NOTICE)
                       switchLiveAudioTrack(
                         nowPlaying.url,
                         index,
