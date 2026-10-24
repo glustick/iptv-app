@@ -514,6 +514,10 @@ export function useTranscodeFallback(): {
       if (awaitingTranscodeRef.current || triedTranscodeRef.current) return
       const key = nowPlayingVodMemoryKey()
       if (key === null) return
+      // The one line that distinguishes this path from the detection poll in the app log —
+      // before it existed, a live verification could not tell a remembered skip from a poll
+      // that never got to conclude (found during the 2026-10-24 verification pass).
+      console.log(`[player] VOD using remembered audio fix (detection skipped) — ${key}`)
       startFallback(
         originalUrl,
         true,

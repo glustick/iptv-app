@@ -4,6 +4,7 @@ import { useAppStore } from '../store/useAppStore'
 import { useResizableWidth } from '../lib/useResizableWidth'
 import { pct } from '../lib/epgTime'
 import { channelKey } from '../lib/channelIdentity'
+import { findAlsoOnCandidates, type AlsoOnCandidate } from '../lib/crossPlaylist'
 import { describeChannelHealth } from '../lib/channelHealth'
 import type { LiveStream, ShortEpgProgram, ClockFormat } from '../lib/types'
 
@@ -33,6 +34,10 @@ function formatTime(epochSeconds: string, clockFormat: ClockFormat): string {
     hour12: clockFormat === '12h'
   })
 }
+
+// How many "Also on …" entries the context menu offers before it stops. More playlists than
+// this carrying the same channel is a catalogue oddity, not a menu.
+const MAX_ALSO_ON_ITEMS = 4
 
 /** An open channel context menu: which channel, and where on screen it was opened. */
 interface ChannelMenuState {
@@ -263,6 +268,14 @@ export function EpgGrid({
   const toggleHiddenLiveChannel = useAppStore((s) => s.toggleHiddenLiveChannel)
   const isChannelHidden = useAppStore((s) => s.isChannelHidden)
   const openEpgMatch = useAppStore((s) => s.openEpgMatch)
+  // The "Also on …" switch (0.16.0): candidates come from the merged live catalogue, which
+  // covers every connected playlist. It is built lazily on demand — usually already loaded for
+  // numeric channel entry — so a null catalogue means this open shows no items and quietly
+  // starts the load for the next one.
+  const primaryPlaylistId = useAppStore((s) => s.primaryPlaylistId)
+  const numericChannelCatalog = useAppStore((s) => s.numericChannelCatalog)
+  const ensureChannelCatalog = useAppStore((s) => s.ensureChannelCatalog)
+  const playChannel = useAppStore((s) => s.play)
   const { width: channelColumnWidth, startDrag: startChannelColumnDrag } = useResizableWidth(
     epgChannelColumnWidth,
     1,
@@ -309,7 +322,12 @@ export function EpgGrid({
   // so a right-click near an edge still opens it fully on screen rather than half off it.
   function openChannelMenu(x: number, y: number, channel: LiveStream): void {
     const MENU_WIDTH = 200
-    const MENU_HEIGHT = 110
+    // The base menu is title + two items; each "Also on …" entry adds a row. Computing it here
+    // keeps the edge-clamp honest for the menu that is actually about to render.
+    const alsoOnCount = numericChannelCatalog
+      ? Math.min(findAlsoOnCandidates(channel, numericChannelCatalog, primaryPlaylistId).length, MAX_ALSO_ON_ITEMS)
+      : 0
+    const MENU_HEIGHT = 110 + alsoOnCount * 34
     setContextMenu({
       channel,
       x: Math.max(8, Math.min(x, window.innerWidth - MENU_WIDTH - 8)),
@@ -319,6 +337,7 @@ export function EpgGrid({
 
   function handleRowContextMenu(e: React.MouseEvent, channel: LiveStream): void {
     e.preventDefault()
+    if (!numericChannelCatalog) void ensureChannelCatalog()
     openChannelMenu(e.clientX, e.clientY, channel)
   }
 
@@ -604,6 +623,24 @@ export function EpgGrid({
           >
             EPG match…
           </button>
+          {(numericChannelCatalog
+            ? findAlsoOnCandidates(contextMenu.channel, numericChannelCatalog, primaryPlaylistId)
+            : []
+          )
+            .slice(0, MAX_ALSO_ON_ITEMS)
+            .map((candidate: AlsoOnCandidate) => (
+              <button
+                key={`also-on-${candidate.playlistId}`}
+                role="menuitem"
+                title={`Switch to this channel on the "${candidate.playlistName}" playlist`}
+                onClick={() => {
+                  closeChannelMenu()
+                  playChannel('live', candidate.streamId, candidate.name, 'm3u8', candidate.icon, candidate.tvArchive, candidate.playlistId)
+                }}
+              >
+                Also on {candidate.playlistName} →
+              </button>
+            ))}
         </div>
       )}
     </div>

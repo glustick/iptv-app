@@ -231,6 +231,32 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.16.0** the "Also on …" switch — the web sibling's manual cross-playlist jump, ported as the
+  last missing piece of desktop multi-playlist parity. Right-click a channel row and, when
+  another connected playlist carries a channel of the same normalised name, the context menu
+  offers `Also on {playlist} →` — one click plays that playlist's own row through its own
+  client and account (the store's `play` already routed by playlistId; nothing new had to be
+  built under the switch). The matcher is `lib/crossPlaylist.ts`, ported code-identical from
+  the web's `lib/crossPlaylist.ts` (itself ported from its server's `playlists.ts` — tests and
+  all), with `findAlsoOnCandidates` adapted to the desktop's merged `numericChannelCatalog`:
+  matched on the normalised NAME alone (region tags and quality words stripped), because two
+  providers never spell a category the same way and a category-strict key would hide the offer
+  exactly where it matters; a wrong offer is one visible, labelled click, a missing offer is a
+  switch that never appears. The merged catalogue loads lazily — a right-click with no
+  catalogue quietly kicks the load, so the first open right after a cold start can show no
+  items and the next one does. The menu caps at four entries and clamps its on-screen height
+  for them. **Nothing merges, nothing fails over on its own** — the 2026-09-23 decisions,
+  kept. Also in this release, from the 2026-10-24 verification pass's findings: **one log line
+  on the VOD remembered-audio-fix path** (`[player] VOD using remembered audio fix (detection
+  skipped)`), which finally distinguishes a remembered skip from a detection poll in the app
+  log — the exact observability gap that kept the VOD transcode-memory item on the
+  not-live-verified list. And the smoke harness gained an **`--also-on` mode**: a second
+  synthetic profile on the same mock server (identical catalogue by construction — every
+  channel exists on both lines), right-click → the item appears → click → playback starts,
+  asserted end-to-end (both PASS against a local-disk build; the synthetic contextmenu
+  dispatch needs `button: 2` — React ignores a contextmenu without it, found the hard way).
+  The baseline stays 66/66 on the same build. 701 tests (7 new); typecheck and lint clean.
+
 - **0.15.2** the probe stopped racing the player — the Sky Sports FHD fix, ported from the web
   sibling's v0.79.1 (same live report, 2026-10-18: "Sky Sports+ / Sky Sports FHD doesn't play").
   **What the audit found here:** this app never had the web's worst failure — its live probe was
@@ -676,9 +702,9 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
   `number` throughout (`Record<number, …>` becomes `Record<string, …>`, which is free at runtime —
   a JS object already stringifies its numeric keys, so the single-playlist case is unchanged).
   Favourites and watch history need nothing: an entry carries the whole channel, playlist included.
-  Custom-category membership itself is done (0.7.108); what remains there is that the catalogue it
-  resolves against is built from the primary playlist alone (`ensureChannelCatalog`), so a channel
-  from another playlist cannot be added to a category yet — the entry format is ready for it.
+  Custom-category membership itself is done (0.7.108), and the catalogue residue this line used
+  to record is ALSO gone — 0.9.0's `ensureChannelCatalog` already loads every connected playlist
+  (verified against the code 2026-10-24 while porting the switch; the note had gone stale).
 - **Bound and unblock the guide load — DONE in 0.7.103, kept here only for the numbers.** — the top item, and the cause of the reported hang.** Measured
   2026-09-22: this provider's full guide is **16.3MB gzipped → 107.4MB of XML**; loading it peaked at
   **~1GB of process memory**, settled around 570MB, and the parse runs **synchronously on the main

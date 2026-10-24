@@ -163,6 +163,50 @@ function restorePinnedProfile() {
 }
 
 /**
+ * --also-on mode: enables a SECOND synthetic profile (same mock server, so its catalogue is
+ * identical by construction — every channel exists on both lines, which is exactly the
+ * deterministic shape the switch needs) for the duration of the run, restoring the operator's
+ * enabled-playlist list on the way out. The profile itself is left in the config (the per-run
+ * reset already pins enabledPlaylistIds to the first profile alone, so it stays dormant).
+ */
+let alsoOnPreviousEnabledIds = null
+function enableSecondSyntheticProfile() {
+  try {
+    const cfg = JSON.parse(readFileSync(CFG_PATH, 'utf8'))
+    const profiles = Array.isArray(cfg.xtream_profiles) ? cfg.xtream_profiles : []
+    const settings = cfg.settings ?? {}
+    alsoOnPreviousEnabledIds = Array.isArray(settings.enabledPlaylistIds)
+      ? [...settings.enabledPlaylistIds]
+      : null
+    if (!profiles.some((p) => p && p.id === 'mock-test-2')) {
+      const base = profiles.find((p) => p && p.id === 'mock-test-1')
+      if (base) profiles.push({ ...base, id: 'mock-test-2', name: 'Synthetic second provider' })
+    }
+    settings.enabledPlaylistIds = ['mock-test-1', 'mock-test-2']
+    cfg.xtream_profiles = profiles
+    cfg.settings = settings
+    writeFileSync(CFG_PATH, JSON.stringify(cfg, null, 2))
+    console.log('second synthetic profile enabled for the also-on run')
+  } catch (err) {
+    console.log('could not enable the second synthetic profile:', err.message.slice(0, 60))
+  }
+}
+function restoreSecondSyntheticProfile() {
+  if (alsoOnPreviousEnabledIds === null) return
+  try {
+    const cfg = JSON.parse(readFileSync(CFG_PATH, 'utf8'))
+    if (cfg.settings && Array.isArray(cfg.settings.enabledPlaylistIds) && cfg.settings.enabledPlaylistIds.includes('mock-test-2')) {
+      cfg.settings.enabledPlaylistIds = alsoOnPreviousEnabledIds
+      writeFileSync(CFG_PATH, JSON.stringify(cfg, null, 2))
+      console.log('restored the enabled-playlist list')
+    }
+  } catch {
+    // Best-effort; the per-run reset heals this on the next run anyway.
+  }
+  alsoOnPreviousEnabledIds = null
+}
+
+/**
  * Clears the guide-cache entries the synthetic provider owns. The mock's guide is built around
  * the SERVER's start clock (its programmes run NOW±30 minutes, fixed at server start), so a
  * cached copy from an earlier session is fresh by the app's own 24h TTL yet describes a
@@ -303,10 +347,15 @@ async function main() {
   resetTestMappings()
   resetGuideCache()
   pinSyntheticProfile()
-  process.on('exit', restorePinnedProfile)
+  if (process.argv.includes('--also-on')) enableSecondSyntheticProfile()
+  process.on('exit', () => {
+    restorePinnedProfile()
+    restoreSecondSyntheticProfile()
+  })
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.on(signal, () => {
       restorePinnedProfile()
+      restoreSecondSyntheticProfile()
       process.exit(130)
     })
   }
@@ -393,6 +442,61 @@ async function main() {
         nativeVirtualKeyCode: 27
       })
     }
+  }
+
+  // --also-on: with BOTH synthetic profiles connected (identical catalogues by construction),
+  // verify the context menu offers the same channel on the other playlist and that clicking it
+  // starts playback. Assertions, not a report — the fixture is fully deterministic.
+  if (process.argv.includes('--also-on')) {
+    const failures = []
+    const rowSelector = 'button.epg-row-channel'
+    let offered = false
+    // The merged catalogue loads lazily; the FIRST right-click may open a menu without items
+    // (the app kicks the load on open — see EpgGrid). Retry the open until an item lands.
+    for (let attempt = 0; attempt < 6 && !offered; attempt++) {
+      await evaluate(
+        cdp,
+        `(() => { const row = document.querySelector(${JSON.stringify(rowSelector)}); if (!row) return false; row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, buttons: 2, clientX: 240, clientY: 240 })); return true })()`
+      )
+      await sleep(700)
+      offered = await evaluate(
+        cdp,
+        `[...document.querySelectorAll('.epg-context-menu button')].some((b) => b.textContent.trim().startsWith('Also on '))`
+      )
+      if (!offered) {
+        await pressEscape()
+        await sleep(300)
+      }
+    }
+    console.log(offered ? 'PASS  the context menu offers the same channel on the other playlist' : 'FAIL  the context menu offers the same channel on the other playlist')
+    if (!offered) {
+      failures.push('also-on item missing')
+      console.log(
+        'also-on diagnostics:',
+        await evaluate(
+          cdp,
+          `JSON.stringify({
+            rows: document.querySelectorAll('button.epg-row-channel').length,
+            menuOpen: !!document.querySelector('.epg-context-menu'),
+            menuButtons: [...document.querySelectorAll('.epg-context-menu button')].map((b) => b.textContent.trim()),
+            bodyHasLiveNews: document.body.innerText.includes('Live News'),
+            playlistsMentioned: (document.body.innerText.match(/Synthetic/g) || []).length
+          })`
+        )
+      )
+    }
+    if (offered) {
+      await evaluate(
+        cdp,
+        `[...document.querySelectorAll('.epg-context-menu button')].find((b) => b.textContent.trim().startsWith('Also on '))?.click() || false`
+      )
+      await sleep(2500)
+      const playing = await evaluate(cdp, '!!document.querySelector("video.player-video")')
+      console.log(playing ? 'PASS  clicking the switch starts playback' : 'FAIL  clicking the switch starts playback')
+      if (!playing) failures.push('switch click did not start playback')
+    }
+    cdp.close()
+    process.exit(failures.length > 0 ? 1 : 0)
   }
 
   // --live [profileNameFragment]: switch to a real provider profile and REPORT what the app does
