@@ -252,14 +252,21 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
   **Reads:** the apply-remembered-fix effect and the PMT-probe suppression read the unified
   memory via `rememberedLiveRemux` (gaining sameSourceUrl matching — rotated provider tokens now
   hit, strictly more applies than the old exact-URL rule). 706 → 713 tests; typecheck and lint
-  clean. **Rig note, honestly recorded:** the smoke's two direct-decode checks ("playback
-  decodes and advances", "playback still decodes with the subtitle track selected") fail
-  consistently in the current environment ON THE 0.15.2 PRE-ROUND ARTIFACT TOO (control run) —
-  code-innocent, rig-suspect (the desktop's relay binds a dynamic port; the failing path is
-  renderer hls.js → relay → mock, while main-process ffmpeg → mock works, which is why every
-  transcode check passes). The rig investigation is its own follow-up; the unification's
-  evidence is the suite plus the migration observed running against real production data in the
-  rig (the operator's own remembered fixes for two real channels, migrated with correct keys).
+  clean. **Rig note, honestly recorded — investigated in-session:** the smoke's two direct-decode
+  checks ("playback decodes and advances", "playback still decodes with the subtitle track
+  selected") fail consistently (3 runs, 64/66) on the v0.17.0 build AND on the 0.15.2 pre-round
+  artifact as a control — code-innocent twice over. The investigation narrowed it hard: an
+  in-renderer probe (via `--eval`, through `window.api.proxy.getBaseUrl()`) fetched the live
+  playlist AND segment through the app's own dynamic-port relay in **2ms each, status 200** —
+  the exact requests the failing checks' playback needs, answered instantly while an instance
+  was live. The transcode playback checks pass through the same relay. So the failures are NOT
+  the relay, NOT the mock (serves fine), NOT the unification — they are a full-flow interaction:
+  something the smoke's 40+ prior checks leave behind (mapping state, category-catalog state,
+  the preview connection) delays the player's first buffer during the check's window. Next
+  session's tool: an instrumented full-flow run that probes video readyState + the relay from
+  inside the decode check's window. The unification's evidence stands on the suite plus the
+  migration observed against real production data (the operator's own remembered fixes for two
+  real channels, migrated with correct keys, seen in the rig).
 
 - **0.16.1** the count-first answer to "what does broken channel mean beyond the manifest", plus
   the VOD transcode-memory's live verification. **The count:** a channel that is LIVE (the health
