@@ -194,6 +194,14 @@ export async function loadSettings(): Promise<AppSettings> {
     console.warn('[settings] transcodeMemory was not an object on disk — resetting it')
     result.transcodeMemory = {}
   }
+  if (
+    typeof result.undecodableVideoChannels !== 'object' ||
+    result.undecodableVideoChannels === null ||
+    Array.isArray(result.undecodableVideoChannels)
+  ) {
+    console.warn('[settings] undecodableVideoChannels was not an object on disk — resetting it')
+    result.undecodableVideoChannels = {}
+  }
   const sportsCache = result.sportsFixturesCache
   if (sportsCache !== null && sportsCache !== undefined && (typeof sportsCache !== 'object' || Array.isArray(sportsCache))) {
     console.warn('[settings] sportsFixturesCache was not an object on disk — resetting it')

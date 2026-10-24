@@ -252,8 +252,11 @@ function resetGuideCache() {
  */
 let cdpMsgId = 0
 async function spawnAndConnect(appLog) {
-  const child = spawn(join(APP, 'Contents/MacOS/AllisonIPTV'), ['--remote-debugging-pipe'], {
+  const child = spawn(join(APP, 'Contents/MacOS/AllisonIPTV'), ['--remote-debugging-pipe', '--enable-logging'], {
     detached: true,
+    // The updater kill switch (see src/main/index.ts): unpackaged --dir builds ship no
+    // app-update.yml, and the check's ENOENT would otherwise land mid-run.
+    env: { ...process.env, ALLISONIPTV_DISABLE_UPDATER: '1' },
     stdio: ['ignore', appLog, appLog, 'pipe', 'pipe']
   })
   child.unref()
@@ -442,6 +445,83 @@ async function main() {
         nativeVirtualKeyCode: 27
       })
     }
+  }
+
+  // --vod-memory: the VOD transcode-memory skip, live-verified (0.16.1). Two launches: the
+  // first plays the fixture movie long enough for the audio-fix remux to CONFIRM (fragments
+  // flowing through the transcode) — the moment rememberTranscodeOutcome writes — then quits;
+  // the second plays the same movie again and the captured app log must carry the remembered
+  // path's line ("VOD using remembered audio fix (detection skipped)") rather than paying the
+  // detection poll. This is also the probe for the anomaly found on 2026-10-24: smoke runs that
+  // demonstrably played the fix left settings.transcodeMemory empty — if run A here still ends
+  // with an empty memory, the write is being lost and THAT is the finding.
+  if (process.argv.includes('--vod-memory')) {
+    const failures0 = []
+    const openFixtureMovie = async () => {
+      try {
+        execFileSync('osascript', ['-e', 'tell application "AllisonIPTV" to activate'], { stdio: 'ignore', timeout: 5000 })
+      } catch { /* best-effort */ }
+      await sleep(800)
+      await evaluate(cdp, `[...document.querySelectorAll('button.tab')].find((b) => b.textContent.trim() === 'Movies')?.click() || true`)
+      try { execFileSync('pgrep', ['-x', 'AllisonIPTV'], { stdio: 'ignore', timeout: 3000 }); console.log(`  [liveness] ${new Date().toISOString().slice(11,19)} after Movies-tab click: alive`) } catch { console.log(`  [liveness] ${new Date().toISOString().slice(11,19)} after Movies-tab click: APP GONE`) }
+      let listed = false
+      for (let i = 0; i < 45 && !listed; i++) {
+        listed = await evaluate(cdp, `[...document.querySelectorAll('.channel-item--grid')].some((b) => b.textContent.includes('A Movie (Dolby audio)'))`)
+        if (!listed) await sleep(1000)
+      }
+      try { execFileSync('pgrep', ['-x', 'AllisonIPTV'], { stdio: 'ignore', timeout: 3000 }); console.log('  [liveness] movie card listed: alive') } catch { console.log('  [liveness] movie card listed: APP GONE') }
+      if (!listed) throw new Error('fixture movie never listed — is the mock provider up?')
+      await evaluate(cdp, `[...document.querySelectorAll('.channel-item--grid')].find((b) => b.textContent.includes('A Movie (Dolby audio)'))?.click() || true`)
+      let playing = false
+      for (let i = 0; i < 20 && !playing; i++) {
+        playing = await evaluate(cdp, '!!document.querySelector("video.player-video")')
+        if (!playing) await sleep(1000)
+      }
+      try { execFileSync('pgrep', ['-x', 'AllisonIPTV'], { stdio: 'ignore', timeout: 3000 }); console.log('  [liveness] player video open: alive') } catch { console.log('  [liveness] player video open: APP GONE') }
+      if (!playing) throw new Error('movie never started playing')
+    }
+
+    // Run A: first play. The remux needs its warm-up (up to ~15s) plus fragment flow before the
+    // memory write fires — dwell generously, then quit while the session is still alive.
+    await openFixtureMovie()
+    console.log('run A: movie playing; dwelling 45s for detection, the remux, and the memory write…')
+    await sleep(45_000)
+    const memoryAfterA = (() => {
+      try {
+        const cfg = JSON.parse(readFileSync(CFG_PATH, 'utf8'))
+        return cfg.settings?.transcodeMemory ?? {}
+      } catch {
+        return {}
+      }
+    })()
+    console.log('transcodeMemory after run A:', JSON.stringify(memoryAfterA))
+    if (Object.keys(memoryAfterA).length === 0) {
+      console.log('FAIL  the memory never wrote — the fixture movie did not need the fix')
+      cdp.close()
+      process.exit(1)
+    }
+
+    // Same-session replay: a SECOND LAUNCH kept dying (renderer wedges ~30s after connect, pipe
+    // terminated, app gone — three runs, same place, while run A is always clean; recorded as a
+    // harness limitation), and the skip does not need one. Escape out of the player, re-open the
+    // SAME movie: the memory now holds it, so Player must take the remembered path and log it —
+    // in this same launch, whose app log this script already captures.
+    await pressEscape()
+    await sleep(1200)
+    await openFixtureMovie()
+    console.log('replay: movie playing; dwelling 10s for the remembered path to log…')
+    await sleep(10_000)
+    const logText = readFileSync(APP_LOG, 'utf8')
+    const rememberedLine = logText.includes('VOD using remembered audio fix (detection skipped)')
+    console.log(rememberedLine ? 'PASS  the remembered title skips the detection poll (log line present)' : 'FAIL  the remembered title skips the detection poll (log line absent)')
+    if (!rememberedLine) {
+      console.log(
+        'player-log lines:',
+        logText.split('\n').filter((l) => l.includes('[player]')).slice(-8).join('\n') || '(none)'
+      )
+    }
+    cdp.close()
+    process.exit(rememberedLine ? 0 : 1)
   }
 
   // --also-on: with BOTH synthetic profiles connected (identical catalogues by construction),

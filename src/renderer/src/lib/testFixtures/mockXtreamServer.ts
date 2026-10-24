@@ -96,6 +96,11 @@ const ids = {
   channelOnlyInCustomSource: 'custom.missing',
   channelResidue: 105,
   movieId: 201,
+  // A second movie whose audio is E-AC-3 — the VOD silent-audio detection's trigger, which the
+  // AAC movie can never exercise (it plays fine natively, no fallback, no transcodeMemory write;
+  // found 2026-10-24 when the --vod-memory verification came back green-but-empty: nothing was
+  // wrong, the fixture just never needed the fix).
+  movieDolbyId: 202,
   seriesId: 301
 }
 
@@ -216,9 +221,10 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
         res.end('playback fixtures not configured')
         return
       }
-      void ensureMovie()
+      const dolbyMovie = /\/(202)\.[a-z0-9]+$/i.test(url.pathname)
+      void (dolbyMovie ? ensureDolbyMovie() : ensureMovie())
         .then(() => {
-          const file = readFileSync(join(mediaDir, 'movie.mp4'))
+          const file = readFileSync(join(mediaDir, dolbyMovie ? 'movie-dolby.mp4' : 'movie.mp4'))
           // Chromium asks for byte ranges on a progressive MP4 (and for seeking); answering 206
           // with the requested slice keeps duration/seek behaving like a real origin. A plain 200
           // body also plays, but then the element can't seek at all.
@@ -331,6 +337,18 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
             name: 'A Movie',
             stream_type: 'movie',
             stream_id: ids.movieId,
+            stream_icon: '',
+            rating: '7.0',
+            rating_5based: 3.5,
+            added: '0',
+            category_id: '20',
+            container_extension: 'mp4'
+          },
+          {
+            num: 2,
+            name: 'A Movie (Dolby audio)',
+            stream_type: 'movie',
+            stream_id: ids.movieDolbyId,
             stream_icon: '',
             rating: '7.0',
             rating_5based: 3.5,
@@ -458,6 +476,37 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
         )
       })
       movieReady = pending
+    }
+    return pending
+  }
+
+  // The E-AC-3 sibling of ensureMovie: same video/subtitle recipe, audio swapped for E-AC-3 —
+  // Chromium has no decoder for it, which is exactly the symptom the VOD silent-audio poll and
+  // its remembered fix exist for. No subtitle track here: the baseline movie owns that half.
+  let dolbyMovieReady: Promise<void> | null = null
+  const ensureDolbyMovie = (): Promise<void> => {
+    if (!options.ffmpegPath || !mediaDir) return Promise.resolve()
+    let pending = dolbyMovieReady
+    if (!pending) {
+      pending = new Promise<void>((resolve, reject) => {
+        execFile(
+          options.ffmpegPath!,
+          [
+            '-hide_banner', '-loglevel', 'error',
+            '-y',
+            '-f', 'lavfi', '-i', 'testsrc=size=640x360:rate=25',
+            '-f', 'lavfi', '-i', 'sine=frequency=440',
+            '-t', '6',
+            '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+            '-c:a', 'eac3',
+            '-b:a', '192k',
+            '-movflags', '+faststart',
+            join(mediaDir, 'movie-dolby.mp4')
+          ],
+          (err) => (err ? reject(err) : resolve())
+        )
+      })
+      dolbyMovieReady = pending
     }
     return pending
   }

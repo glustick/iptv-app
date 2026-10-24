@@ -54,6 +54,7 @@ import type {
 import { MAX_GUIDE_XML_CHARS } from '../lib/xmltvSections'
 import { isGuideCacheFresh, readCachedGuide, writeCachedGuide } from '../lib/guideCache'
 import { channelEntryFor, channelKey, channelKeyCandidates } from '../lib/channelIdentity'
+import { pruneUndecodableVideo } from '../lib/undecodableVideo'
 import {
   analyzeMediaPlaylist,
   classifyChannelHealth,
@@ -618,6 +619,12 @@ interface AppState {
   assignMultiViewChannel: (slotIndex: number, channel: LiveStream) => void
   clearMultiViewSlot: (slotIndex: number) => void
   toggleHiddenLiveChannel: (streamId: number, playlistId?: string | null) => void
+  /** Records that this live channel's video failed to decode on this machine (the count-first
+   *  diagnostic — see lib/undecodableVideo.ts). Pruned at write; idempotent upsert. */
+  markChannelVideoUndecodable: (streamId: number, playlistId?: string | null) => void
+  /** Self-heal half of the undecodable-video count: a channel whose video decode counters move
+   *  while watching was never (or is no longer) undecodable — drop its marker. */
+  clearChannelVideoUndecodable: (streamId: number, playlistId?: string | null) => void
   setShowHiddenLiveChannels: (show: boolean) => void
   // Probes one channel's own playlist for feed health (see lib/channelHealth.ts). Resolves when
   // the queued probe actually ran; a channel already judged this session, or already in flight,
@@ -2360,6 +2367,25 @@ export const useAppStore = create<AppState>((set, get) => ({
     const hidden = settings.hiddenChannelKeys
     const hiddenChannelKeys = hidden.includes(key) ? hidden.filter((entry) => entry !== key) : [...hidden, key]
     get().updateSettings({ hiddenChannelKeys })
+  },
+
+  markChannelVideoUndecodable: (streamId, playlistId) => {
+    const { settings, primaryPlaylistId } = get()
+    const key = channelKey(playlistId, streamId, primaryPlaylistId)
+    const undecodableVideoChannels = pruneUndecodableVideo({
+      ...settings.undecodableVideoChannels,
+      [key]: { failedAt: Date.now() }
+    })
+    get().updateSettings({ undecodableVideoChannels })
+  },
+
+  clearChannelVideoUndecodable: (streamId, playlistId) => {
+    const doomed = channelKeyCandidates(playlistId, streamId, get().primaryPlaylistId)
+    const current = get().settings.undecodableVideoChannels
+    if (!doomed.some((key) => key in current)) return
+    const undecodableVideoChannels = { ...current }
+    for (const key of doomed) delete undecodableVideoChannels[key]
+    get().updateSettings({ undecodableVideoChannels })
   },
 
   setShowHiddenLiveChannels: (show) => set({ showHiddenLiveChannels: show }),

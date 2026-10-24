@@ -1366,6 +1366,13 @@ app.whenReady().then(async () => {
   // into the renderer instead (below) lets the UI offer an actual "Update now / Later" prompt
   // and only spend the user's bandwidth once they've said yes.
   autoUpdater.autoDownload = false
+  // Smoke runs drive the app under CDP against unpackaged --dir builds, which ship no
+  // app-update.yml — the check throws ENOENT inside the update:check handler and (timing
+  // aside) only ever produces log noise a verification pass has to read past. The env kill
+  // switch is set by scripts/gui-smoke.mjs; production launches never see it.
+  if (process.env.ALLISONIPTV_DISABLE_UPDATER === '1') {
+    console.log('[auto-update] disabled by ALLISONIPTV_DISABLE_UPDATER (smoke run)')
+  } else {
   autoUpdater.on('update-available', (info) => {
     mainWindowRef?.webContents.send('update:available', {
       version: info.version,
@@ -1386,9 +1393,18 @@ app.whenReady().then(async () => {
     console.error('[auto-update] error:', err)
     mainWindowRef?.webContents.send('update:error', { message: err.message })
   })
+  }
 
-  ipcMain.handle('update:check', () => autoUpdater.checkForUpdates())
-  ipcMain.handle('update:download', () => autoUpdater.downloadUpdate())
+  ipcMain.handle('update:check', () =>
+    process.env.ALLISONIPTV_DISABLE_UPDATER === '1'
+      ? Promise.resolve(null)
+      : autoUpdater.checkForUpdates()
+  )
+  ipcMain.handle('update:download', () =>
+    process.env.ALLISONIPTV_DISABLE_UPDATER === '1'
+      ? Promise.resolve(null)
+      : autoUpdater.downloadUpdate()
+  )
   // quitAndInstall() tears down the app itself — nothing after this call runs. The renderer
   // only ever calls this from an explicit "Restart now" click, never automatically.
   ipcMain.handle('update:install', () => autoUpdater.quitAndInstall())

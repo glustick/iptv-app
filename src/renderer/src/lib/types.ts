@@ -321,6 +321,13 @@ export interface AppSettings {
   // migration: that field stays exactly as it is. See TranscodeMemoryEntry for what an entry
   // holds and when it still applies.
   transcodeMemory: Record<string, TranscodeMemoryEntry>
+  // Live channels whose VIDEO this machine failed to decode (a codec-shaped SourceBuffer
+  // refusal — the audio-fix transcode only rescues audio, so these are the channels that are
+  // live per the manifest but unwatchable here). A COUNT, not detection: the EPG panel shows
+  // how many, and a channel that later plays (its video decode counters move while watching)
+  // self-heals out. Keyed by the same playlist-aware rule as hiddenChannelKeys; entries carry
+  // only a failedAt timestamp. See lib/undecodableVideo.ts.
+  undecodableVideoChannels: Record<string, { failedAt: number }>
   // User-added third-party EPG sources (any XMLTV guide URL, e.g. iptv-org country feeds) —
   // fetched through the local proxy on connect alongside the provider's own xmltv.php guide
   // (when allowed) and merged into the EPG grid per channel, filling the multi-day gap the
@@ -382,6 +389,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   hiddenChannelKeys: [],
   liveAudioFixes: {},
   transcodeMemory: {},
+  undecodableVideoChannels: {},
   customEpgUrls: [],
   epgChannelMappings: [],
   hiddenEpgSourceUrls: [],

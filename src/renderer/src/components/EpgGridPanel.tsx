@@ -46,6 +46,7 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
   ).length
   const setShowHiddenLiveChannels = useAppStore((s) => s.setShowHiddenLiveChannels)
   const channelHealthByStream = useAppStore((s) => s.channelHealthByStream)
+  const undecodableVideoChannels = useAppStore((s) => s.settings.undecodableVideoChannels)
   const showNotLiveChannels = useAppStore((s) => s.showNotLiveChannels)
   const setShowNotLiveChannels = useAppStore((s) => s.setShowNotLiveChannels)
   const openChannelPreview = useAppStore((s) => s.openChannelPreview)
@@ -119,6 +120,15 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
         (c) => channelHealthByStream[channelKey(c.playlistId, c.stream_id, primaryPlaylistId)] !== undefined
       ).length,
     [channels, channelHealthByStream, primaryPlaylistId]
+  )
+
+  // The count-first diagnostic for live-but-undecodable-VIDEO channels (lib/undecodableVideo.ts):
+  // the health probe says these channels are live and the audio fix never rescues them — this is
+  // the only place their existence is visible. Hidden when zero; a channel that plays again
+  // self-heals out of the set, so the count is "failed lately", not "failed ever".
+  const undecodableVideoCount = useMemo(
+    () => channels.filter((c) => undecodableVideoChannels[channelKey(c.playlistId, c.stream_id, primaryPlaylistId)] !== undefined).length,
+    [channels, undecodableVideoChannels, primaryPlaylistId]
   )
 
   // Suppress the small preview's own stream while the fullscreen player has one open for
@@ -300,6 +310,14 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
                   title="Channels whose feed the health probe has actually judged. A channel with no badge simply hasn't been checked yet."
                 >
                   Checked {checkedCount} of {channels.length}
+                </span>
+              )}
+              {undecodableVideoCount > 0 && (
+                <span
+                  className="epg-health-checked"
+                  title="Live channels whose video this machine failed to decode (a codec this playback engine can't handle). Counted so the problem is visible before deciding what to do about it — a channel that plays successfully drops out of this count on its own."
+                >
+                  · Video failed on {undecodableVideoCount}
                 </span>
               )}
               {/* Appears only once something has actually been found, so the control can't be

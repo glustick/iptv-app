@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Hls from 'hls.js'
 import { useAppStore } from '../store/useAppStore'
+import { isUnsupportedVideoCodecError } from '../lib/undecodableVideo'
 import { PlayerChannelBar } from './PlayerChannelBar'
 import { PlayerStatsOverlay } from './PlayerStatsOverlay'
 import { PlayerSeekBar } from './PlayerSeekBar'
@@ -152,6 +153,8 @@ function formatCountdown(totalSeconds: number): string {
 export function Player(): JSX.Element | null {
   const nowPlaying = useAppStore((s) => s.nowPlaying)
   const stop = useAppStore((s) => s.stop)
+  const markChannelVideoUndecodable = useAppStore((s) => s.markChannelVideoUndecodable)
+  const clearChannelVideoUndecodable = useAppStore((s) => s.clearChannelVideoUndecodable)
   const play = useAppStore((s) => s.play)
   const findChannelByNumber = useAppStore((s) => s.findChannelByNumber)
   const bufferProfile = useAppStore((s) => s.settings.bufferProfile)
@@ -840,6 +843,14 @@ export function Player(): JSX.Element | null {
           return
         }
 
+        // Count-first diagnostic (see lib/undecodableVideo.ts): a codec-shaped VIDEO refusal
+        // is the one "broken channel" shape nothing else records — the manifest is fine (the
+        // health probe calls the channel live) and the audio fix never intercepts a video
+        // mimeType. Record it before any ladder runs; a channel that later plays self-heals
+        // out of the set at the silent-audio poll's video counter.
+        if (data.fatal && nowPlaying.kind === 'live' && isUnsupportedVideoCodecError(data)) {
+          markChannelVideoUndecodable(nowPlaying.streamId, nowPlaying.playbackPlaylistId)
+        }
         if (!data.fatal) {
           // A codec/append error scoped to a single SourceBuffer (very often the audio
           // track — e.g. an AC-3/E-AC-3 feed, which Chromium has no decoder for) can
@@ -847,6 +858,11 @@ export function Player(): JSX.Element | null {
           // else ever surfacing the problem. Call it out explicitly instead.
           if (data.details === 'bufferAddCodecError' || data.details === 'bufferAppendError') {
             const isAudio = typeof data.mimeType === 'string' && data.mimeType.toLowerCase().includes('audio')
+            if (!isAudio && nowPlaying.kind === 'live') {
+              // The non-fatal video arm is terminal-in-practice for this channel's video
+              // here — the app's own message below says so. Same marker as the fatal shape.
+              markChannelVideoUndecodable(nowPlaying.streamId, nowPlaying.playbackPlaylistId)
+            }
             setPlaybackError(
               `${isAudio ? 'Audio' : 'Video'} codec not supported by this player. This channel's ${isAudio ? 'audio' : 'video'} stream isn't compatible with this app's playback engine${isAudio ? ' (commonly AC-3/E-AC-3 audio, which this app cannot decode)' : ''}.`
             )
@@ -978,6 +994,10 @@ export function Player(): JSX.Element | null {
         const chromiumVideo = video as ChromiumVideoElement
         const videoBytes = chromiumVideo.webkitVideoDecodedByteCount ?? 0
         const audioBytes = chromiumVideo.webkitAudioDecodedByteCount ?? 0
+        // Self-heal half of the undecodable-video count (lib/undecodableVideo.ts): video
+        // decode counters moving means this machine CAN decode this channel — whatever marker
+        // an earlier failure left is stale, and the count should not carry it.
+        if (videoBytes > 0) clearChannelVideoUndecodable(nowPlaying.streamId, nowPlaying.playbackPlaylistId)
         liveSilentAudioTicks = videoBytes > 0 && audioBytes === 0 ? liveSilentAudioTicks + 1 : 0
         if (liveSilentAudioTicks < 2) {
           // Give up quietly once the check budget is spent without ever confirming the symptom

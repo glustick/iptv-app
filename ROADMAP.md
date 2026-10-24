@@ -231,6 +231,30 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.16.1** the count-first answer to "what does broken channel mean beyond the manifest", plus
+  the VOD transcode-memory's live verification. **The count:** a channel that is LIVE (the health
+  probe's own verdict) but whose VIDEO this machine cannot decode was the one broken shape nothing
+  recorded — the health probe calls it fine, and the audio-fix transcode only rescues audio. Now a
+  codec-shaped video refusal (the video mirror of the audio classifier: bufferAddCodecError /
+  bufferAppendError on a non-audio mimeType, `lib/undecodableVideo.ts`) lands the channel's
+  composite key in a bounded persisted set (500 cap, keep-newest, pruned at write like
+  transcodeMemory), from three places: the fatal codec error after the audio/raw-TS intercepts,
+  the non-fatal video arm (the app's own "Video codec not supported" message — terminal in
+  practice for that channel's video), and the self-heal at the other end: the silent-audio poll's
+  video decode counter clearing the marker the moment the channel actually plays. The EPG panel
+  shows `· Video failed on N` beside "Checked N of M" (hidden at zero, tooltip explaining the
+  self-heal) — deliberately a COUNT, not detection or handling, per the roadmap's own rule:
+  measure whether the population exists before building for it. **The VOD memory verified:**
+  the 2026-10-24 "green-but-empty" anomaly is closed as a fixture finding, not a bug — the smoke's
+  movie carried AAC audio, which needs no fix, so transcodeMemory was CORRECTLY empty (the mock
+  now also serves "A Movie (Dolby audio)", stream 202, E-AC-3 — the detection poll's actual
+  trigger). The `--vod-memory` smoke mode plays it, confirms the memory write
+  (`movie:202 … kind: audio`), replays the same title in-session, and asserts the remembered
+  path's own log line — **PASS**. The two-launch shape of the first attempt is recorded as a
+  harness limitation: the second launch's renderer wedged ~30s after connect and the CDP pipe
+  died, three runs in a row, always run B, while same-session replay is deterministic.
+  706 tests (5 new); typecheck and lint clean.
+
 - **0.16.0** the "Also on …" switch — the web sibling's manual cross-playlist jump, ported as the
   last missing piece of desktop multi-playlist parity. Right-click a channel row and, when
   another connected playlist carries a channel of the same normalised name, the context menu
