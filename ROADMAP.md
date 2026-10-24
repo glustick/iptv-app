@@ -505,6 +505,43 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
 
 ### Code, in the order I would take it
 
+- **THE live-verification pass — RUN 2026-10-24, against the real v0.15.2 release artifact.**
+  The list below kept its caveats honest; here is what the pass established and what genuinely
+  remains. **First, three harness faults the pass itself had to fix (all in `scripts/gui-smoke.mjs`,
+  committed with this entry):** (1) **profile pinning** — the app auto-connects its active profile
+  before any UI handling can intervene, and with a real-provider profile active (imported from the
+  web project in October) the run silently verified September's catalogue while its "Live News"
+  settle heuristic was satisfied by a real channel name; the harness now pins the synthetic
+  profile in config before launch and restores the operator's choice on exit; (2) **--live's
+  profile acquisition** assumed one surface (post-Disconnect `profile-connect` buttons) — it now
+  retries across both surfaces (login buttons and the connected window's `profile-select`);
+  (3) a **`SMOKE_LINGER_MS` dwell knob** for real-provider timing evidence. **Verified live, at
+  real scale:** baseline smoke 66/66 on the release artifact; the real catalogue (191 categories,
+  every visible row carrying guide listings); **real playback decoding and advancing with zero
+  errors** across runs (readyState 4, ~10.6s of stream); the **EPG match report at real scale —
+  7612 of 11757 channels matched** (6609 by EPG id, 1 by name, 1002 by relaxed match; the 4145
+  unmatched are the provider's own no-data channels, reported honestly); and **the guide cache
+  both ways** — the cold write completes when the app dwells (178MB XML + sidecar for
+  `provider-guide:web-project-import`; a quick session quits mid-write and orphans a `.tmp`,
+  which is a session artifact, not an app fault), and the warm launch serves entirely from cache:
+  no fetch, no new `.tmp`, `fetchedAt` untouched, identical match numbers. **The 107MB guide of
+  September's measurement is now 178MB** — worth remembering when reasoning about memory.
+  **Still not live-verified, with the blocker named:** the **VOD transcode-memory skip** — a smoke
+  session's dwell is shorter than even the poll's give-up branch (transcodeMemory stays empty
+  across runs), and no log line distinguishes the remembered path from the poll path, so the
+  observation needs a hand-driven two-play session or a one-line observability addition;
+  the **Sports drill-down with a real key** — this config has NO api-football key (the 0.15.1 wipe
+  was never re-entered; confirm in Settings → Sports data); **two-playlist identity against a real
+  second account** — no second real account exists on this machine; the **not-broadcasting
+  detector against a genuinely off-air channel** — no provider channel was in that state during
+  the pass. **And the machine finding that reframes every earlier "verified" claim: the installed
+  app at `~/Applications/AllisonIPTV.app` is 0.7.111 (Sep 27) — eight releases stale**, because
+  macOS installs are manual. Default-path harness runs have been testing that install; the
+  0.15.2-era "66/66" runs must have used a locally-built app via `SMOKE_APP`. The pass ran
+  against the extracted v0.15.2 release zip (kept at `/tmp/iptv-verify/AllisonIPTV.app` until the
+  install is updated). **Operator actions:** install 0.15.2 over 0.7.111; re-enter the api-football
+  key.
+
 - **A live-verification pass over the features that shipped without one (recorded 2026-10-10).**
   Several shipped features still carry the roadmap's own "not live-verified" caveat, and the
   2026-10-10 harness work made one of them newly reachable: **this machine's config carries a real

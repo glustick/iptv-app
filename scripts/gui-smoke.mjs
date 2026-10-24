@@ -121,6 +121,48 @@ function resetTestMappings() {
 }
 
 /**
+ * Pins the synthetic profile as the app's active profile for the duration of the run, and
+ * restores whatever was active before on the way out. Without this, the app auto-connects to
+ * the most-recently-used profile — on this machine, the real provider — before any of the
+ * connect-flow handling below can intervene, and the "connected" settle heuristic ("Live News"
+ * appearing in the body text) can be satisfied by a real catalogue channel, leaving every
+ * fixture assertion to fail against 11k real channels while the run believes it is on the mock
+ * (found 2026-10-24, after a real-provider profile imported from the web project became the
+ * active one). Pinning the config key is deterministic where the UI heuristics were not; the
+ * restore keeps the operator's own app opening where they left it.
+ */
+let pinnedPreviousProfileId = null
+function pinSyntheticProfile() {
+  try {
+    const cfg = JSON.parse(readFileSync(CFG_PATH, 'utf8'))
+    const known = Array.isArray(cfg.xtream_profiles) && cfg.xtream_profiles.some((p) => p && p.id === 'mock-test-1')
+    if (!known || cfg.active_profile_id === 'mock-test-1') return
+    pinnedPreviousProfileId = cfg.active_profile_id
+    cfg.active_profile_id = 'mock-test-1'
+    writeFileSync(CFG_PATH, JSON.stringify(cfg, null, 2))
+    console.log(`pinned the synthetic profile for this run (was: ${pinnedPreviousProfileId})`)
+  } catch (err) {
+    console.log('could not pin the synthetic profile:', err.message.slice(0, 60))
+  }
+}
+function restorePinnedProfile() {
+  if (pinnedPreviousProfileId === null) return
+  try {
+    const cfg = JSON.parse(readFileSync(CFG_PATH, 'utf8'))
+    // Only restore when nothing else changed the active profile since (a --live run may have
+    // switched deliberately; last writer wins is the honest rule for a dev tool).
+    if (cfg.active_profile_id === 'mock-test-1') {
+      cfg.active_profile_id = pinnedPreviousProfileId
+      writeFileSync(CFG_PATH, JSON.stringify(cfg, null, 2))
+      console.log(`restored the active profile (${pinnedPreviousProfileId})`)
+    }
+  } catch {
+    // Best-effort by design; leaving the synthetic profile active is harmless.
+  }
+  pinnedPreviousProfileId = null
+}
+
+/**
  * Clears the guide-cache entries the synthetic provider owns. The mock's guide is built around
  * the SERVER's start clock (its programmes run NOW±30 minutes, fixed at server start), so a
  * cached copy from an earlier session is fresh by the app's own 24h TTL yet describes a
@@ -260,6 +302,14 @@ async function main() {
   quitApp()
   resetTestMappings()
   resetGuideCache()
+  pinSyntheticProfile()
+  process.on('exit', restorePinnedProfile)
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.on(signal, () => {
+      restorePinnedProfile()
+      process.exit(130)
+    })
+  }
   await sleep(2500)
   // Launched as the bundled binary directly rather than through `open`, so stdout/stderr can be
   // captured (see APP_LOG). CDP rides the pipe transport — see spawnAndConnect.
@@ -357,27 +407,59 @@ async function main() {
       await click('button.disconnect') // → the profile chooser
       await sleep(1200)
     }
-    const profiles = await evaluate(
-      cdp,
-      'JSON.stringify([...document.querySelectorAll("button.profile-connect")].map((b, i) => ({ i, text: (b.textContent || "").slice(0, 60) })))'
-    )
-    console.log('profiles on offer:', profiles)
-    const list = JSON.parse(profiles)
+    // The app offers profiles on two surfaces: the login/chooser screens render
+    // button.profile-connect rows, and an already-connected window renders a
+    // select.profile-select (the Disconnect click above does not always land on the chooser —
+    // found 2026-10-24 when two runs in a row found no buttons at all). Try both, with a
+    // bounded retry: whichever appears first wins.
+    const buttonsSelector = 'JSON.stringify([...document.querySelectorAll("button.profile-connect")].map((b, j) => ({ i: j, text: (b.textContent || "").slice(0, 60) })))'
+    const selectSelector = 'JSON.stringify([...(document.querySelectorAll("select.profile-select option") || [])].map((o, j) => ({ i: j, text: (o.textContent || "").slice(0, 60), value: o.value })))'
+    let list = []
+    let surface = null
+    for (let i = 0; i < 20 && list.length === 0; i++) {
+      list = JSON.parse(await evaluate(cdp, buttonsSelector))
+      if (list.length > 0) {
+        surface = 'buttons'
+        break
+      }
+      const options = JSON.parse(await evaluate(cdp, selectSelector))
+      if (options.length > 0) {
+        list = options
+        surface = 'select'
+        break
+      }
+      await sleep(500)
+    }
+    console.log(`profiles on offer (${surface ?? 'none'}):`, JSON.stringify(list))
+    if (list.length === 0) throw new Error('no profile surface found — is the app showing a modal?')
     const chosen = want
       ? list.find((p) => p.text.toLowerCase().includes(want.toLowerCase()))
       : list.find((p) => !/synthetic/i.test(p.text))
     if (!chosen) throw new Error('no matching provider profile found — add it in the app first')
     console.log('connecting with:', chosen.text)
-    await evaluate(
-      cdp,
-      `document.querySelectorAll("button.profile-connect")[${chosen.i}].click()`
-    )
+    if (surface === 'buttons') {
+      await evaluate(cdp, `document.querySelectorAll("button.profile-connect")[${chosen.i}].click()`)
+    } else {
+      await evaluate(
+        cdp,
+        `(() => { const select = document.querySelector('select.profile-select'); select.value = ${JSON.stringify(chosen.value)}; select.dispatchEvent(new Event('change', { bubbles: true })) })()`
+      )
+    }
     // Real providers take longer than the fixture: give the catalogue time to land.
     let loaded = false
     for (let i = 0; i < 90; i++) {
       loaded = await evaluate(cdp, 'document.querySelectorAll("button.epg-row-channel").length > 0')
       if (loaded) break
       await sleep(1000)
+    }
+    // Dwell time against the real provider, before the guide page is sampled. The real guide
+    // is 16.3MB gzipped / ~107MB of XML: a cold run needs the download AND the cache write to
+    // finish before the sources page shows real numbers (a quick session quit mid-write and
+    // left a 63MB .tmp — measured 2026-10-24); a warm run just needs the parse.
+    const lingerMs = Number(process.env.SMOKE_LINGER_MS ?? 0)
+    if (lingerMs > 0) {
+      console.log(`lingering ${lingerMs}ms for the provider to settle…`)
+      await sleep(lingerMs)
     }
     const report = {
       sidebarCategories: await evaluate(cdp, 'document.querySelectorAll("button.category").length'),
@@ -947,6 +1029,15 @@ async function main() {
     `[...document.querySelectorAll('.tabs .tab')].find((b) => b.textContent.trim() === 'Sports')?.click() || true`
   )
   await sleep(1200)
+  if (process.env.SMOKE_DUMP_SPORTS) {
+    console.log('sports pane dump:', await evaluate(cdp, `(() => {
+      const sports = [...document.querySelectorAll('.sports-sports .sports-item')].map((n) => n.textContent.trim())
+      const games = document.querySelector('.sports-games')?.innerText.slice(0, 300) ?? null
+      const root = document.querySelector('.sports-view')?.className ?? document.querySelector('[class*=sports]')?.className ?? 'no-sports-node'
+      const bodyHasSports = document.body.innerText.includes('Football')
+      return JSON.stringify({ sports, games, root, bodyHasSports })
+    })()`))
+  }
   await check(
     'the Sports tab lists the api-sports family with Football first',
     `(() => { const first = document.querySelector('.sports-sports .sports-item'); return !!first && first.textContent.trim() === 'Football' })()`,
