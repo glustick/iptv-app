@@ -239,7 +239,7 @@ describe('transcode memory (VOD/series)', () => {
     expect(result.current.rememberedVodAudioIndex(PLAY_URL)).toBeNull()
   })
 
-  it('ignores a fix confirmed against a different file, and leaves live content alone', () => {
+  it('ignores a fix confirmed against a different file, and keeps the VOD read live-blind', () => {
     useAppStore.setState({
       settings: {
         ...DEFAULT_SETTINGS,
@@ -252,8 +252,9 @@ describe('transcode memory (VOD/series)', () => {
     const { result } = renderHook(() => useTranscodeFallback())
     expect(result.current.rememberedVodAudioIndex(PLAY_URL)).toBeNull()
 
-    // A live channel with a matching-looking entry still gets nothing from this memory path —
-    // live keeps liveAudioFixes (its own read is the player's apply-remembered-fix effect).
+    // 0.17.0 unified the memory, but the VOD read stays VOD-scoped by key: a live channel's
+    // entry is keyed by its channelKey (bare '42' for the primary), which the movie namespace
+    // never collides with — the live read is the player's apply-remembered-fix effect.
     useAppStore.setState({
       nowPlaying: {
         kind: 'live',
@@ -283,7 +284,7 @@ describe('transcode memory (VOD/series)', () => {
     })
   })
 
-  it('records a direct outcome, and refuses to write one for live content', () => {
+  it('records a direct outcome; the hook VOD path stays live-blind (live records through its own store action)', () => {
     const { result } = renderHook(() => useTranscodeFallback())
     act(() => {
       result.current.rememberDirectOutcome(PLAY_URL)
@@ -293,6 +294,9 @@ describe('transcode memory (VOD/series)', () => {
       url: PLAY_URL
     })
 
+    // The hook's rememberDirectOutcome keeps its live no-op — the live poll's give-up branch
+    // records 'direct' through rememberLiveTranscodeOutcome (which carries the playlist) — but
+    // the unified memory means the entry lands in the SAME Record under the channel key.
     useAppStore.setState({
       nowPlaying: {
         kind: 'live',
@@ -305,9 +309,12 @@ describe('transcode memory (VOD/series)', () => {
       }
     })
     act(() => {
-      result.current.rememberDirectOutcome('http://provider.example/live/u/p/42.ts')
+      useAppStore.getState().rememberLiveTranscodeOutcome(42, null, 'http://provider.example/live/u/p/42.ts', 'direct')
     })
-    expect(useAppStore.getState().settings.transcodeMemory['42']).toBeUndefined()
+    expect(useAppStore.getState().settings.transcodeMemory['42']).toMatchObject({
+      kind: 'direct',
+      url: 'http://provider.example/live/u/p/42.ts'
+    })
   })
 
   it('prunes to the cap on every write, oldest dropped first', () => {

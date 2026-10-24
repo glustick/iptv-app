@@ -257,7 +257,7 @@ export interface CustomCategory {
 // decision; the union below is every outcome the playback/fallback pipeline can settle on:
 //   'direct' — played as-is, no transcode needed.
 //   'audio'  — AAC audio remux; `audioIndex` is the raw MPEG-TS audio stream to map (0 =
-//              first/default, same convention as liveAudioFixes.audioIndex above; higher = a
+//              first/default; higher = a
 //              track picked via "Check Audio Tracks").
 //   'video'  — the source is HEVC and this client cannot decode it, so the live remux must
 //              re-encode H.264 instead of copying (transcodeService's reencodeVideo).
@@ -268,8 +268,9 @@ export interface CustomCategory {
 // exact-only match would silently stop applying — the one failure a memory like this cannot
 // afford. `confirmedAt` is epoch-ms of when the outcome was last seen.
 //
-// Deliberately parallel to liveAudioFixes, not a replacement: that field predates this record,
-// keeps its own job untouched, and whether the two eventually unify is a separate decision.
+// 0.17.0 unified the memories: live channels record here too (audio fixes, rawTs, direct —
+// see findAlsoOn's sibling notes in the roadmap for the rawTs taxonomy fix), migrated from the
+// retired liveAudioFixes field by loadSettings.
 export type TranscodeMemoryEntry =
   | { kind: 'direct'; url: string; confirmedAt: number }
   | { kind: 'audio'; audioIndex: number; url: string; confirmedAt: number }
@@ -304,21 +305,11 @@ export interface AppSettings {
   // different channels. A channel on the primary playlist keys as its plain id — which is what
   // everything stored before multi-playlist means — and other playlists' channels are qualified.
   hiddenChannelKeys: string[]
-  // Live channels that needed the ffmpeg AAC-remux fallback (an unsupported audio codec, or a
-  // user-picked raw audio track), keyed by live streamId — remembering per channel means the
-  // next open skips the silent-audio detection wait entirely and goes straight to the remux.
-  // audioIndex is the raw MPEG-TS audio stream the remux maps (0 = first/default, matching the
-  // automatic fallback; higher = a track picked via "Check Audio Tracks"); url is the exact
-  // stream URL the fix was confirmed against, so provider-side URL changes (token rotation,
-  // timeshift variants of the same channel) safely fall back to normal detection instead of
-  // remuxing the wrong source.
-  // Keyed the same way (a fix remembered for one provider's channel 42 must not be applied to
-  // another provider's 42) — see lib/channelIdentity.ts.
-  liveAudioFixes: Record<string, { audioIndex: number; url: string }>
-  // The remembered transcoding outcome for channels/titles, keyed by lib/transcodeMemory.ts —
-  // live channels share liveAudioFixes' playlist-aware key rule; movies and series episodes get
-  // their own namespaces in the same Record. Companion to liveAudioFixes above, not a
-  // migration: that field stays exactly as it is. See TranscodeMemoryEntry for what an entry
+  // The remembered transcoding outcome for ALL content — live channels (audio fixes, raw-TS
+  // remuxes, direct plays) and movies/series episodes alike — keyed by lib/transcodeMemory.ts's
+  // playlist-aware rule (a fix remembered for one provider's channel 42 must not be applied to
+  // another provider's 42). 0.17.0 unified what were two records: the retired liveAudioFixes
+  // field migrates into this one in loadSettings. See TranscodeMemoryEntry for what an entry
   // holds and when it still applies.
   transcodeMemory: Record<string, TranscodeMemoryEntry>
   // Live channels whose VIDEO this machine failed to decode (a codec-shaped SourceBuffer
@@ -387,7 +378,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   videoScaleMode: 'contain',
   multiViewLayout: 2,
   hiddenChannelKeys: [],
-  liveAudioFixes: {},
   transcodeMemory: {},
   undecodableVideoChannels: {},
   customEpgUrls: [],

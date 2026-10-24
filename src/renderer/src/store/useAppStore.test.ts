@@ -126,36 +126,50 @@ describe('opening the per-channel match panel (the row context menu\'s "EPG matc
   })
 })
 
-describe('remembered live audio fixes', () => {
-  it('records a fix keyed by streamId with its track index and confirmed URL', () => {
-    useAppStore.getState().rememberLiveAudioFix(42, 0, 'http://example.com/live/42.m3u8')
-    expect(useAppStore.getState().settings.liveAudioFixes).toEqual({
-      '42': { audioIndex: 0, url: 'http://example.com/live/42.m3u8' }
+describe('remembered live transcode outcomes (0.17.0 unified memory)', () => {
+  it('records an audio outcome keyed by streamId with its track index and confirmed URL', () => {
+    useAppStore.getState().rememberLiveTranscodeOutcome(42, null, 'http://example.com/live/42.m3u8', 'audio', 0)
+    const entry = useAppStore.getState().settings.transcodeMemory['42']
+    expect(entry).toMatchObject({
+      kind: 'audio', audioIndex: 0, url: 'http://example.com/live/42.m3u8'
+    })
+    expect(entry.confirmedAt).toBeGreaterThan(0)
+  })
+
+  it('records a rawTs outcome without an audio index', () => {
+    useAppStore.getState().rememberLiveTranscodeOutcome(43, null, 'http://example.com/live/43.ts', 'rawTs')
+    expect(useAppStore.getState().settings.transcodeMemory['43']).toMatchObject({
+      kind: 'rawTs', url: 'http://example.com/live/43.ts'
     })
   })
 
-  it('overwrites a channel’s earlier fix when a new one is confirmed', () => {
-    useAppStore.getState().rememberLiveAudioFix(42, 0, 'http://example.com/live/42.m3u8')
-    useAppStore.getState().rememberLiveAudioFix(42, 2, 'http://example.com/live/42.m3u8')
-    expect(useAppStore.getState().settings.liveAudioFixes).toEqual({
-      '42': { audioIndex: 2, url: 'http://example.com/live/42.m3u8' }
-    })
+  it('overwrites a channel’s earlier outcome when a new one is confirmed', () => {
+    useAppStore.getState().rememberLiveTranscodeOutcome(42, null, 'http://example.com/live/42.m3u8', 'audio', 0)
+    useAppStore.getState().rememberLiveTranscodeOutcome(42, null, 'http://example.com/live/42.m3u8', 'audio', 2)
+    expect(useAppStore.getState().settings.transcodeMemory['42']).toMatchObject({ audioIndex: 2 })
   })
 
-  it('keeps other channels’ fixes when one is forgotten', () => {
-    useAppStore.getState().rememberLiveAudioFix(42, 0, 'http://example.com/live/42.m3u8')
-    useAppStore.getState().rememberLiveAudioFix(7, 1, 'http://example.com/live/7.m3u8')
-
-    useAppStore.getState().forgetLiveAudioFix(42)
-
-    expect(useAppStore.getState().settings.liveAudioFixes).toEqual({
-      '7': { audioIndex: 1, url: 'http://example.com/live/7.m3u8' }
-    })
+  it('keys by the playlist-aware channel rule — the same id on two playlists stays two rows', () => {
+    useAppStore.getState().rememberLiveTranscodeOutcome(42, null, 'http://example.com/live/42.m3u8', 'audio', 0)
+    useAppStore.getState().rememberLiveTranscodeOutcome(42, 'backup', 'http://backup.example/live/42.m3u8', 'rawTs')
+    const memory = useAppStore.getState().settings.transcodeMemory
+    expect(memory['42']).toMatchObject({ kind: 'audio' })
+    expect(memory['backup:42']).toMatchObject({ kind: 'rawTs' })
   })
 
-  it('forgetting a channel with no recorded fix changes nothing', () => {
-    useAppStore.getState().forgetLiveAudioFix(99)
-    expect(useAppStore.getState().settings.liveAudioFixes).toEqual({})
+  it('keeps other channels’ outcomes when one is forgotten', () => {
+    useAppStore.getState().rememberLiveTranscodeOutcome(42, null, 'http://example.com/live/42.m3u8', 'audio', 0)
+    useAppStore.getState().rememberLiveTranscodeOutcome(7, null, 'http://example.com/live/7.m3u8', 'audio', 1)
+
+    useAppStore.getState().forgetLiveTranscodeOutcome(42)
+
+    expect(useAppStore.getState().settings.transcodeMemory['7']).toMatchObject({ audioIndex: 1 })
+    expect(useAppStore.getState().settings.transcodeMemory['42']).toBeUndefined()
+  })
+
+  it('forgetting a channel with no recorded outcome changes nothing', () => {
+    useAppStore.getState().forgetLiveTranscodeOutcome(99)
+    expect(useAppStore.getState().settings.transcodeMemory).toEqual({})
   })
 })
 

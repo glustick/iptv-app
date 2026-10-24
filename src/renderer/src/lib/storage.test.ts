@@ -59,7 +59,55 @@ describe('loadSettings', () => {
     expect(loaded.epgChannelMappings).toEqual([])
     expect(loaded.vpnProfiles).toEqual([])
     expect(loaded.hiddenChannelKeys).toEqual([])
-    expect(loaded.liveAudioFixes).toEqual({})
+    // A non-object liveAudioFixes has nothing to migrate; the unified memory is left empty.
+    expect(loaded.transcodeMemory).toEqual({})
+  })
+
+  it('migrates legacy liveAudioFixes entries into transcodeMemory (0.17.0 unification)', async () => {
+    localStorage.setItem(
+      'settings',
+      JSON.stringify({
+        ...DEFAULT_SETTINGS,
+        liveAudioFixes: {
+          '42': { audioIndex: 0, url: 'http://example.com/live/42.m3u8' },
+          '7': { audioIndex: 2, url: 'http://example.com/live/7.m3u8' },
+          broken: { audioIndex: 'nope' },
+          alsobroken: { url: 'no-index' }
+        }
+      })
+    )
+    const loaded = await loadSettings()
+    // Well-formed entries land as audio outcomes with a fresh confirmedAt (so the prune's
+    // oldest-first ordering never evicts them ahead of genuinely newer entries)…
+    expect(loaded.transcodeMemory['42']).toMatchObject({
+      kind: 'audio', audioIndex: 0, url: 'http://example.com/live/42.m3u8'
+    })
+    expect(loaded.transcodeMemory['42'].confirmedAt).toBeGreaterThan(0)
+    expect(loaded.transcodeMemory['7']).toMatchObject({
+      kind: 'audio', audioIndex: 2, url: 'http://example.com/live/7.m3u8'
+    })
+    // …malformed ones are skipped rather than migrated into junk…
+    expect(loaded.transcodeMemory['broken']).toBeUndefined()
+    expect(loaded.transcodeMemory['alsobroken']).toBeUndefined()
+    // …the legacy field is gone, and an existing transcodeMemory entry for the same key wins
+    // over the legacy one (the live outcome already recorded is the more specific truth).
+    expect('liveAudioFixes' in loaded).toBe(false)
+  })
+
+  it('migration never overwrites an existing transcodeMemory entry for the same key', async () => {
+    const now = Date.now()
+    localStorage.setItem(
+      'settings',
+      JSON.stringify({
+        ...DEFAULT_SETTINGS,
+        liveAudioFixes: { '42': { audioIndex: 0, url: 'http://old.example/live/42.m3u8' } },
+        transcodeMemory: {
+          '42': { kind: 'rawTs', url: 'http://new.example/live/42.ts', confirmedAt: now }
+        }
+      })
+    )
+    const loaded = await loadSettings()
+    expect(loaded.transcodeMemory['42']).toMatchObject({ kind: 'rawTs', url: 'http://new.example/live/42.ts' })
   })
 
   it('keeps well-shaped values untouched by the hardening pass', async () => {

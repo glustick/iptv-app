@@ -54,6 +54,7 @@ import type {
 import { MAX_GUIDE_XML_CHARS } from '../lib/xmltvSections'
 import { isGuideCacheFresh, readCachedGuide, writeCachedGuide } from '../lib/guideCache'
 import { channelEntryFor, channelKey, channelKeyCandidates } from '../lib/channelIdentity'
+import { pruneTranscodeMemory } from '../lib/transcodeMemory'
 import { pruneUndecodableVideo } from '../lib/undecodableVideo'
 import {
   analyzeMediaPlaylist,
@@ -631,12 +632,22 @@ interface AppState {
   // resolves immediately.
   probeChannelHealth: (streamId: number, playlistId?: string | null) => Promise<void>
   setShowNotLiveChannels: (show: boolean) => void
-  // Records (or, via forgetLiveAudioFix, clears) that a live channel needs the ffmpeg AAC-remux
-  // audio fallback, so the next open skips detection and engages the remux immediately — see
-  // the liveAudioFixes field's own comment in lib/types.ts for the shape and why the URL is
-  // stored alongside the track index.
-  rememberLiveAudioFix: (streamId: number, audioIndex: number, url: string, playlistId?: string | null) => void
-  forgetLiveAudioFix: (streamId: number, playlistId?: string | null) => void
+  /** Records a live channel's transcode outcome into the unified memory
+   *  (settings.transcodeMemory — see lib/transcodeMemory.ts). kind 'audio' carries the remux
+   *  audio index; 'rawTs' means the source is a raw MPEG-TS byte stream; 'direct' is recorded
+   *  when detection concluded without needing a fix (informative — detection keeps running
+   *  against it). Fix kinds are success-only by convention: a failed fix must not poison the
+   *  memory. */
+  rememberLiveTranscodeOutcome: (
+    streamId: number,
+    playlistId: string | null | undefined,
+    url: string,
+    kind: 'audio' | 'rawTs' | 'direct',
+    audioIndex?: number
+  ) => void
+  /** Drops a live channel's remembered outcome (self-heal: a fix that stopped working is
+   *  re-detected rather than replayed). */
+  forgetLiveTranscodeOutcome: (streamId: number, playlistId?: string | null) => void
 
   toggleFavorite: (entry: FavoriteEntry) => void
   isFavorited: (kind: MediaKind, id: number) => boolean
@@ -2397,19 +2408,24 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setShowNotLiveChannels: (show) => set({ showNotLiveChannels: show }),
 
-  rememberLiveAudioFix: (streamId, audioIndex, url, playlistId) => {
+  rememberLiveTranscodeOutcome: (streamId, playlistId, url, kind, audioIndex = 0) => {
     const key = channelKey(playlistId, streamId, get().primaryPlaylistId)
-    const liveAudioFixes = { ...get().settings.liveAudioFixes, [key]: { audioIndex, url } }
-    get().updateSettings({ liveAudioFixes })
+    const confirmedAt = Date.now()
+    const entry =
+      kind === 'audio'
+        ? { kind, audioIndex, url, confirmedAt }
+        : { kind, url, confirmedAt }
+    const transcodeMemory = pruneTranscodeMemory({ ...get().settings.transcodeMemory, [key]: entry })
+    get().updateSettings({ transcodeMemory })
   },
 
-  forgetLiveAudioFix: (streamId, playlistId) => {
+  forgetLiveTranscodeOutcome: (streamId, playlistId) => {
     const doomed = channelKeyCandidates(playlistId, streamId, get().primaryPlaylistId)
-    const current = get().settings.liveAudioFixes
+    const current = get().settings.transcodeMemory
     if (!doomed.some((key) => key in current)) return
-    const liveAudioFixes = { ...current }
-    for (const key of doomed) delete liveAudioFixes[key]
-    get().updateSettings({ liveAudioFixes })
+    const transcodeMemory = { ...current }
+    for (const key of doomed) delete transcodeMemory[key]
+    get().updateSettings({ transcodeMemory })
   },
 
   toggleFavorite: (entry) => {

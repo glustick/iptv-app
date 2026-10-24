@@ -186,13 +186,32 @@ export async function loadSettings(): Promise<AppSettings> {
     }
   }
   delete (result as { hiddenLiveStreamIds?: unknown }).hiddenLiveStreamIds
-  if (typeof result.liveAudioFixes !== 'object' || result.liveAudioFixes === null || Array.isArray(result.liveAudioFixes)) {
-    console.warn('[settings] liveAudioFixes was not an object on disk — resetting it')
-    result.liveAudioFixes = {}
-  }
+  // 0.17.0 unified the two transcode memories: liveAudioFixes entries (live channels' audio
+  // fixes, keyed by the SAME channelKey rule transcodeMemory uses for live) move into
+  // transcodeMemory as `kind: 'audio'` entries. confirmedAt is stamped NOW, not 0 — the prune
+  // sorts missing/0 timestamps to the eviction end, and a migrated fix in active use must not
+  // be first out the door. Lossy by design in one respect: a raw-TS channel recorded before
+  // 0.16 (both shapes were `{audioIndex: 0, url}`) migrates as an audio fix — the same remux
+  // replays either way, and the rawTs fact is re-learned on the channel's next failure.
   if (typeof result.transcodeMemory !== 'object' || result.transcodeMemory === null || Array.isArray(result.transcodeMemory)) {
     console.warn('[settings] transcodeMemory was not an object on disk — resetting it')
     result.transcodeMemory = {}
+  }
+  {
+    const legacy = (result as { liveAudioFixes?: unknown }).liveAudioFixes
+    if (legacy && typeof legacy === 'object' && !Array.isArray(legacy)) {
+      const migratedAt = Date.now()
+      for (const [key, fix] of Object.entries(legacy as Record<string, { audioIndex?: unknown; url?: unknown }>)) {
+        if (!fix || typeof fix !== 'object') continue
+        if (key in result.transcodeMemory) continue // a live outcome already recorded wins
+        const audioIndex = Number((fix as { audioIndex?: unknown }).audioIndex)
+        const url = (fix as { url?: unknown }).url
+        if (!Number.isFinite(audioIndex) || typeof url !== 'string') continue
+        result.transcodeMemory[key] = { kind: 'audio', audioIndex, url, confirmedAt: migratedAt }
+      }
+      delete (result as { liveAudioFixes?: unknown }).liveAudioFixes
+      console.log(`[settings] migrated ${Object.keys(legacy as object).length} liveAudioFixes entr(ies) into transcodeMemory`)
+    }
   }
   if (
     typeof result.undecodableVideoChannels !== 'object' ||

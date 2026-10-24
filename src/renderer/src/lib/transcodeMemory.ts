@@ -119,3 +119,24 @@ export function rememberedAudioIndex(
   if (!entry || entry.kind !== 'audio') return null
   return sameSourceUrl(entry.url, url) ? entry.audioIndex : null
 }
+
+/**
+ * The LIVE counterpart of rememberedAudioIndex: an audio entry answers with its index exactly
+ * as the VOD read does, and — the kind the live path adds — a `rawTs` entry answers 0: the
+ * remux is the only way a raw MPEG-TS source plays at all, and it maps the first audio stream
+ * by the same convention as the automatic fallback. `direct` stays unacted-on for the same
+ * reason as above (detection keeps running against it), and a url mismatch is normal
+ * detection, not a guess.
+ */
+export function rememberedLiveRemux(
+  memory: Record<string, TranscodeMemoryEntry>,
+  key: string,
+  url: string
+): number | null {
+  const entry = memory[key]
+  if (!entry) return null
+  if (!sameSourceUrl(entry.url, url)) return null
+  if (entry.kind === 'audio') return entry.audioIndex
+  if (entry.kind === 'rawTs') return 0
+  return null
+}

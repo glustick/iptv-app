@@ -231,6 +231,36 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.17.0** one transcode memory: live and VOD unified — the roadmap's open decision, made and
+  built. **The retirement:** `liveAudioFixes` is gone; live channels record their confirmed
+  outcomes into `transcodeMemory` through new store actions
+  (`rememberLiveTranscodeOutcome` / `forgetLiveTranscodeOutcome`, pruned at write — the cap the
+  old field never had), and `loadSettings` migrates every legacy entry (keys are byte-identical —
+  both used `channelKey`'s rule; values gain `kind: 'audio'` and a fresh `confirmedAt`, stamped
+  NOW because a 0 timestamp would sort migrated entries to the prune's eviction end; an existing
+  transcodeMemory entry for the same key wins, the live record being the more specific truth;
+  the legacy field is deleted, and restored backups pass through the same migration). **The
+  taxonomy fix:** a raw-TS channel was recorded as an audio fix (both shapes were
+  `{audioIndex: 0, url}`) — the unified write carries `kind: 'rawTs'` for the raw-stream remux's
+  success, so "remux because audio" and "remux because not a playlist" are finally distinct, and
+  the new `rememberedLiveRemux` read acts on both kinds (rawTs replays at audio index 0) while
+  `direct` stays recorded-but-unacted (detection keeps running against it — the VOD rule, now
+  live's too: the silent-audio poll's give-up branch records `direct` for the first time).
+  **The latent bug the mapping surfaced, fixed:** every live write omitted the playlist, so all
+  on-disk keys were bare ids and a second playlist's channel never hit its remembered fix on
+  read (forget worked — it sweeps candidates) — all sites now carry the playlist through.
+  **Reads:** the apply-remembered-fix effect and the PMT-probe suppression read the unified
+  memory via `rememberedLiveRemux` (gaining sameSourceUrl matching — rotated provider tokens now
+  hit, strictly more applies than the old exact-URL rule). 706 → 713 tests; typecheck and lint
+  clean. **Rig note, honestly recorded:** the smoke's two direct-decode checks ("playback
+  decodes and advances", "playback still decodes with the subtitle track selected") fail
+  consistently in the current environment ON THE 0.15.2 PRE-ROUND ARTIFACT TOO (control run) —
+  code-innocent, rig-suspect (the desktop's relay binds a dynamic port; the failing path is
+  renderer hls.js → relay → mock, while main-process ffmpeg → mock works, which is why every
+  transcode check passes). The rig investigation is its own follow-up; the unification's
+  evidence is the suite plus the migration observed running against real production data in the
+  rig (the operator's own remembered fixes for two real channels, migrated with correct keys).
+
 - **0.16.1** the count-first answer to "what does broken channel mean beyond the manifest", plus
   the VOD transcode-memory's live verification. **The count:** a channel that is LIVE (the health
   probe's own verdict) but whose VIDEO this machine cannot decode was the one broken shape nothing

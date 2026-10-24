@@ -4,6 +4,7 @@ import {
   sameSourceUrl,
   pruneTranscodeMemory,
   rememberedAudioIndex,
+  rememberedLiveRemux,
   TRANSCODE_MEMORY_MAX_ENTRIES
 } from './transcodeMemory'
 import type { TranscodeMemoryEntry } from './types'
@@ -133,5 +134,28 @@ describe('rememberedAudioIndex', () => {
     }
     expect(rememberedAudioIndex(memory, 'movie:1234', 'http://provider.example/movie/9999.mkv')).toBeNull()
     expect(rememberedAudioIndex(memory, 'movie:9999', 'http://provider.example/movie/9999.mkv')).toBeNull()
+  })
+})
+
+describe('rememberedLiveRemux', () => {
+  const memory: Record<string, TranscodeMemoryEntry> = {
+    '101': { kind: 'audio', audioIndex: 0, url: 'https://prov.example/live/u/t/101.m3u8', confirmedAt: 5 },
+    '102': { kind: 'rawTs', url: 'https://prov.example/live/u/t/102.ts', confirmedAt: 6 },
+    '103': { kind: 'direct', url: 'https://prov.example/live/u/t/103.m3u8', confirmedAt: 7 },
+    '104': { kind: 'audio', audioIndex: 0, url: 'https://other.example/live/u/t/104.m3u8', confirmedAt: 8 }
+  }
+
+  it('an audio entry answers its index when the source shape matches', () => {
+    expect(rememberedLiveRemux(memory, '101', 'https://prov.example/live/u/t/101.m3u8?token=rotated')).toBe(0)
+  })
+
+  it('a rawTs entry answers 0 — the remux is the whole fix, and audio 0 is its default', () => {
+    expect(rememberedLiveRemux(memory, '102', 'https://prov.example/live/u/t/102.ts')).toBe(0)
+  })
+
+  it('direct is recorded but never acted on, and a url-shape mismatch is normal detection', () => {
+    expect(rememberedLiveRemux(memory, '103', 'https://prov.example/live/u/t/103.m3u8')).toBeNull()
+    expect(rememberedLiveRemux(memory, '104', 'https://prov.example/live/u/t/104.m3u8')).toBeNull()
+    expect(rememberedLiveRemux(memory, '999', 'https://prov.example/live/u/t/999.m3u8')).toBeNull()
   })
 })
