@@ -6,6 +6,8 @@ import { rememberedLiveRemux } from '../lib/transcodeMemory'
 import { PlayerChannelBar } from './PlayerChannelBar'
 import { PlayerStatsOverlay } from './PlayerStatsOverlay'
 import { PlayerSeekBar } from './PlayerSeekBar'
+import { formatPlaybackPosition, isFinished, movieProgressKey } from '../lib/continueWatching'
+import { nextEpisode } from '../lib/nextEpisode'
 import { VpnWarnings } from './VpnWarnings'
 import { useTranscodeFallback } from '../lib/useTranscodeFallback'
 import { canDecodeAudioCodec } from '../lib/audioCodecSupport'
@@ -165,6 +167,7 @@ export function Player(): JSX.Element | null {
   const updateSettings = useAppStore((s) => s.updateSettings)
   const episodeProgress = useAppStore((s) => s.episodeProgress)
   const updateEpisodeProgress = useAppStore((s) => s.updateEpisodeProgress)
+  const seriesCache = useAppStore((s) => s.seriesCache)
   const isOnline = useAppStore((s) => s.isOnline)
   const showChannelBar = useAppStore((s) => s.channelBarOpen)
   const setShowChannelBar = useAppStore((s) => s.setChannelBarOpen)
@@ -259,6 +262,9 @@ export function Player(): JSX.Element | null {
     HOVER_AUTO_HIDE_MS,
     playerMounted && nowPlaying?.kind === 'live'
   )
+  // The position a title actually opened at, when it was resumed rather than started — the chip
+  // that says so (and offers to undo it) reads this. Null once dismissed or timed out.
+  const [resumeNotice, setResumeNotice] = useState<number | null>(null)
   // null = off. A global "stop watching after N minutes" timer, not tied to any one channel —
   // deliberately survives a channel switch (see the effect below) since the point is winding
   // down a viewing session, not this specific channel. Player.tsx's own instance never actually
@@ -417,6 +423,9 @@ export function Player(): JSX.Element | null {
     setActiveHlsAudioTrack(-1)
     setHlsLevels([])
     setActiveHlsLevel(-1)
+    // A new title starts with no resume offer; the progress block below re-arms it if this one
+    // genuinely opens mid-way.
+    setResumeNotice(null)
     beginTranscodeRun()
     // "This channel isn't broadcasting" — ported from the web sibling (v0.74.0). A live
     // playlist whose window never changes answers 200 forever while the buffer drains; the
@@ -598,19 +607,29 @@ export function Player(): JSX.Element | null {
       }
     }, STALL_CHECK_INTERVAL_MS)
 
-    // Resume series episodes where you left off.
-    if (nowPlaying.kind === 'series') {
-      const saved = episodeProgress[nowPlaying.streamId]
-      if (saved && saved.durationSeconds > 0 && saved.positionSeconds < saved.durationSeconds * 0.95) {
+    // Resume a series episode or a film where you left off — one rule for both since 0.18.0,
+    // when films started recording progress at all. A finished title never resumes: the same
+    // isFinished test that stops the Movies shelf offering it stops this seeking into its credits.
+    if (nowPlaying.kind === 'series' || nowPlaying.kind === 'movie') {
+      const progressKey =
+        nowPlaying.kind === 'movie' ? movieProgressKey(nowPlaying.streamId) : String(nowPlaying.streamId)
+      const saved = episodeProgress[progressKey]
+      if (
+        saved &&
+        saved.durationSeconds > 0 &&
+        saved.positionSeconds > 1 &&
+        !isFinished(saved.positionSeconds, saved.durationSeconds)
+      ) {
         const resumeAt = saved.positionSeconds
         const onLoadedMetadata = (): void => {
           video.currentTime = resumeAt
         }
         video.addEventListener('loadedmetadata', onLoadedMetadata, { once: true })
+        setResumeNotice(resumeAt)
       }
       progressInterval = setInterval(() => {
         if (video.duration > 0 && !Number.isNaN(video.duration)) {
-          updateEpisodeProgress(String(nowPlaying.streamId), video.currentTime, video.duration)
+          updateEpisodeProgress(progressKey, video.currentTime, video.duration)
         }
       }, PROGRESS_SAVE_INTERVAL_MS)
     }
@@ -1184,8 +1203,16 @@ export function Player(): JSX.Element | null {
       if (networkRetryTimer) clearTimeout(networkRetryTimer)
       if (progressInterval) clearInterval(progressInterval)
       if (silentAudioCheckTimer) clearInterval(silentAudioCheckTimer)
-      if (nowPlaying.kind === 'series' && video.duration > 0 && !Number.isNaN(video.duration)) {
-        updateEpisodeProgress(String(nowPlaying.streamId), video.currentTime, video.duration)
+      if (
+        (nowPlaying.kind === 'series' || nowPlaying.kind === 'movie') &&
+        video.duration > 0 &&
+        !Number.isNaN(video.duration)
+      ) {
+        updateEpisodeProgress(
+          nowPlaying.kind === 'movie' ? movieProgressKey(nowPlaying.streamId) : String(nowPlaying.streamId),
+          video.currentTime,
+          video.duration
+        )
       }
       if (hlsRef.current) {
         hlsRef.current.destroy()
@@ -1633,6 +1660,15 @@ export function Player(): JSX.Element | null {
     return () => clearTimeout(timer)
   }, [numberNotFound])
 
+  // The resume chip is an observation, not a control that has to be dealt with — it says where
+  // playback started, then gets out of the way. Long enough to read and decide, short enough
+  // that it never sits over a film.
+  useEffect(() => {
+    if (resumeNotice === null) return
+    const timer = setTimeout(() => setResumeNotice(null), 12_000)
+    return () => clearTimeout(timer)
+  }, [resumeNotice])
+
   const numericEntryDisplay = useNumericChannelEntry((num) => {
     void findChannelByNumber(num).then((channel) => {
       if (channel) play('live', channel.stream_id, channel.name, 'm3u8', channel.stream_icon, channel.tv_archive, channel.playlistId)
@@ -1641,6 +1677,32 @@ export function Player(): JSX.Element | null {
   }, nowPlaying?.kind === 'live')
 
   if (!nowPlaying) return null
+
+  // What follows this episode, when the series modal handed its episode list over: null for a
+  // film, for the last episode of a show, or for an episode resumed with no show context.
+  const seriesContext =
+    nowPlaying.kind === 'series' && nowPlaying.seriesId !== undefined ? seriesCache[nowPlaying.seriesId] : undefined
+  const upcomingEpisode = seriesContext ? nextEpisode(seriesContext.info, nowPlaying.streamId) : null
+
+  function startOverFromResume(): void {
+    const video = videoRef.current
+    if (video) video.currentTime = 0
+    setResumeNotice(null)
+  }
+
+  function playUpcomingEpisode(): void {
+    if (!seriesContext || !upcomingEpisode) return
+    play(
+      'series',
+      Number(upcomingEpisode.id),
+      `${seriesContext.name} — ${upcomingEpisode.title}`,
+      upcomingEpisode.container_extension || 'mp4',
+      undefined,
+      0,
+      null,
+      seriesContext
+    )
+  }
 
   // The "currently playing" programme out of this channel's short EPG listings — the one whose
   // window actually contains right now, not just the first entry (get_short_epg can return
@@ -1826,6 +1888,17 @@ export function Player(): JSX.Element | null {
             {nowPlaying.kind === 'live' && (
               <button className="player-control-btn" onClick={goToLive} title="Jump to the current live transmission">
                 🔴 <span className="control-label">Live</span>
+              </button>
+            )}
+            {upcomingEpisode && seriesContext && (
+              // The web sibling's Next-episode switch (v0.95.0), in this app's own header: the
+              // episode list came from the modal that started playback, so this costs no request.
+              <button
+                className="player-control-btn player-next-episode"
+                onClick={playUpcomingEpisode}
+                title={`Next: ${upcomingEpisode.title}`}
+              >
+                ⏭ <span className="control-label">Next: {upcomingEpisode.title}</span>
               </button>
             )}
             <div className="player-volume">
@@ -2143,6 +2216,14 @@ export function Player(): JSX.Element | null {
         </div>
       </div>
       <div className="player-body">
+        {resumeNotice !== null && !playbackError && (
+          <div className="player-resume-chip" role="status">
+            <span>Resumed at {formatPlaybackPosition(resumeNotice)}</span>
+            <button className="player-resume-chip-action" onClick={startOverFromResume}>
+              Start over
+            </button>
+          </div>
+        )}
         {!isOnline && (
           <div className="player-error">No network connection — will resume automatically once you're back online.</div>
         )}

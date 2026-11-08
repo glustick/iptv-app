@@ -282,6 +282,10 @@ export interface NowPlaying {
   // remembered audio fix — when two providers number their channels independently (the same id on
   // two playlists is two different channels; see lib/channelIdentity).
   playbackPlaylistId?: string | null
+  // Only meaningful for kind === 'series': which show this episode belongs to. Carried through
+  // play()'s own series argument so the player can offer the episode that follows without
+  // guessing from a name, and so a history-resumed episode still has an identity to look up.
+  seriesId?: number
   name: string
   url: string
   extension: string
@@ -294,6 +298,17 @@ export interface NowPlaying {
   // (Player.tsx) can show it without depending on the currently-browsed category's liveStreams
   // list, which may not even contain this channel (e.g. reached via Favorites or search).
   icon: string
+}
+
+/**
+ * What the player needs to offer "Next episode": the show's identity plus the episode list the
+ * series modal already fetched (or the session's cache holds). The modal is the only producer,
+ * the player the only consumer — the list is not refetched per episode.
+ */
+export interface SeriesPlaybackContext {
+  id: number
+  name: string
+  info: SeriesInfo
 }
 
 interface AppState {
@@ -399,6 +414,9 @@ interface AppState {
   openSeries: SeriesItem | null
   seriesInfo: SeriesInfo | null
   seriesInfoLoading: boolean
+  /** Session-only: each show's episode list, kept after the modal closes so an episode that is
+   *  now playing can still name what follows. Cleared with the other per-provider caches. */
+  seriesCache: Record<number, SeriesPlaybackContext>
 
   previewChannel: LiveStream | null
 
@@ -596,7 +614,8 @@ interface AppState {
     extension: string,
     icon?: string,
     tvArchive?: number,
-    playlistId?: string | null
+    playlistId?: string | null,
+    series?: SeriesPlaybackContext
   ) => void
   playTimeshift: (channel: LiveStream, program: ShortEpgProgram) => void
   stop: () => void
@@ -663,6 +682,8 @@ interface AppState {
   refreshRecentlyWatched: () => Promise<void>
 
   updateEpisodeProgress: (key: string, positionSeconds: number, durationSeconds: number) => void
+  /** Forgets one title's saved position — the continue-watching shelf's dismiss. */
+  dismissContinueWatching: (key: string) => void
   // playlistId identifies which playlist's channel the programme belongs to — see reminderId and
   // lib/channelIdentity for why the same stream id on two playlists is not the same reminder.
   toggleEpgReminder: (streamId: number, channelName: string, program: ShortEpgProgram, playlistId?: string | null) => void
@@ -780,6 +801,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   openSeries: null,
   seriesInfo: null,
   seriesInfoLoading: false,
+  seriesCache: {},
 
   previewChannel: null,
 
@@ -1041,6 +1063,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         numericChannelCatalog: null,
         vodCatalog: null,
         seriesCatalog: null,
+        seriesCache: {},
         // Same wrong-provider story for EPG: stream IDs are only unique within one provider,
         // so cached listings from the previous profile are not just stale but potentially for a
         // completely different channel that happens to share the id.
@@ -1124,6 +1147,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       numericChannelCatalog: null,
       vodCatalog: null,
       seriesCatalog: null,
+      seriesCache: {},
       selectedCustomCategoryId: null
     })
   },
@@ -2274,7 +2298,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
   },
 
-  play: (kind, streamId, name, extension, icon = '', tvArchive = 0, playlistId) => {
+  play: (kind, streamId, name, extension, icon = '', tvArchive = 0, playlistId, series) => {
     const { client, playlists, recentlyWatched } = get()
     // With more than one playlist connected the URL has to come from the account this channel
     // belongs to: stream ids are unique within a playlist, not across them, so using "the" client
@@ -2286,12 +2310,16 @@ export const useAppStore = create<AppState>((set, get) => ({
         kind,
         streamId,
         playbackPlaylistId: playlistId ?? null,
+        seriesId: series?.id,
         name,
         extension,
         tvArchive,
         icon,
         url: source.getStreamUrl(kind, streamId, extension)
-      }
+      },
+      // The modal's own fetch is the list the player's "Next episode" reads — keeping it here
+      // means switching episodes costs no request, and the cache survives the modal closing.
+      ...(series ? { seriesCache: { ...get().seriesCache, [series.id]: series } } : {})
     })
 
     const entry: RecentlyWatchedEntry = { kind, streamId, name, icon, extension, tvArchive, watchedAt: Date.now() }
@@ -2543,6 +2571,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     set({ episodeProgress: updated })
     saveEpisodeProgress(updated).catch((err) => console.error('[store] failed to save episode progress:', err))
+  },
+
+  dismissContinueWatching: (key) => {
+    const rest = { ...get().episodeProgress }
+    delete rest[key]
+    set({ episodeProgress: rest })
+    saveEpisodeProgress(rest).catch((err) => console.error('[store] failed to save episode progress:', err))
   },
 
   toggleEpgReminder: (streamId, channelName, program, playlistId) => {

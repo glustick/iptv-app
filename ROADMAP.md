@@ -231,6 +231,44 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.18.0** the web sibling's watching round — the first desktop release this year that was
+  *chosen by comparing the two apps* rather than by the desktop's own bug list: films now record
+  where you stopped, the player says so and offers to undo it, and a series episode offers the one
+  after it. All three are ports of allison-web-iptv's v0.92.0 (continue watching), v0.94.0 (the
+  resume chip) and v0.95.0 (next episode), adapted to this app's store and surfaces. **The gap it
+  closed, measured rather than assumed:** this app recorded progress for series episodes only —
+  `Player.tsx`'s progress block was gated on `kind === 'series'` — so every film restarted from
+  zero on every visit, despite the series half having resumed correctly since 0.5.1. **The key
+  that makes films safe:** a movie's record lives under `movie:<streamId>`, the same namespace
+  `transcodeMemoryKey` already gives a movie, because the provider's movie ids and episode ids are
+  different numbering spaces that collide freely (a bare key would let one overwrite the other's
+  position). Series episode keys stay bare, so every resume saved before this release survives.
+  **One finished rule, used in both places:** `lib/continueWatching.ts` calls a title finished at
+  95%, or within two minutes of the end — but only once it is ten minutes long, because on a
+  five-minute clip the credits rule would fire before it started (the web sibling's own lesson,
+  now pinned here as a test). The shelf uses it to stop offering a watched film; the player uses
+  the same function to refuse to seek into credits. **The shelf** sits above the Movies grid:
+  newest first, capped at eight, each card carrying a progress bar, its position as a clock
+  (`12:34 of 2:00:00`) and one action per card plus a dismiss. Resume and dismiss are siblings,
+  never nested — the invalid-nested-button rule the web's reminder bell follows too. It hides
+  while a search is active (a filter narrows the catalogue deliberately) and drops any record it
+  cannot name from the loaded catalogue or history, rather than showing an id. **The chip** says
+  `Resumed at 12:34` with **Start over**, clears itself after 12s, and sits below the hover header
+  so it never fights it. **Next episode** appears in the header only when the show's own episode
+  list is known: the series modal already fetched it, so `play()` gained an optional series
+  context (`nowPlaying.seriesId` plus a session-only `seriesCache`) and the button costs no
+  request. `lib/nextEpisode.ts` sorts seasons numerically rather than by object key order (the
+  provider's numbering is neither sorted nor contiguous), crosses into the next season that has
+  episodes, skips empty ones, and returns null at the end of the show rather than wrapping to the
+  pilot. **Deliberately not done:** an episode resumed from History after a restart has no show
+  context (nothing persisted one), so it offers no Next button — recorded here rather than
+  papered over. 739 tests (26 new: the finished rule, the key namespace, the shelf's selection and
+  cap, the episode ordering and its edges, the store's context and dismiss paths, and the shelf's
+  own rendering including the sibling-button contract); typecheck and lint clean. **Not
+  live-verified:** no packaged GUI run was made in this session — the suite is the evidence here,
+  and a real film's resume and a real multi-season show's Next button are the two things a smoke
+  or hand run should confirm next.
+
 - **0.17.0** one transcode memory: live and VOD unified — the roadmap's open decision, made and
   built. **The retirement:** `liveAudioFixes` is gone; live channels record their confirmed
   outcomes into `transcodeMemory` through new store actions
@@ -621,7 +659,9 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
   was never re-entered; confirm in Settings → Sports data); **two-playlist identity against a real
   second account** — no second real account exists on this machine; the **not-broadcasting
   detector against a genuinely off-air channel** — no provider channel was in that state during
-  the pass. **And the machine finding that reframes every earlier "verified" claim: the installed
+  the pass — and the **continue-watching shelf, the resume chip and Next episode (0.18.0)**, whose
+  logic is fully covered but which no packaged run has yet exercised against a real film or a real
+  multi-season show. **And the machine finding that reframes every earlier "verified" claim: the installed
   app at `~/Applications/AllisonIPTV.app` is 0.7.111 (Sep 27) — eight releases stale**, because
   macOS installs are manual. Default-path harness runs have been testing that install; the
   0.15.2-era "66/66" runs must have used a locally-built app via `SMOKE_APP`. The pass ran
@@ -968,6 +1008,7 @@ Prompted by an explicit request to compare this app against TiviMate (a widely-u
 - **Favorites as named groups — shipped in 0.7.36.** See that entry below for the full account.
 - **Multi-view (watching several channels simultaneously in a grid) — shipped in 0.7.48.** See Player controls for the full account, including a real, pre-existing M3U proxy bug caught and fixed along the way.
 - **Aspect ratio/zoom controls, numeric channel entry, and a sleep timer — all shipped in 0.7.37.** See that entry below for the full account.
+- **Continue watching, with films resuming where they stopped — shipped in 0.18.0**, ported from the web sibling along with the resume chip and Next episode. See *Current release* for the full account.
 
 ## Quick wins
 

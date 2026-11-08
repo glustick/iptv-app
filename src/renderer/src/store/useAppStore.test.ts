@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { useAppStore, PROVIDER_GUIDE_LABEL } from './useAppStore'
 import { XtreamClient } from '../lib/xtream'
 import { DEFAULT_SETTINGS } from '../lib/types'
-import { saveSettings, saveProfiles, saveActiveProfileId } from '../lib/storage'
+import { saveSettings, saveProfiles, saveActiveProfileId, loadEpisodeProgress } from '../lib/storage'
 import { parseXmltv } from '../lib/epg'
 import type { LiveStream, VodStream, SeriesItem, FavoriteEntry, RecentlyWatchedEntry, VpnProfile, XtreamProfile, ShortEpgProgram } from '../lib/types'
 
@@ -2760,5 +2760,59 @@ describe('the full catalogue across playlists (ensureChannelCatalog)', () => {
       name: 'B Forty-Two',
       playlistId: 'second'
     })
+  })
+})
+
+describe('series playback context and continue watching (0.18.0)', () => {
+  function makeClient(): XtreamClient {
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    vi.spyOn(client, 'getStreamUrl').mockReturnValue('http://example.com/stream')
+    return client
+  }
+
+  const show = {
+    id: 900,
+    name: 'Fixture',
+    info: {
+      seasons: [{ season_number: 1, name: 'Season 1', cover: '' }],
+      episodes: {
+        '1': [{ id: '1001', episode_num: 1, title: 'One', container_extension: 'mp4', season: 1 }]
+      }
+    }
+  }
+
+  it('carries the show and its episode list into the player, and keeps the list in the session cache', () => {
+    useAppStore.setState({ client: makeClient(), seriesCache: {} })
+
+    useAppStore.getState().play('series', 1001, 'Fixture — One', 'mp4', undefined, 0, null, show)
+
+    const state = useAppStore.getState()
+    expect(state.nowPlaying?.seriesId).toBe(900)
+    expect(state.seriesCache[900]).toBe(show)
+  })
+
+  it('leaves seriesId unset for a film, so no Next-episode offer can be invented for one', () => {
+    useAppStore.setState({ client: makeClient() })
+
+    useAppStore.getState().play('movie', 42, 'A Film', 'mp4', 'poster.png')
+
+    expect(useAppStore.getState().nowPlaying?.seriesId).toBeUndefined()
+  })
+
+  it('forgets one title on dismiss, and leaves every other record alone', async () => {
+    useAppStore.setState({
+      episodeProgress: {
+        'movie:1': { positionSeconds: 600, durationSeconds: 7200, updatedAt: 1 },
+        'movie:2': { positionSeconds: 30, durationSeconds: 120, updatedAt: 2 },
+        // A series episode's own (bare) key — not a film, and not this action's business.
+        '55': { positionSeconds: 90, durationSeconds: 3000, updatedAt: 3 }
+      }
+    })
+
+    useAppStore.getState().dismissContinueWatching('movie:1')
+
+    expect(Object.keys(useAppStore.getState().episodeProgress).sort()).toEqual(['55', 'movie:2'])
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(Object.keys(await loadEpisodeProgress()).sort()).toEqual(['55', 'movie:2'])
   })
 })

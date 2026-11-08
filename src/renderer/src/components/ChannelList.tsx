@@ -3,8 +3,10 @@ import { Grid, useGridRef } from 'react-window'
 import { useAppStore } from '../store/useAppStore'
 import { useElementSize } from '../lib/useElementSize'
 import { useDebouncedValue } from '../lib/useDebouncedValue'
-import type { LiveStream, SeriesItem, FavoriteEntry, FavoriteGroup, RecentlyWatchedEntry, MediaKind } from '../lib/types'
+import type { LiveStream, VodStream, SeriesItem, FavoriteEntry, FavoriteGroup, RecentlyWatchedEntry, MediaKind } from '../lib/types'
 import { favoriteKey } from '../lib/types'
+import { continueWatchingMovies } from '../lib/continueWatching'
+import { ContinueWatchingShelf, type ContinueWatchingItem } from './ContinueWatchingShelf'
 
 const GRID_CELL_MIN_WIDTH = 150
 const GRID_GAP = 14
@@ -261,6 +263,9 @@ export function ChannelList(): JSX.Element {
   const renameFavoriteGroup = useAppStore((s) => s.renameFavoriteGroup)
   const deleteFavoriteGroup = useAppStore((s) => s.deleteFavoriteGroup)
   const clearRecentlyWatched = useAppStore((s) => s.clearRecentlyWatched)
+  const episodeProgress = useAppStore((s) => s.episodeProgress)
+  const vodCatalog = useAppStore((s) => s.vodCatalog)
+  const dismissContinueWatching = useAppStore((s) => s.dismissContinueWatching)
   const refreshRecentlyWatched = useAppStore((s) => s.refreshRecentlyWatched)
   const refreshingRecentlyWatched = useAppStore((s) => s.refreshingRecentlyWatched)
   // 'all' (default) shows every favorite; a specific group id scopes the grid to just that
@@ -273,6 +278,37 @@ export function ChannelList(): JSX.Element {
   // and renaming a group need a real inline text input instead.
   const [newGroupName, setNewGroupName] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState<string | null>(null)
+
+  // Which half-watched films to offer, and what to call them. The progress map holds only ids,
+  // so a title's name and artwork come from the broadest catalogue this session has loaded —
+  // vodCatalog when a category-free fetch has happened, otherwise the category on screen — and
+  // fall back to the recently-watched record (which carries both) for a film that is no longer
+  // in the fetched catalogue at all. An entry nothing can name is dropped rather than shown as
+  // an id. Hidden while a search is active: the shelf is a shortcut into the catalogue, and a
+  // filter over the catalogue is a deliberate narrowing of it.
+  const continueItems = useMemo(() => {
+    if (viewMode !== 'movies' || searchTerm.trim()) return []
+    const catalogById = new Map<number, VodStream>()
+    for (const stream of vodCatalog ?? []) catalogById.set(stream.stream_id, stream)
+    for (const stream of vodStreams) catalogById.set(stream.stream_id, stream)
+    const recentById = new Map(
+      recentlyWatched.filter((entry) => entry.kind === 'movie').map((entry) => [entry.streamId, entry])
+    )
+    return continueWatchingMovies(episodeProgress)
+      .map((entry): ContinueWatchingItem | null => {
+        const stream = catalogById.get(entry.streamId)
+        const recent = recentById.get(entry.streamId)
+        const name = stream?.name ?? recent?.name
+        if (!name) return null
+        return {
+          ...entry,
+          name,
+          image: stream?.stream_icon || recent?.icon || '',
+          extension: stream?.container_extension || recent?.extension || 'mp4'
+        }
+      })
+      .filter((item): item is ContinueWatchingItem => item !== null)
+  }, [viewMode, searchTerm, episodeProgress, vodCatalog, vodStreams, recentlyWatched])
 
   const filteredVod = useFiltered(vodStreams, searchTerm, (c) => c.name)
   const filteredSeries = useFiltered(series, searchTerm, (c) => c.name)
@@ -293,10 +329,20 @@ export function ChannelList(): JSX.Element {
         onToggle: () => toggleFavorite({ kind: 'movie', stream: movie })
       }
     }))
-    if (entries.length === 0) return <p className="empty-state">No movies in this category.</p>
     return (
-      <div className="virtual-list-wrap">
-        <MediaGrid entries={entries} />
+      <div className="virtual-list-wrap movies-view">
+        <ContinueWatchingShelf
+          items={continueItems}
+          onResume={(item) => play('movie', item.streamId, item.name, item.extension, item.image)}
+          onDismiss={dismissContinueWatching}
+        />
+        {entries.length === 0 ? (
+          <p className="empty-state">No movies in this category.</p>
+        ) : (
+          <div className="movies-grid-wrap">
+            <MediaGrid entries={entries} />
+          </div>
+        )}
       </div>
     )
   }

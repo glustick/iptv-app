@@ -66,7 +66,15 @@ export function SeriesModal(): JSX.Element | null {
                               'series',
                               Number(episode.id),
                               `${openSeries.name} — ${episode.title}`,
-                              episode.container_extension || 'mp4'
+                              episode.container_extension || 'mp4',
+                              // No icon: episodes carry none of their own, and the show's cover
+                              // belongs to the modal, not the player.
+                              undefined,
+                              0,
+                              null,
+                              // The episode list is already here — hand it to the player so its
+                              // "Next episode" button needs no request of its own.
+                              seriesInfo ? { id: openSeries.series_id, name: openSeries.name, info: seriesInfo } : undefined
                             )
                             closeSeriesDetail()
                           }}

@@ -18,6 +18,7 @@ import { Sidebar } from './Sidebar'
 import { CustomCategoriesModal } from './CustomCategoriesModal'
 import { GuideSettingsPage } from './GuideSettingsPage'
 import { MultiViewChannelPicker } from './MultiViewChannelPicker'
+import { ContinueWatchingShelf, type ContinueWatchingItem } from './ContinueWatchingShelf'
 import { useAppStore, PROVIDER_GUIDE_LABEL } from '../store/useAppStore'
 import { DEFAULT_SETTINGS } from '../lib/types'
 import type { LiveStream } from '../lib/types'
@@ -486,5 +487,59 @@ describe('GuideSettingsPage', () => {
     expect(useAppStore.getState().epgSources).toHaveLength(1)
     // The force thread is real: the button's reload never even asked the cache for a copy.
     expect(cacheCalls).toEqual([])
+  })
+})
+
+describe('ContinueWatchingShelf', () => {
+  const item = (streamId: number, name: string, positionSeconds: number, durationSeconds: number): ContinueWatchingItem => ({
+    key: `movie:${streamId}`,
+    streamId,
+    name,
+    image: '',
+    extension: 'mp4',
+    positionSeconds,
+    durationSeconds,
+    fraction: positionSeconds / durationSeconds,
+    updatedAt: streamId
+  })
+
+  it('renders one card per half-watched film, with its position as a clock', () => {
+    render(
+      <ContinueWatchingShelf
+        items={[item(1, 'A Film', 754, 7200), item(2, 'Another Film', 30, 5400)]}
+        onResume={() => {}}
+        onDismiss={() => {}}
+      />
+    )
+
+    expect(screen.getByText('Continue watching')).toBeTruthy()
+    expect(screen.getByText('A Film')).toBeTruthy()
+    expect(screen.getByText('12:34 of 2:00:00')).toBeTruthy()
+    expect(screen.getByText('0:30 of 1:30:00')).toBeTruthy()
+  })
+
+  it('resumes from the card and dismisses from its sibling — never one from the other', () => {
+    const resumed: number[] = []
+    const dismissed: string[] = []
+    render(
+      <ContinueWatchingShelf
+        items={[item(7, 'A Film', 600, 7200)]}
+        onResume={(entry) => resumed.push(entry.streamId)}
+        onDismiss={(key) => dismissed.push(key)}
+      />
+    )
+
+    fireEvent.click(screen.getByLabelText('Remove A Film from continue watching'))
+    expect(dismissed).toEqual(['movie:7'])
+    expect(resumed).toEqual([])
+
+    fireEvent.click(screen.getByText('A Film'))
+    expect(resumed).toEqual([7])
+    expect(dismissed).toEqual(['movie:7'])
+  })
+
+  it('renders nothing when there is nothing to continue', () => {
+    const { container } = render(<ContinueWatchingShelf items={[]} onResume={() => {}} onDismiss={() => {}} />)
+    expect(container.innerHTML).toBe('')
   })
 })
