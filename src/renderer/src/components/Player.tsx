@@ -9,6 +9,9 @@ import { PlayerSeekBar } from './PlayerSeekBar'
 import { formatPlaybackPosition, isFinished, movieProgressKey } from '../lib/continueWatching'
 import { nextEpisode } from '../lib/nextEpisode'
 import { SubtitleStylePanel } from './SubtitleStylePanel'
+import { PLAYBACK_SPEEDS, formatPlaybackSpeed, loadPlaybackSpeed, savePlaybackSpeed, type PlaybackSpeed } from '../lib/playbackSpeed'
+import { nextSleepMode, sleepModeLabel, type SleepMode } from '../lib/sleepTimer'
+import { previousLiveChannel } from '../lib/previousChannel'
 import { loadSubtitlePrefs, saveSubtitlePrefs, subtitleCssVariables, type SubtitlePrefs } from '../lib/subtitleStyle'
 import { VpnWarnings } from './VpnWarnings'
 import { useTranscodeFallback } from '../lib/useTranscodeFallback'
@@ -143,16 +146,6 @@ const CHANNEL_INFO_ZONE_FRACTION = 0.1
 // values (see VideoScaleMode in lib/types.ts).
 const VIDEO_SCALE_MODES: VideoScaleMode[] = ['contain', 'cover', 'fill']
 const VIDEO_SCALE_MODE_LABELS: Record<VideoScaleMode, string> = { contain: 'Fit', cover: 'Zoom', fill: 'Stretch' }
-// Sleep timer preset cycle, in minutes — null is "off". Same click-to-cycle interaction as the
-// aspect-ratio button above, rather than a dropdown, for consistency with this header's existing
-// controls.
-const SLEEP_TIMER_OPTIONS_MINUTES: (number | null)[] = [null, 15, 30, 60, 90]
-
-function formatCountdown(totalSeconds: number): string {
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  return `${minutes}:${String(seconds).padStart(2, '0')}`
-}
 
 
 export function Player(): JSX.Element | null {
@@ -170,6 +163,7 @@ export function Player(): JSX.Element | null {
   const episodeProgress = useAppStore((s) => s.episodeProgress)
   const updateEpisodeProgress = useAppStore((s) => s.updateEpisodeProgress)
   const seriesCache = useAppStore((s) => s.seriesCache)
+  const liveChannelHistory = useAppStore((s) => s.liveChannelHistory)
   const subtitleStyleOpen = useAppStore((s) => s.subtitleStyleOpen)
   const setSubtitleStyleOpen = useAppStore((s) => s.setSubtitleStyleOpen)
   const isOnline = useAppStore((s) => s.isOnline)
@@ -288,8 +282,27 @@ export function Player(): JSX.Element | null {
   // unmounts across a close/reopen (nowPlaying just goes null and the component returns null —
   // see resetTranscodeFallback's own comment for the same gotcha), so this needs its own explicit
   // reset-on-close rather than relying on fresh initial state.
-  const [sleepTimerMinutes, setSleepTimerMinutes] = useState<number | null>(null)
+  // null = off, a number = minutes, 'end' = stop when the title finishes (VOD/series only).
+  const [sleepMode, setSleepMode] = useState<SleepMode>(null)
   const [sleepTimerRemainingSeconds, setSleepTimerRemainingSeconds] = useState<number | null>(null)
+  // Read by the ended handler, which was registered when this effect ran and would otherwise see
+  // the mode from that render forever.
+  const sleepModeRef = useRef<SleepMode>(null)
+  sleepModeRef.current = sleepMode
+
+  // Per device (lib/playbackSpeed). The ref is what the playback effect reads: adding the state
+  // itself to that effect's dependencies would tear the stream down and re-attach it on every
+  // speed change.
+  const [playbackSpeed, setPlaybackSpeed] = useState<PlaybackSpeed>(() => loadPlaybackSpeed())
+  const playbackSpeedRef = useRef(playbackSpeed)
+  playbackSpeedRef.current = playbackSpeed
+
+  function changePlaybackSpeed(speed: PlaybackSpeed): void {
+    setPlaybackSpeed(speed)
+    savePlaybackSpeed(speed)
+    const video = videoRef.current
+    if (video) video.playbackRate = speed
+  }
   // Set briefly when a typed channel number (see useNumericChannelEntry below) has no match.
   const [numberNotFound, setNumberNotFound] = useState<number | null>(null)
   // hls.js's own, free/instant notion of "which renditions does the CURRENT source's playlist
@@ -431,6 +444,13 @@ export function Player(): JSX.Element | null {
     // (see the volumechange-driven updateSettings call below).
     video.volume = persistedVolume
     video.muted = persistedMuted
+    // Both, deliberately: playbackRate is what plays now, defaultPlaybackRate is what a newly
+    // loaded source starts at — the transcode fallback swaps the source under this element.
+    // Live is always 1x: the speed choice belongs to films, and the element is reused across
+    // kinds, so a film watched at 1.5x must not make the next channel run fast.
+    const elementSpeed = nowPlaying.kind === 'live' ? 1 : playbackSpeedRef.current
+    video.playbackRate = elementSpeed
+    video.defaultPlaybackRate = elementSpeed
 
     setPlaybackError(null)
     setBuffering(true)
@@ -502,7 +522,15 @@ export function Player(): JSX.Element | null {
     // Restarting it is what a set-top box does with such a feed. Nothing ever ends on a genuinely
     // live channel, so this never runs there.
     const handleEnded = (): void => {
-      if (nowPlaying.kind !== 'live') return
+      if (nowPlaying.kind !== 'live') {
+        // The sleep cycle's 'end' mode: the title has finished, so close playback rather than
+        // leaving the last frame up. Every other mode leaves the player where it is, as before.
+        if (sleepModeRef.current === 'end') {
+          setSleepMode(null)
+          stop()
+        }
+        return
+      }
       const now = Date.now()
       if (now - lastLoopRestartAt < LIVE_LOOP_FAST_FAIL_MS) {
         // A restart that ends again immediately means the "loop" is a broken or empty stream
@@ -1642,37 +1670,38 @@ export function Player(): JSX.Element | null {
   // relying on fresh initial state the way a real unmount/remount would give for free.
   const wasPlayingRef = useRef(false)
   useEffect(() => {
-    if (wasPlayingRef.current && !nowPlaying) setSleepTimerMinutes(null)
+    if (wasPlayingRef.current && !nowPlaying) setSleepMode(null)
     wasPlayingRef.current = !!nowPlaying
   }, [nowPlaying])
 
   useEffect(() => {
-    if (sleepTimerMinutes === null) {
+    // 'end' has no countdown of its own — the title's own end is the deadline, and a countdown
+    // computed at arm time would drift the moment anyone paused or changed speed.
+    if (typeof sleepMode !== 'number') {
       setSleepTimerRemainingSeconds(null)
       return
     }
-    setSleepTimerRemainingSeconds(sleepTimerMinutes * 60)
+    setSleepTimerRemainingSeconds(sleepMode * 60)
     const interval = setInterval(() => {
       setSleepTimerRemainingSeconds((prev) => {
         if (prev === null) return null
         if (prev <= 1) {
           clearInterval(interval)
           stop()
-          setSleepTimerMinutes(null)
+          setSleepMode(null)
           return null
         }
         return prev - 1
       })
     }, 1000)
     return () => clearInterval(interval)
-    // Deliberately scoped to sleepTimerMinutes only — re-triggering on every render (or on
-    // nowPlaying changing) would reset the countdown back to the full duration on every channel
-    // switch, defeating the entire point of a sleep timer surviving them.
-  }, [sleepTimerMinutes])
+    // Deliberately scoped to sleepMode only — re-triggering on every render (or on nowPlaying
+    // changing) would reset the countdown back to the full duration on every channel switch,
+    // defeating the entire point of a sleep timer surviving them.
+  }, [sleepMode])
 
   function cycleSleepTimer(): void {
-    const currentIndex = SLEEP_TIMER_OPTIONS_MINUTES.indexOf(sleepTimerMinutes)
-    setSleepTimerMinutes(SLEEP_TIMER_OPTIONS_MINUTES[(currentIndex + 1) % SLEEP_TIMER_OPTIONS_MINUTES.length])
+    setSleepMode(nextSleepMode(sleepMode, nowPlaying?.kind !== 'live'))
   }
 
   // Channel-surfing-by-number while actually watching, the more iconic version of the same
@@ -1707,6 +1736,23 @@ export function Player(): JSX.Element | null {
   const seriesContext =
     nowPlaying.kind === 'series' && nowPlaying.seriesId !== undefined ? seriesCache[nowPlaying.seriesId] : undefined
   const upcomingEpisode = seriesContext ? nextEpisode(seriesContext.info, nowPlaying.streamId) : null
+
+  // The remote's own button: the channel before this one, if this session came from another
+  // live channel (lib/previousChannel keeps exactly two). Null while the first channel plays.
+  const priorLiveChannel = nowPlaying.kind === 'live' ? previousLiveChannel(liveChannelHistory) : null
+
+  function playPreviousChannel(): void {
+    if (!priorLiveChannel) return
+    play(
+      'live',
+      priorLiveChannel.streamId,
+      priorLiveChannel.name,
+      'm3u8',
+      priorLiveChannel.icon,
+      priorLiveChannel.tvArchive,
+      priorLiveChannel.playlistId
+    )
+  }
 
   function startOverFromResume(): void {
     const video = videoRef.current
@@ -1909,6 +1955,15 @@ export function Player(): JSX.Element | null {
             <button className="player-control-btn" onClick={() => skip(SKIP_SECONDS_LONG)} title={`Forward ${SKIP_SECONDS_LONG}s`}>
               <span className="control-label">1m</span> ⏩
             </button>
+            {priorLiveChannel && (
+              <button
+                className="player-control-btn"
+                onClick={playPreviousChannel}
+                title={`Previous channel: ${priorLiveChannel.name}`}
+              >
+                ◀ <span className="control-label">Previous</span>
+              </button>
+            )}
             {nowPlaying.kind === 'live' && (
               <button className="player-control-btn" onClick={goToLive} title="Jump to the current live transmission">
                 🔴 <span className="control-label">Live</span>
@@ -2192,6 +2247,27 @@ export function Player(): JSX.Element | null {
                 </label>
               </>
             )}
+            {nowPlaying.kind !== 'live' && (
+              // Live has none on purpose: a 1.25x live channel is a different channel — one that
+              // skips — not a faster view of this one.
+              <label className="player-track-select" title="Playback speed (remembered for this device)">
+                <span aria-hidden="true">⏩</span>
+                <span className="control-label">Speed</span>
+                <select
+                  value={playbackSpeed}
+                  onChange={(e) => {
+                    const next = Number(e.target.value)
+                    if ((PLAYBACK_SPEEDS as readonly number[]).includes(next)) changePlaybackSpeed(next as PlaybackSpeed)
+                  }}
+                >
+                  {PLAYBACK_SPEEDS.map((speed) => (
+                    <option key={speed} value={speed}>
+                      {formatPlaybackSpeed(speed)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             {(hlsSubtitleTracks.length > 0 || (vodSubtitleTracks?.some((t) => t.supported) ?? false)) && (
               // Distinct from the track pickers next to it ("Subtitles"/"Subtitle track") by name
               // and icon: this one changes how a cue looks, never which cue is showing.
@@ -2218,11 +2294,7 @@ export function Player(): JSX.Element | null {
             >
               ⏾{' '}
               <span className="control-label">
-                {sleepTimerMinutes === null
-                  ? 'Sleep Timer'
-                  : sleepTimerRemainingSeconds !== null
-                    ? formatCountdown(sleepTimerRemainingSeconds)
-                    : `${sleepTimerMinutes}m`}
+                {sleepModeLabel(sleepMode, sleepTimerRemainingSeconds)}
               </span>
             </button>
             <button

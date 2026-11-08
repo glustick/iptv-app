@@ -66,6 +66,8 @@ import { DEFAULT_SETTINGS, favoriteKey } from '../lib/types'
 import { addStreamIds, kindOf, moveItem, removeStreamId } from '../lib/customCategories'
 import { shouldWarnOnVpnDisconnect } from '../lib/vpnStatus'
 import { createReminder, reminderId, splitDueReminders, type EpgReminder } from '../lib/reminders'
+import { rememberLiveChannel, type PreviousLiveChannel } from '../lib/previousChannel'
+import { loadLastViewMode, saveLastViewMode } from '../lib/lastView'
 
 /** One connected playlist: the saved profile it came from, its own client, and its own status. */
 export interface PlaylistConnection {
@@ -420,6 +422,9 @@ interface AppState {
   /** Session-only: each show's episode list, kept after the modal closes so an episode that is
    *  now playing can still name what follows. Cleared with the other per-provider caches. */
   seriesCache: Record<number, SeriesPlaybackContext>
+  /** The last two live channels played, newest first — the "previous channel" button's whole
+   *  state (see lib/previousChannel). Session-only, cleared with the provider's other state. */
+  liveChannelHistory: PreviousLiveChannel[]
 
   previewChannel: LiveStream | null
 
@@ -773,7 +778,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   isOnline: typeof navigator === 'undefined' ? true : navigator.onLine,
   singleConnectionAccount: false,
 
-  viewMode: 'live',
+  // The tab this device was last on (lib/lastView) — the web sibling's own courtesy. 'live' when
+  // nothing was ever chosen, or when the stored value is unreadable.
+  viewMode: loadLastViewMode() ?? 'live',
   categories: [],
   selectedCategoryId: null,
   liveStreams: [],
@@ -807,6 +814,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   seriesInfo: null,
   seriesInfoLoading: false,
   seriesCache: {},
+  liveChannelHistory: [],
 
   previewChannel: null,
 
@@ -1153,11 +1161,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       vodCatalog: null,
       seriesCatalog: null,
       seriesCache: {},
+      liveChannelHistory: [],
       selectedCustomCategoryId: null
     })
   },
 
   setViewMode: async (mode) => {
+    saveLastViewMode(mode)
     // Favorites and History are both derived purely from local state (no category fetch,
     // no Sidebar) — same short-circuit as each other.
     if (mode === 'favorites' || mode === 'history' || mode === 'sports') {
@@ -2324,7 +2334,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       },
       // The modal's own fetch is the list the player's "Next episode" reads — keeping it here
       // means switching episodes costs no request, and the cache survives the modal closing.
-      ...(series ? { seriesCache: { ...get().seriesCache, [series.id]: series } } : {})
+      ...(series ? { seriesCache: { ...get().seriesCache, [series.id]: series } } : {}),
+      // Only live channels have a "previous" — a film's predecessor is not something a remote
+      // offers, and mixing the two would make the button hop between kinds.
+      ...(kind === 'live'
+        ? {
+            liveChannelHistory: rememberLiveChannel(get().liveChannelHistory, {
+              streamId,
+              name,
+              icon,
+              tvArchive,
+              playlistId: playlistId ?? null
+            })
+          }
+        : {})
     })
 
     const entry: RecentlyWatchedEntry = { kind, streamId, name, icon, extension, tvArchive, watchedAt: Date.now() }

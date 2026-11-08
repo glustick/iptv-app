@@ -1185,6 +1185,81 @@ async function main() {
   await pressEscape()
   await evaluate(cdp, `localStorage.removeItem('allisoniptv-subtitle-prefs'), true`)
 
+  // --- playback speed and the sleep timer's \"end of title\" (0.21.0) ----------------------------
+  // Both are player-local conveniences with per-device storage; neither is observable from a
+  // component test because both act on a live media element.
+  //
+  // Paused first, deliberately. The fixture film is twelve seconds long, and \"stop when this film
+  // ends\" armed against a film that then ends is *supposed* to close the player — which is what it
+  // did on this check's first run, taking every later assertion with it. A paused element cannot
+  // reach its end, so the mode can be read without the film firing it.
+  await evaluate(cdp, `(() => { const v = document.querySelector('video.player-video'); v?.pause(); return true })()`)
+  await check(
+    'the film is paused for the transport checks',
+    `document.querySelector('video.player-video')?.paused === true`,
+    8000
+  )
+  await check(
+    'the film offers a speed selector',
+    `(() => { const s = document.querySelector('label[title^=\"Playback speed\"] select'); return !!s && s.options.length === 4 })()`,
+    8000
+  )
+  await evaluate(
+    cdp,
+    `(() => { const s = document.querySelector('label[title^=\"Playback speed\"] select'); s.value = '1.5'; s.dispatchEvent(new Event('change', { bubbles: true })); return true })()`
+  )
+  await check(
+    'choosing 1.5x changes the element\'s actual rate',
+    `document.querySelector('video.player-video')?.playbackRate === 1.5`,
+    8000
+  )
+  await check(
+    'the speed is remembered for this device',
+    `localStorage.getItem('allisoniptv-playback-speed') === '1.5'`,
+    8000
+  )
+  await evaluate(
+    cdp,
+    `(() => { const s = document.querySelector('label[title^=\"Playback speed\"] select'); s.value = '1'; s.dispatchEvent(new Event('change', { bubbles: true })); return true })()`
+  )
+  await check(
+    'returning to 1x clears the stored speed',
+    `document.querySelector('video.player-video')?.playbackRate === 1 && localStorage.getItem('allisoniptv-playback-speed') === null`,
+    8000
+  )
+  // The sleep cycle on a film starts with \"end of title\" — the web sibling's v0.94.0 mode. Arm it,
+  // read the label, then cycle all the way back to off so the fixture's 12-second movie cannot
+  // close the player underneath the checks that follow.
+  await evaluate(
+    cdp,
+    `(() => { const b = [...document.querySelectorAll('button')].find((x) => (x.title || '').startsWith('Cycle sleep timer')); b?.click(); return true })()`
+  )
+  await check(
+    "a film's sleep cycle offers 'end of title' first",
+    // Read from the button's own textContent: the header hides labels in compact mode, and
+    // innerText omits hidden text — which is exactly how this check failed the first time.
+    `(() => {
+      const b = [...document.querySelectorAll('button')].find((x) => (x.title || '').startsWith('Cycle sleep timer'))
+      return !!b && b.textContent.includes('Sleep: End of title')
+    })()`,
+    8000
+  )
+  for (let i = 0; i < 5; i += 1) {
+    await evaluate(
+      cdp,
+      `(() => { const b = [...document.querySelectorAll('button')].find((x) => (x.title || '').startsWith('Cycle sleep timer')); b?.click(); return true })()`
+    )
+    await sleep(150)
+  }
+  await check(
+    'the sleep timer cycles back to off',
+    `(() => {
+      const b = [...document.querySelectorAll('button')].find((x) => (x.title || '').startsWith('Cycle sleep timer'))
+      return !!b && !b.textContent.includes('Sleep: End of title') && b.textContent.includes('Sleep Timer')
+    })()`,
+    8000
+  )
+
   // Leave VOD before the live checks: starting a second stream on top of an active transcode is
   // exactly the contention the app's own comments warn about, and this run isn't testing that.
   // Seek before closing: the fixture movie is short enough that a run this long can leave it
@@ -1246,6 +1321,27 @@ async function main() {
   await check('provider order clears the stored choice again', `localStorage.getItem('allisoniptv-list-order-movie') === null`, 8000)
   await evaluate(cdp, `document.querySelector('.continue-card-dismiss')?.click() || true`)
   await check('dismiss removes it from Continue watching', `!document.querySelector('.continue-watching')`, 8000)
+  // --- the tab is remembered (0.21.0) ---------------------------------------------------------
+  // The restore path itself is a fresh launch, which this harness does not do mid-run; what it can
+  // prove is that the choice is written for the next launch, through the real tab buttons.
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('button.tab')].find((b) => b.textContent.trim() === 'Series')?.click() || true`
+  )
+  await check(
+    'the tab just used is remembered for the next launch',
+    `localStorage.getItem('allisoniptv-last-view') === '"series"'`,
+    8000
+  )
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('button.tab')].find((b) => b.textContent.trim() === 'Movies')?.click() || true`
+  )
+  await check(
+    'switching back updates the remembered tab',
+    `localStorage.getItem('allisoniptv-last-view') === '"movies"'`,
+    8000
+  )
   // ...and go back to Live TV, which every check below assumes.
   await evaluate(
     cdp,
@@ -1317,6 +1413,29 @@ async function main() {
   await check(
     'the audio-fix transcode is actually what is being played',
     `[...performance.getEntriesByType('resource')].some((e) => e.name.includes('/__transcode/'))`,
+    20000
+  )
+  // --- previous channel (0.21.0) --------------------------------------------------------------
+  // Two live channels have played by now, so the remote's own button must exist and name the one
+  // just left. Clicking it is the real test: the player's title has to change off the current
+  // channel, which only happens if the store routed the right stream through the right playlist.
+  const previousLabel = await evaluate(
+    cdp,
+    `(() => { const b = [...document.querySelectorAll('button')].find((x) => (x.title || '').startsWith('Previous channel:')); return b ? b.title : null })()`
+  )
+  console.log('previous channel button:', previousLabel)
+  await check(
+    'the previous channel is offered after switching',
+    `[...document.querySelectorAll('button')].some((x) => (x.title || '').startsWith('Previous channel:'))`,
+    8000
+  )
+  await evaluate(
+    cdp,
+    `(() => { const b = [...document.querySelectorAll('button')].find((x) => (x.title || '').startsWith('Previous channel:')); b?.click(); return true })()`
+  )
+  await check(
+    'clicking it returns to the channel just left',
+    `(() => { const t = document.querySelector('.player-title')?.textContent || ''; return t.length > 0 && !t.includes('Unmatched Channel') })()`,
     20000
   )
 

@@ -2831,3 +2831,46 @@ describe('subtitle appearance panel (0.20.0)', () => {
     expect(useAppStore.getState().subtitleStyleOpen).toBe(false)
   })
 })
+
+describe('previous channel and the last tab (0.21.0)', () => {
+  function makeClient(): XtreamClient {
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    vi.spyOn(client, 'getStreamUrl').mockReturnValue('http://example.com/stream')
+    return client
+  }
+
+  it('remembers the live channel just left, newest first', () => {
+    useAppStore.setState({ client: makeClient(), liveChannelHistory: [] })
+
+    useAppStore.getState().play('live', 1, 'Channel One', 'm3u8', 'one.png', 1)
+    expect(useAppStore.getState().liveChannelHistory.map((c) => c.streamId)).toEqual([1])
+
+    useAppStore.getState().play('live', 2, 'Channel Two', 'm3u8', '', 0)
+    expect(useAppStore.getState().liveChannelHistory.map((c) => c.streamId)).toEqual([2, 1])
+    expect(useAppStore.getState().liveChannelHistory[1]).toMatchObject({ name: 'Channel One', tvArchive: 1 })
+  })
+
+  it('keeps a film out of the live history — a remote does not hop between kinds', () => {
+    useAppStore.setState({ client: makeClient(), liveChannelHistory: [] })
+    useAppStore.getState().play('live', 1, 'Channel One', 'm3u8')
+    useAppStore.getState().play('movie', 200, 'A Film', 'mp4')
+
+    expect(useAppStore.getState().liveChannelHistory.map((c) => c.streamId)).toEqual([1])
+  })
+
+  it('clears with the connection, since a channel from another provider is not "previous"', () => {
+    useAppStore.setState({ client: makeClient(), liveChannelHistory: [] })
+    useAppStore.getState().play('live', 1, 'Channel One', 'm3u8')
+    useAppStore.getState().disconnect()
+    expect(useAppStore.getState().liveChannelHistory).toEqual([])
+  })
+
+  it('persists the tab the viewer switched to, and only real tabs', async () => {
+    await useAppStore.getState().setViewMode('series')
+    // This file's environment is plain Node; beforeEach installs the shim on globalThis.
+    expect(globalThis.localStorage.getItem('allisoniptv-last-view')).toBe('"series"')
+
+    await useAppStore.getState().setViewMode('history')
+    expect(globalThis.localStorage.getItem('allisoniptv-last-view')).toBe('"history"')
+  })
+})

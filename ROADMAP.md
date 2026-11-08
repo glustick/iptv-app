@@ -231,6 +231,42 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.21.0** the remote round — four things a viewer reaches for while watching, all ported from
+  the web sibling: **playback speed**, **previous channel**, **"stop when this film ends"**, and
+  the **tab the app reopens on**. **Speed** (web v0.93.0) is a 0.75× / 1× / 1.25× / 1.5× selector
+  beside the film's audio and subtitle pickers, remembered per device like the quality ceiling. It
+  is offered only for films and episodes: a 1.25× live channel is a different channel — one that
+  skips — not a faster view of this one, and the element is reused across kinds, so a film watched
+  at 1.5× would otherwise make the next channel run fast. Both `playbackRate` and
+  `defaultPlaybackRate` are set, because the transcode fallback swaps the source under the same
+  element. **Previous channel** (web v0.93.0) is the remote's own button: a two-entry history, not
+  a browsing log, so pressing it again goes back (A→B→A). The playlist is part of the identity —
+  provider A's 42 and provider B's 42 are unrelated — and only live channels enter it, because a
+  film's predecessor is not something a remote offers. It lives in the store
+  (`liveChannelHistory`), is session-only, and is cleared with the provider's other state. **"Stop
+  when this film ends"** (web v0.94.0) is a new mode at the head of the sleep cycle, offered only
+  where there is a title to end: the film's own `ended` event is the deadline, so it arrives on
+  time at any speed and does not drift when someone pauses — deliberately *not* a countdown
+  computed when the mode is armed, which is what the web's own deadline had to work around. The
+  mode is cleared when the player closes. **The last tab** (web v0.93.0) is remembered per device
+  and restored on first render; the list of tabs is the store's own `ViewMode` type, so the two
+  cannot drift, and an unreadable value reads as Live TV rather than as a broken tab. 795 tests
+  (21 new: the speed preference and its 1×-is-absence rule, the sleep cycle and its labels, the
+  tab list and its validation, the two-entry channel history including the same-id-on-two-playlists
+  case, and the store's history/persistence paths); typecheck, lint and build clean. **Verified in
+  a packaged app:** the GUI smoke grew five more checks for this release (the speed selector
+  reaching the element's real `playbackRate`, the stored speed clearing at 1×, "end of title"
+  appearing first in a film's sleep cycle, the tab being written on switch, and the previous-channel
+  button actually returning to the channel just left) and passed **90/90** against an unsigned
+  locally-built bundle on the synthetic provider. **Two failures it found, both fixed:** the sleep
+  label is hidden in the compact header, so an `innerText` assertion could not see it (the check now
+  reads the button's `textContent`); and the fixture's twelve-second film *ended* while "stop at the
+  end" was armed — the feature doing exactly its job, closing the player under the checks that
+  followed — which the harness now prevents by pausing the element for the transport checks rather
+  than by weakening the feature. **Still not verified:** a real provider session, and the last
+  tab's restore across an actual relaunch — the write is asserted in the running app, the read is
+  unit-tested.
+
 - **0.20.0** subtitles became the viewer's own — the web sibling's v0.89.0, ported. This app has
   always let you *choose* a subtitle track (hls.js renditions on live, a language picker that
   restarts the VOD transcode), but their appearance was whatever the platform's text-track
@@ -755,7 +791,10 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
   observation rather than a resolution — nothing in these releases touches decoding, and one green
   session does not explain three red ones. What remains genuinely unverified is the real provider
   session (no account used here) and a 24k catalogue's filtering cost in the app rather than in a
-  microbenchmark. **And the machine finding that reframes every earlier "verified" claim: the installed
+  microbenchmark. **0.21.0 adds its own, and the same harness covers it:** the smoke is now 90
+  checks and passed 90/90 on a locally-built bundle; what it cannot check is the last tab's restore
+  across a relaunch (the write is asserted, the read is unit-tested) and how a real provider's
+  films behave at 1.5×. **And the machine finding that reframes every earlier "verified" claim: the installed
   app at `~/Applications/AllisonIPTV.app` is 0.7.111 (Sep 27) — eight releases stale**, because
   macOS installs are manual. Default-path harness runs have been testing that install; the
   0.15.2-era "66/66" runs must have used a locally-built app via `SMOKE_APP`. The pass ran
