@@ -19,6 +19,7 @@ import { CustomCategoriesModal } from './CustomCategoriesModal'
 import { GuideSettingsPage } from './GuideSettingsPage'
 import { MultiViewChannelPicker } from './MultiViewChannelPicker'
 import { ContinueWatchingShelf, type ContinueWatchingItem } from './ContinueWatchingShelf'
+import { ListToolbar } from './ListToolbar'
 import { useAppStore, PROVIDER_GUIDE_LABEL } from '../store/useAppStore'
 import { DEFAULT_SETTINGS } from '../lib/types'
 import type { LiveStream } from '../lib/types'
@@ -541,5 +542,41 @@ describe('ContinueWatchingShelf', () => {
   it('renders nothing when there is nothing to continue', () => {
     const { container } = render(<ContinueWatchingShelf items={[]} onResume={() => {}} onDismiss={() => {}} />)
     expect(container.innerHTML).toBe('')
+  })
+})
+
+describe('ListToolbar', () => {
+  it('says how much of the list the filter is showing, and says nothing when nothing is filtered', () => {
+    const { rerender } = render(
+      <ListToolbar kind="movie" order="provider" onOrderChange={() => {}} shown={1} total={340} filtering noun="films" />
+    )
+    expect(screen.getByText('1 of 340 films')).toBeTruthy()
+
+    rerender(
+      <ListToolbar kind="movie" order="provider" onOrderChange={() => {}} shown={340} total={340} filtering={false} noun="films" />
+    )
+    expect(screen.queryByText(/of 340/)).toBeNull()
+  })
+
+  it('offers the ordering choices for the kind, and reports the viewer\'s pick', () => {
+    const picked: string[] = []
+    render(
+      <ListToolbar
+        kind="series"
+        order="provider"
+        onOrderChange={(order) => picked.push(order)}
+        shown={0}
+        total={0}
+        filtering={false}
+        noun="series"
+      />
+    )
+
+    expect(screen.getByText('Provider order')).toBeTruthy()
+    expect(screen.getByText('A–Z')).toBeTruthy()
+    expect(screen.getByText('Newest release')).toBeTruthy()
+
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'newest' } })
+    expect(picked).toEqual(['newest'])
   })
 })

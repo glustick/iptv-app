@@ -231,6 +231,43 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.19.0** the web sibling's lists round — filtering that behaves the way the web's does, the
+  count that stops a narrowed list looking empty, and the ordering and rating the catalogue was
+  already carrying but could not show. **What was deliberately not ported:** a second filter box
+  per list. The web has a search results page *and* per-list filters; this app has one search box
+  that filters whatever list is on screen, so a second box would be the same control twice. What
+  the port added instead is the web's **semantics and its count**: matching is now case- and
+  accent-insensitive (`lib/listFilter.ts` — typed `cafe` finds `Café`, folded once per keystroke
+  rather than once per row, and ASCII names skip the NFD pass entirely so a 24,000-channel search
+  does not pay 24,000 normalizations), and every filtered list says how much it is showing —
+  `1 of 340 films`, `3 of 340 channels`, `12 of 88 entries` — rather than reading like an empty
+  category. That count is on all four surfaces (Movies, Series, Favorites, History) and on the
+  live grid, where its denominator is what the panel is actually willing to show, not the whole
+  provider catalogue. **Ordering** (`lib/listOrder.ts`) is the web's Provider / A–Z / newest, per
+  device and per kind in localStorage the way the quality ceiling already is, validated on read so
+  a corrupt value can never reorder a catalogue. The two kinds name their newest differently on
+  purpose — films sort on the provider's `added`, series on `releaseDate` — and undated titles sort
+  last rather than pretending to be from 1970. Provider order returns the array untouched by
+  identity; ties keep provider order; and the sort key is computed once per title (10,000 folds,
+  not the ~140,000 an on-demand fold inside the comparator would cost). Ordering applies only to a
+  catalogue list — Favorites and History keep the order that makes them useful, per the web's own
+  rule. **And the rating badge on film tiles**, which the catalogue has always carried and only
+  series ever showed. **Two things found while building it, both fixed:** the list filter's memo
+  never held, because every call site passed a fresh inline name accessor, so a hover re-filtered
+  the whole catalogue every render — the accessors are module-level now and the sort is memoized;
+  and the first cut of the sort put a `useMemo` inside the per-mode branch, a conditional hook
+  caught before it left the machine. **Deliberately not ported: the guide's ★ Favourites toggle.**
+  Favourites are keyed by a bare stream id, so on a merged multi-playlist grid provider B's
+  channel 42 would light up because provider A's 42 is starred. That needs the composite favourite
+  identity first; offering a filter that shows the wrong provider's channel is worse than not
+  offering it. 761 tests (22 new: the folder's own rules including what it refuses to fold, the
+  order storage/parsing/sorting and its ties and undated cases, and the toolbar's count and
+  picker); typecheck, lint and build clean. **Not live-verified** — no packaged run against a real
+  24k catalogue in this session — but the part that needed a number has one: the filter helper was
+  measured in Node against 24,000 synthetic names, a full pass costing **1.4–2.6 ms** (2.3 ms on
+  the all-ASCII path, 2.6 ms when a fifth of the names carry accents and fold the slow way), which
+  is what makes "folded once per keystroke" a claim rather than a hope.
+
 - **0.18.0** the web sibling's watching round — the first desktop release this year that was
   *chosen by comparing the two apps* rather than by the desktop's own bug list: films now record
   where you stopped, the player says so and offers to undo it, and a series episode offers the one
@@ -661,7 +698,8 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
   detector against a genuinely off-air channel** — no provider channel was in that state during
   the pass — and the **continue-watching shelf, the resume chip and Next episode (0.18.0)**, whose
   logic is fully covered but which no packaged run has yet exercised against a real film or a real
-  multi-season show. **And the machine finding that reframes every earlier "verified" claim: the installed
+  multi-season show; likewise 0.19.0's filtering, counts and ordering, unit- and component-tested
+  but not yet seen against a real 24k catalogue. **And the machine finding that reframes every earlier "verified" claim: the installed
   app at `~/Applications/AllisonIPTV.app` is 0.7.111 (Sep 27) — eight releases stale**, because
   macOS installs are manual. Default-path harness runs have been testing that install; the
   0.15.2-era "66/66" runs must have used a locally-built app via `SMOKE_APP`. The pass ran

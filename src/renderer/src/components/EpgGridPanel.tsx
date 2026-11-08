@@ -8,6 +8,7 @@ import { EpgGrid } from './EpgGrid'
 import { describeChannelHealth } from '../lib/channelHealth'
 import type { LiveStream, ShortEpgProgram } from '../lib/types'
 import { channelKey, channelKeyBelongsToPlaylist } from '../lib/channelIdentity'
+import { foldListText, matchesFoldedQuery } from '../lib/listFilter'
 
 // Docked/full-width chrome (preview video, favorite/close buttons, resize handle) around the
 // shared EpgGrid — see EpgGrid.tsx for the actual Gantt-chart guide, also reused as the
@@ -86,7 +87,10 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
       }).length,
     [liveStreams, channelHealthByStream, showHiddenLiveChannels, isChannelHidden, primaryPlaylistId]
   )
-  const channels = useMemo(() => {
+  // What this panel is willing to show at all — hidden channels, and optionally the ones known
+  // not to be live. The search narrows this, and it is the honest denominator for the search's
+  // own count: "3 of 340 channels", never "3 of 24,000".
+  const browsable = useMemo(() => {
     let source = showHiddenLiveChannels
       ? liveStreams
       : liveStreams.filter((c) => !isChannelHidden(c.playlistId, c.stream_id))
@@ -96,19 +100,24 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
         return health !== 'loop' && health !== 'unavailable'
       })
     }
-    if (!debouncedSearch.trim()) return source
-    const needle = debouncedSearch.toLowerCase()
-    return source.filter((c) => {
-      if (c.name.toLowerCase().includes(needle)) return true
+    return source
+  }, [liveStreams, showHiddenLiveChannels, showNotLiveChannels, channelHealthByStream, isChannelHidden, primaryPlaylistId])
+
+  // Folded once per keystroke (lib/listFilter), not once per channel.
+  const foldedSearch = foldListText(debouncedSearch)
+  const channels = useMemo(() => {
+    if (!foldedSearch) return browsable
+    return browsable.filter((c) => {
+      if (matchesFoldedQuery(c.name, foldedSearch)) return true
       // Also matches programme titles, but only for channels whose short EPG has already
       // been loaded (rows scrolled near at some point) — get_short_epg is per-channel with
       // no bulk/search endpoint, so searching every one of a 24k-channel catalog up front
       // isn't practical. Real but limited: "what's playing X right now" works for channels
       // you've already browsed past, not the whole catalog sight-unseen.
       const listings = shortEpgByStream[channelKey(c.playlistId, c.stream_id, primaryPlaylistId)]
-      return listings?.some((p) => p.title.toLowerCase().includes(needle)) ?? false
+      return listings?.some((p) => matchesFoldedQuery(p.title, foldedSearch)) ?? false
     })
-  }, [liveStreams, debouncedSearch, shortEpgByStream, isChannelHidden, showHiddenLiveChannels, showNotLiveChannels, channelHealthByStream, primaryPlaylistId])
+  }, [browsable, foldedSearch, shortEpgByStream, primaryPlaylistId])
 
   // How much of what's on screen the feed-health probe has actually judged (see
   // probeChannelHealth). Without it, "no badge" means either "checked and live" or "not checked
@@ -304,6 +313,14 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
               {/* Not a filter — the one place that says how much of this list has actually been
                   judged, so a channel with no badge reads as "not checked yet" rather than a
                   silent pass. See probeChannelHealth. */}
+              {foldedSearch && (
+                <span
+                  className="epg-health-checked"
+                  title="Channels matching the search, out of the channels this panel is showing. Programme titles are only searched for channels whose listings have already loaded."
+                >
+                  {channels.length} of {browsable.length} channels
+                </span>
+              )}
               {checkedCount > 0 && (
                 <span
                   className="epg-health-checked"

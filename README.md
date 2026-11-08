@@ -8,7 +8,7 @@ A desktop IPTV client (Electron + React) for Xtream Codes providers, with live T
 
 - Connect to any Xtream Codes panel with server URL, username, and password — or a bare M3U playlist URL (plus an optional separate EPG XML URL) for providers that only offer that
 - Save multiple provider profiles locally
-- Browse Live TV, Movies, and Series by category, with search
+- Browse Live TV, Movies, and Series by category, with search that ignores case and accents — and every filtered list says how much it is showing ("1 of 340 films") instead of looking empty. Movies and Series can be ordered by provider, A–Z or newest, remembered per device, and film tiles show the rating the catalogue already carries
 - Clicking a live channel opens a preview first — current programme, progress bar, and a "coming up" list, all in your local timezone — before jumping into fullscreen playback
 - Series browsing fetches seasons/episodes via `get_series_info` for playback
 - Built-in player using [hls.js](https://github.com/video-dev/hls.js) for live `.m3u8` streams (with auto-recovery on network/media errors and a generous buffer to smooth out flaky connections), native `<video>` fallback for VOD/series files

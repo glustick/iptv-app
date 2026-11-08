@@ -7,6 +7,9 @@ import type { LiveStream, VodStream, SeriesItem, FavoriteEntry, FavoriteGroup, R
 import { favoriteKey } from '../lib/types'
 import { continueWatchingMovies } from '../lib/continueWatching'
 import { ContinueWatchingShelf, type ContinueWatchingItem } from './ContinueWatchingShelf'
+import { foldListText, matchesFoldedQuery } from '../lib/listFilter'
+import { loadListOrder, saveListOrder, sortSeries, sortVodStreams, type ListOrder } from '../lib/listOrder'
+import { ListToolbar } from './ListToolbar'
 
 const GRID_CELL_MIN_WIDTH = 150
 const GRID_GAP = 14
@@ -14,9 +17,11 @@ const GRID_GAP = 14
 function useFiltered<T>(items: T[], term: string, getName: (item: T) => string): T[] {
   const debouncedTerm = useDebouncedValue(term, 150)
   return useMemo(() => {
-    if (!debouncedTerm.trim()) return items
-    const needle = debouncedTerm.toLowerCase()
-    return items.filter((item) => getName(item).toLowerCase().includes(needle))
+    // Folded once per keystroke, not once per row — see lib/listFilter's own note about the
+    // 24k-channel catalogue.
+    const folded = foldListText(debouncedTerm)
+    if (!folded) return items
+    return items.filter((item) => matchesFoldedQuery(getName(item), folded))
   }, [items, debouncedTerm, getName])
 }
 
@@ -228,6 +233,15 @@ function favoriteEntryToGridEntry(
 
 const KIND_LABEL: Record<MediaKind, string> = { live: 'Live TV', movie: 'Movie', series: 'Series' }
 
+// Stable name accessors. useFiltered memoizes on their identity, and an inline arrow would give
+// it a new one every render — which turns every hover-triggered re-render into a full re-filter
+// (and, with ordering on, a full re-sort) of a catalogue that can hold 24,000 rows.
+const vodName = (stream: VodStream): string => stream.name
+const seriesName = (item: SeriesItem): string => item.name
+const favoriteName = (entry: FavoriteEntry): string =>
+  entry.kind === 'series' ? entry.item.name : entry.stream.name
+const recentName = (entry: RecentlyWatchedEntry): string => entry.name
+
 // Unlike favorites, a recently-watched entry is whatever was directly handed to play() — a
 // flat, already-playable reference (for series, the specific episode watched, not the show) —
 // so resuming it is always just play() again, with no per-kind branching needed.
@@ -278,6 +292,20 @@ export function ChannelList(): JSX.Element {
   // and renaming a group need a real inline text input instead.
   const [newGroupName, setNewGroupName] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState<string | null>(null)
+  // Per device, per kind (lib/listOrder): read once at mount, written on every change. Provider
+  // order returns the catalogue untouched, so it is the no-cost default it claims to be.
+  const [vodOrder, setVodOrder] = useState<ListOrder>(() => loadListOrder('movie'))
+  const [seriesOrder, setSeriesOrder] = useState<ListOrder>(() => loadListOrder('series'))
+
+  function changeVodOrder(order: ListOrder): void {
+    setVodOrder(order)
+    saveListOrder('movie', order)
+  }
+
+  function changeSeriesOrder(order: ListOrder): void {
+    setSeriesOrder(order)
+    saveListOrder('series', order)
+  }
 
   // Which half-watched films to offer, and what to call them. The progress map holds only ids,
   // so a title's name and artwork come from the broadest catalogue this session has loaded —
@@ -310,18 +338,30 @@ export function ChannelList(): JSX.Element {
       .filter((item): item is ContinueWatchingItem => item !== null)
   }, [viewMode, searchTerm, episodeProgress, vodCatalog, vodStreams, recentlyWatched])
 
-  const filteredVod = useFiltered(vodStreams, searchTerm, (c) => c.name)
-  const filteredSeries = useFiltered(series, searchTerm, (c) => c.name)
-  const filteredFavorites = useFiltered(favorites, searchTerm, (f) =>
-    f.kind === 'series' ? f.item.name : f.stream.name
+  const filteredVod = useFiltered(vodStreams, searchTerm, vodName)
+  const filteredSeries = useFiltered(series, searchTerm, seriesName)
+  const filteredFavorites = useFiltered(favorites, searchTerm, favoriteName)
+  const filteredRecentlyWatched = useFiltered(recentlyWatched, searchTerm, recentName)
+
+  // Both orderings are computed here, unconditionally — a hook cannot live inside the per-mode
+  // branches below — but each only does work on the tab that uses it, and only when its input
+  // actually changed. Provider order is the identity function, so the default costs nothing.
+  const orderedVod = useMemo(
+    () => (viewMode === 'movies' ? sortVodStreams(filteredVod, vodOrder) : filteredVod),
+    [viewMode, filteredVod, vodOrder]
   )
-  const filteredRecentlyWatched = useFiltered(recentlyWatched, searchTerm, (e) => e.name)
+  const orderedSeries = useMemo(
+    () => (viewMode === 'series' ? sortSeries(filteredSeries, seriesOrder) : filteredSeries),
+    [viewMode, filteredSeries, seriesOrder]
+  )
 
   if (viewMode === 'movies') {
-    const entries: GridEntry[] = filteredVod.map((movie) => ({
+    const entries: GridEntry[] = orderedVod.map((movie) => ({
       key: `movie:${movie.stream_id}`,
       name: movie.name,
       image: movie.stream_icon,
+      // The catalogue has always carried this; until now only series showed it.
+      badge: movie.rating ? `★ ${movie.rating}` : undefined,
       active: nowPlaying?.kind === 'movie' && nowPlaying.streamId === movie.stream_id,
       onClick: () => play('movie', movie.stream_id, movie.name, movie.container_extension || 'mp4', movie.stream_icon),
       favorite: {
@@ -330,16 +370,25 @@ export function ChannelList(): JSX.Element {
       }
     }))
     return (
-      <div className="virtual-list-wrap movies-view">
+      <div className="virtual-list-wrap list-view">
         <ContinueWatchingShelf
           items={continueItems}
           onResume={(item) => play('movie', item.streamId, item.name, item.extension, item.image)}
           onDismiss={dismissContinueWatching}
         />
+        <ListToolbar
+          kind="movie"
+          order={vodOrder}
+          onOrderChange={changeVodOrder}
+          shown={orderedVod.length}
+          total={vodStreams.length}
+          filtering={Boolean(searchTerm.trim())}
+          noun="films"
+        />
         {entries.length === 0 ? (
           <p className="empty-state">No movies in this category.</p>
         ) : (
-          <div className="movies-grid-wrap">
+          <div className="list-grid-wrap">
             <MediaGrid entries={entries} />
           </div>
         )}
@@ -348,7 +397,7 @@ export function ChannelList(): JSX.Element {
   }
 
   if (viewMode === 'series') {
-    const entries: GridEntry[] = filteredSeries.map((item) => ({
+    const entries: GridEntry[] = orderedSeries.map((item) => ({
       key: `series:${item.series_id}`,
       name: item.name,
       image: item.cover,
@@ -359,10 +408,24 @@ export function ChannelList(): JSX.Element {
         onToggle: () => toggleFavorite({ kind: 'series', item })
       }
     }))
-    if (entries.length === 0) return <p className="empty-state">No series in this category.</p>
     return (
-      <div className="virtual-list-wrap">
-        <MediaGrid entries={entries} />
+      <div className="virtual-list-wrap list-view">
+        <ListToolbar
+          kind="series"
+          order={seriesOrder}
+          onOrderChange={changeSeriesOrder}
+          shown={orderedSeries.length}
+          total={series.length}
+          filtering={Boolean(searchTerm.trim())}
+          noun="series"
+        />
+        {entries.length === 0 ? (
+          <p className="empty-state">No series in this category.</p>
+        ) : (
+          <div className="list-grid-wrap">
+            <MediaGrid entries={entries} />
+          </div>
+        )}
       </div>
     )
   }
@@ -374,7 +437,14 @@ export function ChannelList(): JSX.Element {
     return (
       <div className="virtual-list-wrap history-view">
         <div className="history-header">
-          <h3 className="section-heading">History</h3>
+          <div className="list-heading-row">
+            <h3 className="section-heading">History</h3>
+            {searchTerm.trim() && (
+              <span className="list-count">
+                {filteredRecentlyWatched.length} of {recentlyWatched.length} entries
+              </span>
+            )}
+          </div>
           {recentlyWatched.length > 0 && (
             <div className="history-header-actions">
               <button
@@ -413,6 +483,8 @@ export function ChannelList(): JSX.Element {
 
   // Favorites, optionally scoped to one named group — 'all' (the default) shows everything,
   // null scopes to favorites with no group assigned, a group id scopes to just that group.
+  const groupBaseFavorites =
+    selectedGroupId === 'all' ? favorites : favorites.filter((f) => (f.groupId ?? null) === selectedGroupId)
   const groupFilteredFavorites =
     selectedGroupId === 'all' ? filteredFavorites : filteredFavorites.filter((f) => (f.groupId ?? null) === selectedGroupId)
   const entries = groupFilteredFavorites.map((f) =>
@@ -497,6 +569,11 @@ export function ChannelList(): JSX.Element {
             <button className="favorite-group-add" onClick={() => setNewGroupName('')}>
               + New Group
             </button>
+          )}
+          {searchTerm.trim() && (
+            <span className="list-count">
+              {entries.length} of {groupBaseFavorites.length} favorites
+            </span>
           )}
           {selectedGroup && renameDraft === null && (
             <span className="favorite-group-manage">
