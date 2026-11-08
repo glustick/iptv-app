@@ -20,6 +20,9 @@
  *   6. the parental PIN prompt
  *   7. the series detail modal
  *   8. the fullscreen channel-swap bar
+ *   8b. the player's own subtitle-style popover — inside the player, but a thing you opened on
+ *      purpose, so it closes before the player does (and before the channel-swap bar, which is a
+ *      navigation layer rather than a dialog)
  *   9. the player itself
  *   10. the docked channel preview
  * Fullscreen-exit is handled before any of this (in App.tsx) because fullscreen is the outermost
@@ -37,6 +40,7 @@ export interface OverlayState {
   customCategoriesOpen: boolean
   pinPromptCategoryId: string | null
   openSeries: unknown | null
+  subtitleStyleOpen: boolean
   channelBarOpen: boolean
   nowPlaying: unknown | null
   previewChannel: unknown | null
@@ -51,6 +55,7 @@ export type OverlayEscapeAction =
   | 'closeCustomCategories'
   | 'cancelPinPrompt'
   | 'closeSeries'
+  | 'closeSubtitleStyle'
   | 'closeChannelBar'
   | 'stopPlayback'
   | 'closePreview'
@@ -64,6 +69,7 @@ export function resolveEscapeAction(state: OverlayState): OverlayEscapeAction | 
   if (state.customCategoriesOpen) return 'closeCustomCategories'
   if (state.pinPromptCategoryId) return 'cancelPinPrompt'
   if (state.openSeries) return 'closeSeries'
+  if (state.subtitleStyleOpen) return 'closeSubtitleStyle'
   if (state.channelBarOpen) return 'closeChannelBar'
   if (state.nowPlaying) return 'stopPlayback'
   if (state.previewChannel) return 'closePreview'

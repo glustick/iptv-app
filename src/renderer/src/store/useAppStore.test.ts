@@ -2816,3 +2816,18 @@ describe('series playback context and continue watching (0.18.0)', () => {
     expect(Object.keys(await loadEpisodeProgress()).sort()).toEqual(['55', 'movie:2'])
   })
 })
+
+describe('subtitle appearance panel (0.20.0)', () => {
+  it('opens and closes on request', () => {
+    useAppStore.getState().setSubtitleStyleOpen(true)
+    expect(useAppStore.getState().subtitleStyleOpen).toBe(true)
+    useAppStore.getState().setSubtitleStyleOpen(false)
+    expect(useAppStore.getState().subtitleStyleOpen).toBe(false)
+  })
+
+  it('closes with playback, so the next title never opens behind an orphaned panel', () => {
+    useAppStore.setState({ subtitleStyleOpen: true, nowPlaying: null })
+    useAppStore.getState().stop()
+    expect(useAppStore.getState().subtitleStyleOpen).toBe(false)
+  })
+})

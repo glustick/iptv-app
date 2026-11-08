@@ -410,6 +410,9 @@ interface AppState {
   // otherwise Player.tsx would need its own separate Escape listener again, which is exactly
   // the uncoordinated-multiple-listeners pattern that caused a real race condition before.
   channelBarOpen: boolean
+  /** The player's subtitle-appearance popover — see lib/subtitleStyle. Lives here (not in
+   *  Player.tsx) so the one central Escape chain can close it in the right order. */
+  subtitleStyleOpen: boolean
 
   openSeries: SeriesItem | null
   seriesInfo: SeriesInfo | null
@@ -620,6 +623,7 @@ interface AppState {
   playTimeshift: (channel: LiveStream, program: ShortEpgProgram) => void
   stop: () => void
   setChannelBarOpen: (open: boolean) => void
+  setSubtitleStyleOpen: (open: boolean) => void
 
   openSeriesDetail: (item: SeriesItem) => Promise<void>
   closeSeriesDetail: () => void
@@ -797,6 +801,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   nowPlaying: null,
   channelBarOpen: false,
+  subtitleStyleOpen: false,
 
   openSeries: null,
   seriesInfo: null,
@@ -2348,8 +2353,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
   },
 
-  stop: () => set({ nowPlaying: null, channelBarOpen: false }),
+  stop: () => set({ nowPlaying: null, channelBarOpen: false, subtitleStyleOpen: false }),
   setChannelBarOpen: (open) => set({ channelBarOpen: open }),
+  setSubtitleStyleOpen: (open) => set({ subtitleStyleOpen: open }),
 
   openSeriesDetail: async (item) => {
     const { client } = get()

@@ -231,6 +231,53 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.20.0** subtitles became the viewer's own — the web sibling's v0.89.0, ported. This app has
+  always let you *choose* a subtitle track (hls.js renditions on live, a language picker that
+  restarts the VOD transcode), but their appearance was whatever the platform's text-track
+  renderer decided: one size, white on a thin box, readable on a monitor and lost on a television
+  across the room. There are now four levers — **size** (75%–200% of the size the browser would
+  have used), **text colour** (white / yellow / cyan), the **box** behind the text (none / light /
+  solid) and an **outline** that keeps white legible over a bright scene. They live in
+  `lib/subtitleStyle.ts`, persist per device in localStorage the way the quality ceiling does (the
+  room decides the cue size, not the account), and are validated **field by field** — one corrupt
+  value resets itself rather than discarding the other three. The defaults are deliberately the
+  closest thing to what the browser already drew (white, 100%, black box, no outline), so opening
+  the panel is never the only way back to a normal-looking subtitle. **How it reaches the cue:**
+  the platform still renders it, so the styling is a `::cue` rule reading custom properties set on
+  the `<video>` element — the same technique the web sibling proved in Chrome and Safari. There is
+  no canvas engine in this app, so the web's own caveat (a canvas player draws no cues, leaving
+  the panel nothing to style) has no counterpart here; both surfaces go through the platform
+  renderer. **The panel** carries a sample cue over a deliberately bright gradient, because a live
+  cue only appears when somebody is talking — without it the controls would have no visible effect
+  until the next line of dialogue. Its button is named **"Aa Subtitle style"**, not "Subtitles":
+  the track pickers beside it already own that word, and the two do visibly different things. It
+  appears only when the current source actually carries text subtitles — playlist renditions on
+  live, or the VOD probe's supported text tracks (so it is still there with subtitles switched
+  *off*, which is exactly when someone would want to style them before turning them on). **The
+  overlay chain:** a popover over a playing video that Escape cannot close is the exact bug this
+  project has fixed twice, so it joined the single chain in `lib/overlays.ts` — resolved before the
+  channel bar and the player itself, wired in `App.tsx`, closed when the title changes (but not on
+  an internal reload of the same one) and by `stop()`. **Deliberately not offered: position.** Line
+  placement belongs to the browser's renderer, and a "subtitles lower" slider would look like it
+  should work while changing nothing. Bitmap subtitles (PGS/VobSub) remain unsupported by the
+  transcode path, exactly as before — this release changes how a text cue looks, not which cues
+  exist. 774 tests (13 new: the preference rules, the corrupt-field recovery, the CSS-variable
+  mapping and the size list; the panel's four controls and its close button; the store's open/close
+  and its reset on stop); typecheck, lint and build clean. **Verified in a packaged app, not just
+  in tests:** the GUI smoke now covers this release and the two before it, and passed **79/79**
+  against an unsigned locally-built 0.20.0 bundle driving the synthetic provider — including the
+  cue repainting from the panel (150%, yellow read back off the playing `<video>`), Escape closing
+  the panel while leaving playback alone, the part-watched film appearing in Continue watching and
+  dismissed from it, a filtered list reading `1 of 2 films`, and the ordering choice persisting and
+  clearing again. The eleven checks those assertions live in were added in this session, because a
+  virtualized grid and a cue's paint are the two things a component test cannot see. **The one
+  failure the new checks produced was real, and fixed:** the panel first handed its owner a whole
+  preferences object built from its own props, so two changes inside one React batch both started
+  from the same stale values and the second undid the first. It now emits a patch and Player merges
+  against a ref, with the smoke's own reset as the regression test. **Still not verified:** a real
+  provider session, and whether the cue looks *right* on a television — the hook is now asserted,
+  the judgement of it is a person's.
+
 - **0.19.0** the web sibling's lists round — filtering that behaves the way the web's does, the
   count that stops a narrowed list looking empty, and the ordering and rating the catalogue was
   already carrying but could not show. **What was deliberately not ported:** a second filter box
@@ -699,7 +746,16 @@ Ordered by what I'd actually do first, not by size. Two of the top three are not
   the pass — and the **continue-watching shelf, the resume chip and Next episode (0.18.0)**, whose
   logic is fully covered but which no packaged run has yet exercised against a real film or a real
   multi-season show; likewise 0.19.0's filtering, counts and ordering, unit- and component-tested
-  but not yet seen against a real 24k catalogue. **And the machine finding that reframes every earlier "verified" claim: the installed
+  but not yet seen against a real 24k catalogue; and 0.20.0's subtitle appearance, where the panel
+  is component-tested but the cue paint itself has only been reasoned about. **Much of that list
+  moved on 2026-11-08:** a locally-built 0.20.0 bundle passed the GUI smoke **79/79** — the baseline
+  66 plus eleven checks written for 0.18.0/0.19.0/0.20.0 (the shelf, its dismiss, the filter count,
+  ordering persistence, and the subtitle panel's paint and Escape precedence). The two direct-decode
+  checks that failed consistently in the 0.17.0 session passed in every run, which is recorded as an
+  observation rather than a resolution — nothing in these releases touches decoding, and one green
+  session does not explain three red ones. What remains genuinely unverified is the real provider
+  session (no account used here) and a 24k catalogue's filtering cost in the app rather than in a
+  microbenchmark. **And the machine finding that reframes every earlier "verified" claim: the installed
   app at `~/Applications/AllisonIPTV.app` is 0.7.111 (Sep 27) — eight releases stale**, because
   macOS installs are manual. Default-path harness runs have been testing that install; the
   0.15.2-era "66/66" runs must have used a locally-built app via `SMOKE_APP`. The pass ran

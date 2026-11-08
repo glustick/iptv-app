@@ -1118,10 +1118,134 @@ async function main() {
     5000
   )
 
+  // --- subtitle appearance (0.20.0) -----------------------------------------------------------
+  // Cue paint is the one thing neither a unit test nor a component test can see: the panel has to
+  // be opened on a real player, and the effect has to be read off the element that paints it. The
+  // movie above has a subtitle track selected, which is exactly the surface this feature exists
+  // for. Every assertion reads the DOM the viewer's controls produced, never the store.
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('button')].find((b) => b.textContent.includes('Subtitle style'))?.click() || true`
+  )
+  await check('the subtitle style panel opens', `!!document.querySelector('.subtitle-style-panel')`, 8000)
+  await evaluate(
+    cdp,
+    `(() => {
+      const panel = document.querySelector('.subtitle-style-panel')
+      if (!panel) return false
+      const size = panel.querySelector('select')
+      size.value = '150'
+      size.dispatchEvent(new Event('change', { bubbles: true }))
+      ;[...panel.querySelectorAll('.subtitle-style-swatch')].find((b) => b.textContent.includes('Yellow'))?.click()
+      return true
+    })()`
+  )
+  await check(
+    'the cue repaints from the panel: 150%, yellow',
+    `(() => {
+      const v = document.querySelector('video.player-video')
+      return !!v && v.style.getPropertyValue('--cue-font-size') === '150%' && v.style.getPropertyValue('--cue-color') === '#ffe14d'
+    })()`,
+    8000
+  )
+  await pressEscape()
+  await check(
+    'Escape closes the style panel and leaves the player alone',
+    `!document.querySelector('.subtitle-style-panel') && !!document.querySelector('video.player-video')`,
+    8000
+  )
+  // Put the viewer's preferences back where they were found — this run is borrowing the real
+  // profile's config, and a smoke run must not leave someone's subtitles yellow.
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('button')].find((b) => b.textContent.includes('Subtitle style'))?.click() || true`
+  )
+  await check('the style panel reopens', `!!document.querySelector('.subtitle-style-panel')`, 8000)
+  // One change per call, each awaited through its own check: a panel whose handler closes over a
+  // stale `prefs` would let two changes in one tick undo each other, so the reset is also the
+  // regression test for that.
+  await evaluate(
+    cdp,
+    `(() => { const s = document.querySelector('.subtitle-style-panel select'); s.value = '100'; s.dispatchEvent(new Event('change', { bubbles: true })); return true })()`
+  )
+  await check(
+    'size resets to 100%',
+    `document.querySelector('video.player-video')?.style.getPropertyValue('--cue-font-size') === '100%'`,
+    8000
+  )
+  await evaluate(
+    cdp,
+    `(() => { [...document.querySelectorAll('.subtitle-style-swatch')].find((b) => b.textContent.includes('White'))?.click(); return true })()`
+  )
+  await check(
+    "colour resets to white",
+    `document.querySelector('video.player-video')?.style.getPropertyValue('--cue-color') === '#ffffff'`,
+    8000
+  )
+  await pressEscape()
+  await evaluate(cdp, `localStorage.removeItem('allisoniptv-subtitle-prefs'), true`)
+
   // Leave VOD before the live checks: starting a second stream on top of an active transcode is
   // exactly the contention the app's own comments warn about, and this run isn't testing that.
+  // Seek before closing: the fixture movie is short enough that a run this long can leave it
+  // played to its own end, and a finished title is *correctly* absent from the shelf below — so
+  // the position is made deterministic (2s) rather than left to how long the checks took. The
+  // close itself is what writes the final position (Player's own cleanup save).
+  await evaluate(cdp, `(() => { const v = document.querySelector('video.player-video'); if (v) v.currentTime = 2; return true })()`)
+  await sleep(1200)
   await pressEscape()
   await sleep(1500)
+
+  // --- continue watching and the list itself (0.18.0 / 0.19.0) --------------------------------
+  // Both live on virtualized surfaces a component test cannot measure — react-window renders no
+  // rows in jsdom — so these are the only machine checks these two releases can have.
+  await check(
+    'the part-watched film appears in Continue watching',
+    `(() => {
+      const section = document.querySelector('.continue-watching')
+      return !!section && [...section.querySelectorAll('.continue-card-name')].some((e) => e.textContent.includes('A Movie'))
+    })()`,
+    12000
+  )
+  await evaluate(
+    cdp,
+    `(() => {
+      const input = document.querySelector('.search-input')
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+      setValue.call(input, 'Dolby')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      return true
+    })()`
+  )
+  await check(
+    'a filtered list says how much it is showing',
+    `(() => { const c = document.querySelector('.list-toolbar .list-count'); return !!c && c.textContent.trim() === '1 of 2 films' })()`,
+    8000
+  )
+  await check('the shelf steps aside while a search narrows the list', `!document.querySelector('.continue-watching')`, 8000)
+  await evaluate(
+    cdp,
+    `(() => {
+      const input = document.querySelector('.search-input')
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+      setValue.call(input, '')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      return true
+    })()`
+  )
+  await check('the list offers ordering', `(() => { const s = document.querySelector('.list-order-select'); return !!s && s.options.length === 3 })()`, 8000)
+  await evaluate(
+    cdp,
+    `(() => { const s = document.querySelector('.list-order-select'); s.value = 'az'; s.dispatchEvent(new Event('change', { bubbles: true })); return true })()`
+  )
+  await check('the ordering choice is remembered for this device', `localStorage.getItem('allisoniptv-list-order-movie') === '"az"'`, 8000)
+  await evaluate(
+    cdp,
+    `(() => { const s = document.querySelector('.list-order-select'); s.value = 'provider'; s.dispatchEvent(new Event('change', { bubbles: true })); return true })()`
+  )
+  await check('provider order clears the stored choice again', `localStorage.getItem('allisoniptv-list-order-movie') === null`, 8000)
+  await evaluate(cdp, `document.querySelector('.continue-card-dismiss')?.click() || true`)
+  await check('dismiss removes it from Continue watching', `!document.querySelector('.continue-watching')`, 8000)
   // ...and go back to Live TV, which every check below assumes.
   await evaluate(
     cdp,

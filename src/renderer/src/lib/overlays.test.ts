@@ -11,6 +11,7 @@ const base: OverlayState = {
   customCategoriesOpen: false,
   pinPromptCategoryId: null,
   openSeries: null,
+  subtitleStyleOpen: false,
   channelBarOpen: false,
   nowPlaying: null,
   previewChannel: null
@@ -26,6 +27,7 @@ const ORDER: Array<{ key: keyof OverlayState; action: OverlayEscapeAction; on: u
   { key: 'customCategoriesOpen', action: 'closeCustomCategories', on: true },
   { key: 'pinPromptCategoryId', action: 'cancelPinPrompt', on: 'live:12' },
   { key: 'openSeries', action: 'closeSeries', on: { series_id: 1 } },
+  { key: 'subtitleStyleOpen', action: 'closeSubtitleStyle', on: true },
   { key: 'channelBarOpen', action: 'closeChannelBar', on: true },
   { key: 'nowPlaying', action: 'stopPlayback', on: { kind: 'live' } },
   { key: 'previewChannel', action: 'closePreview', on: { stream_id: 4 } }

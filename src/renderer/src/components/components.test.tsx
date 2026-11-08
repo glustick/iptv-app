@@ -20,6 +20,7 @@ import { GuideSettingsPage } from './GuideSettingsPage'
 import { MultiViewChannelPicker } from './MultiViewChannelPicker'
 import { ContinueWatchingShelf, type ContinueWatchingItem } from './ContinueWatchingShelf'
 import { ListToolbar } from './ListToolbar'
+import { SubtitleStylePanel } from './SubtitleStylePanel'
 import { useAppStore, PROVIDER_GUIDE_LABEL } from '../store/useAppStore'
 import { DEFAULT_SETTINGS } from '../lib/types'
 import type { LiveStream } from '../lib/types'
@@ -578,5 +579,45 @@ describe('ListToolbar', () => {
 
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'newest' } })
     expect(picked).toEqual(['newest'])
+  })
+})
+
+describe('SubtitleStylePanel', () => {
+  const prefs = { size: 100 as const, color: 'white' as const, box: 'solid' as const, outline: false }
+
+  it('shows the current choices and the sample cue', () => {
+    render(<SubtitleStylePanel prefs={prefs} onChange={() => {}} onClose={() => {}} />)
+
+    expect((screen.getByLabelText('Size') as HTMLSelectElement).value).toBe('100')
+    expect((screen.getByLabelText('Box') as HTMLSelectElement).value).toBe('solid')
+    expect(screen.getByLabelText('White').getAttribute('aria-pressed')).toBe('true')
+    expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(false)
+    expect(screen.getByText(/The quick brown fox/)).toBeTruthy()
+  })
+
+  it('reports each change without touching the other choices', () => {
+    const changes: unknown[] = []
+    render(<SubtitleStylePanel prefs={prefs} onChange={(next) => changes.push(next)} onClose={() => {}} />)
+
+    // Each control reports only its own field — the owner merges, so a stale prop can never
+    // resurrect an earlier value.
+    fireEvent.change(screen.getByLabelText('Size'), { target: { value: '150' } })
+    expect(changes[0]).toEqual({ size: 150 })
+
+    fireEvent.click(screen.getByLabelText('Yellow'))
+    expect(changes[1]).toEqual({ color: 'yellow' })
+
+    fireEvent.change(screen.getByLabelText('Box'), { target: { value: 'none' } })
+    expect(changes[2]).toEqual({ box: 'none' })
+
+    fireEvent.click(screen.getByRole('checkbox'))
+    expect(changes[3]).toEqual({ outline: true })
+  })
+
+  it('closes on its own button', () => {
+    let closed = 0
+    render(<SubtitleStylePanel prefs={prefs} onChange={() => {}} onClose={() => { closed += 1 }} />)
+    fireEvent.click(screen.getByLabelText('Close subtitle appearance'))
+    expect(closed).toBe(1)
   })
 })

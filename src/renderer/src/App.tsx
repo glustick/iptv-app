@@ -120,6 +120,9 @@ function App(): JSX.Element {
         case 'closeSeries':
           state.closeSeriesDetail()
           break
+        case 'closeSubtitleStyle':
+          state.setSubtitleStyleOpen(false)
+          break
         case 'closeChannelBar':
           state.setChannelBarOpen(false)
           break

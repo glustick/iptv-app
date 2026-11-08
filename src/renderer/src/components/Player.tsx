@@ -8,6 +8,8 @@ import { PlayerStatsOverlay } from './PlayerStatsOverlay'
 import { PlayerSeekBar } from './PlayerSeekBar'
 import { formatPlaybackPosition, isFinished, movieProgressKey } from '../lib/continueWatching'
 import { nextEpisode } from '../lib/nextEpisode'
+import { SubtitleStylePanel } from './SubtitleStylePanel'
+import { loadSubtitlePrefs, saveSubtitlePrefs, subtitleCssVariables, type SubtitlePrefs } from '../lib/subtitleStyle'
 import { VpnWarnings } from './VpnWarnings'
 import { useTranscodeFallback } from '../lib/useTranscodeFallback'
 import { canDecodeAudioCodec } from '../lib/audioCodecSupport'
@@ -168,6 +170,8 @@ export function Player(): JSX.Element | null {
   const episodeProgress = useAppStore((s) => s.episodeProgress)
   const updateEpisodeProgress = useAppStore((s) => s.updateEpisodeProgress)
   const seriesCache = useAppStore((s) => s.seriesCache)
+  const subtitleStyleOpen = useAppStore((s) => s.subtitleStyleOpen)
+  const setSubtitleStyleOpen = useAppStore((s) => s.setSubtitleStyleOpen)
   const isOnline = useAppStore((s) => s.isOnline)
   const showChannelBar = useAppStore((s) => s.channelBarOpen)
   const setShowChannelBar = useAppStore((s) => s.setChannelBarOpen)
@@ -265,6 +269,19 @@ export function Player(): JSX.Element | null {
   // The position a title actually opened at, when it was resumed rather than started — the chip
   // that says so (and offers to undo it) reads this. Null once dismissed or timed out.
   const [resumeNotice, setResumeNotice] = useState<number | null>(null)
+  // Per device, like the quality ceiling: the room decides the cue size, not the account.
+  const [subtitlePrefs, setSubtitlePrefs] = useState<SubtitlePrefs>(() => loadSubtitlePrefs())
+  // The latest value, read synchronously by the updater below — state itself would still be the
+  // previous render's value if two changes landed in one batch.
+  const subtitlePrefsRef = useRef(subtitlePrefs)
+  subtitlePrefsRef.current = subtitlePrefs
+
+  function changeSubtitlePrefs(patch: Partial<SubtitlePrefs>): void {
+    const next = { ...subtitlePrefsRef.current, ...patch }
+    subtitlePrefsRef.current = next
+    setSubtitlePrefs(next)
+    saveSubtitlePrefs(next)
+  }
   // null = off. A global "stop watching after N minutes" timer, not tied to any one channel —
   // deliberately survives a channel switch (see the effect below) since the point is winding
   // down a viewing session, not this specific channel. Player.tsx's own instance never actually
@@ -1460,6 +1477,13 @@ export function Player(): JSX.Element | null {
     if (nowPlaying?.kind !== 'live') setShowChannelBar(false)
   }, [nowPlaying])
 
+  // A different title is a different source, which may carry no subtitles at all — the panel
+  // closes with it rather than floating over a channel that cannot use it. Reloads of the same
+  // title leave nowPlaying's identity alone, so an edit is not interrupted by a retry.
+  useEffect(() => {
+    setSubtitleStyleOpen(false)
+  }, [nowPlaying, setSubtitleStyleOpen])
+
   // Keyboard shortcuts while the player is open: M to mute, arrows for volume, and (live only,
   // matching the header's transport buttons — VOD/series already get Space/arrow-seek for free
   // from the native <video controls>) Space for play/pause, left/right arrows to skip (shift
@@ -2168,6 +2192,18 @@ export function Player(): JSX.Element | null {
                 </label>
               </>
             )}
+            {(hlsSubtitleTracks.length > 0 || (vodSubtitleTracks?.some((t) => t.supported) ?? false)) && (
+              // Distinct from the track pickers next to it ("Subtitles"/"Subtitle track") by name
+              // and icon: this one changes how a cue looks, never which cue is showing.
+              <button
+                className="player-control-btn"
+                onClick={() => setSubtitleStyleOpen(!subtitleStyleOpen)}
+                title="Subtitle appearance — size, colour, box and outline"
+                aria-expanded={subtitleStyleOpen}
+              >
+                Aa <span className="control-label">Subtitle style</span>
+              </button>
+            )}
             <button
               className="player-control-btn"
               onClick={cycleVideoScaleMode}
@@ -2216,6 +2252,13 @@ export function Player(): JSX.Element | null {
         </div>
       </div>
       <div className="player-body">
+        {subtitleStyleOpen && (
+          <SubtitleStylePanel
+            prefs={subtitlePrefs}
+            onChange={changeSubtitlePrefs}
+            onClose={() => setSubtitleStyleOpen(false)}
+          />
+        )}
         {resumeNotice !== null && !playbackError && (
           <div className="player-resume-chip" role="status">
             <span>Resumed at {formatPlaybackPosition(resumeNotice)}</span>
@@ -2304,7 +2347,7 @@ export function Player(): JSX.Element | null {
         <video
           ref={videoRef}
           className="player-video"
-          style={{ objectFit: videoScaleMode }}
+          style={{ objectFit: videoScaleMode, ...subtitleCssVariables(subtitlePrefs) } as React.CSSProperties}
           // Native controls fight the channel bar on live: clicking the bottom strip (where
           // native controls render) gets consumed by their shadow DOM and never reaches this
           // onClick, and clicking anywhere else still double-fires the browser's own
