@@ -5,6 +5,7 @@ import { useElementSize } from '../lib/useElementSize'
 import { useDebouncedValue } from '../lib/useDebouncedValue'
 import type { LiveStream, VodStream, SeriesItem, FavoriteEntry, FavoriteGroup, RecentlyWatchedEntry, MediaKind } from '../lib/types'
 import { favoriteKey } from '../lib/types'
+import { watchedKey } from '../lib/watched'
 import { continueWatchingMovies } from '../lib/continueWatching'
 import { ContinueWatchingShelf, type ContinueWatchingItem } from './ContinueWatchingShelf'
 import { foldListText, matchesFoldedQuery } from '../lib/listFilter'
@@ -33,6 +34,8 @@ export interface GridEntry {
   active?: boolean
   onClick: () => void
   favorite?: { active: boolean; onToggle: () => void }
+  /** Explicit watched mark (0.23.0) — a different statement from the progress badge beside it. */
+  watched?: { active: boolean; onToggle: () => void }
   // Only ever set on the Favorites tab — lets a tile assign itself directly to a group without
   // leaving the grid (a native <select>, not a custom dropdown, since this is exactly the kind
   // of small, infrequent picker native form controls already handle well).
@@ -87,6 +90,19 @@ function GridCell({
             title={entry.favorite.active ? 'Remove from favorites' : 'Add to favorites'}
           >
             {entry.favorite.active ? '★' : '☆'}
+          </button>
+        )}
+        {entry.watched && (
+          <button
+            className={entry.watched.active ? 'watched-toggle active' : 'watched-toggle'}
+            onClick={(e) => {
+              e.stopPropagation()
+              entry.watched?.onToggle()
+            }}
+            title={entry.watched.active ? 'Mark unwatched' : 'Mark watched'}
+            aria-pressed={entry.watched.active}
+          >
+            {entry.watched.active ? '✓' : '○'}
           </button>
         )}
         {entry.groupSelect && (
@@ -278,6 +294,8 @@ export function ChannelList(): JSX.Element {
   const deleteFavoriteGroup = useAppStore((s) => s.deleteFavoriteGroup)
   const clearRecentlyWatched = useAppStore((s) => s.clearRecentlyWatched)
   const episodeProgress = useAppStore((s) => s.episodeProgress)
+  const watchedTitles = useAppStore((s) => s.watchedTitles)
+  const setWatched = useAppStore((s) => s.setWatched)
   const vodCatalog = useAppStore((s) => s.vodCatalog)
   const dismissContinueWatching = useAppStore((s) => s.dismissContinueWatching)
   const refreshRecentlyWatched = useAppStore((s) => s.refreshRecentlyWatched)
@@ -295,6 +313,7 @@ export function ChannelList(): JSX.Element {
   // Per device, per kind (lib/listOrder): read once at mount, written on every change. Provider
   // order returns the catalogue untouched, so it is the no-cost default it claims to be.
   const [vodOrder, setVodOrder] = useState<ListOrder>(() => loadListOrder('movie'))
+  const [hideWatched, setHideWatched] = useState(false)
   const [seriesOrder, setSeriesOrder] = useState<ListOrder>(() => loadListOrder('series'))
 
   function changeVodOrder(order: ListOrder): void {
@@ -356,7 +375,11 @@ export function ChannelList(): JSX.Element {
   )
 
   if (viewMode === 'movies') {
-    const entries: GridEntry[] = orderedVod.map((movie) => ({
+    const shownVod = hideWatched
+      ? orderedVod.filter((movie) => !watchedTitles[watchedKey('movie', movie.stream_id)])
+      : orderedVod
+    const hiddenByWatch = orderedVod.length - shownVod.length
+    const entries: GridEntry[] = shownVod.map((movie) => ({
       key: `movie:${movie.stream_id}`,
       name: movie.name,
       image: movie.stream_icon,
@@ -367,6 +390,10 @@ export function ChannelList(): JSX.Element {
       favorite: {
         active: isFavorited('movie', movie.stream_id),
         onToggle: () => toggleFavorite({ kind: 'movie', stream: movie })
+      },
+      watched: {
+        active: Boolean(watchedTitles[watchedKey('movie', movie.stream_id)]),
+        onToggle: () => setWatched('movie', movie.stream_id, !watchedTitles[watchedKey('movie', movie.stream_id)])
       }
     }))
     return (
@@ -380,11 +407,24 @@ export function ChannelList(): JSX.Element {
           kind="movie"
           order={vodOrder}
           onOrderChange={changeVodOrder}
-          shown={orderedVod.length}
+          shown={shownVod.length}
           total={vodStreams.length}
           filtering={Boolean(searchTerm.trim())}
           noun="films"
         />
+        {(hiddenByWatch > 0 || hideWatched) && (
+          <div className="list-watched-filter">
+            <button
+              type="button"
+              className={hideWatched ? 'secondary-button active' : 'secondary-button'}
+              aria-pressed={hideWatched}
+              onClick={() => setHideWatched((value) => !value)}
+              title="Watched films are ticked; this hides them from the grid"
+            >
+              {hideWatched ? `Show watched (${hiddenByWatch})` : `Hide watched (${hiddenByWatch})`}
+            </button>
+          </div>
+        )}
         {entries.length === 0 ? (
           <p className="empty-state">No movies in this category.</p>
         ) : (

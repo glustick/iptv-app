@@ -8,6 +8,7 @@ const FAVORITES_KEY = 'favorites'
 const FAVORITE_GROUPS_KEY = 'favorite_groups'
 const RECENTLY_WATCHED_KEY = 'recently_watched'
 const EPISODE_PROGRESS_KEY = 'episode_progress'
+const WATCHED_KEY = 'watched_titles'
 const SETTINGS_KEY = 'settings'
 const EPG_REMINDERS_KEY = 'epg_reminders'
 
@@ -85,6 +86,14 @@ export async function loadEpisodeProgress(): Promise<Record<string, EpisodeProgr
 
 export async function saveEpisodeProgress(progress: Record<string, EpisodeProgress>): Promise<void> {
   return saveJson(EPISODE_PROGRESS_KEY, progress)
+}
+
+export async function loadWatchedTitles(): Promise<Record<string, { watchedAt: number }>> {
+  return loadJson(WATCHED_KEY, {})
+}
+
+export async function saveWatchedTitles(record: Record<string, { watchedAt: number }>): Promise<void> {
+  return saveJson(WATCHED_KEY, record)
 }
 
 export async function loadEpgReminders(): Promise<EpgReminder[]> {

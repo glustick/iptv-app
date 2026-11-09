@@ -231,6 +231,27 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.23.0** the watched mark — "I've seen this", said rather than inferred. Until now the app only
+  *guessed*: `isFinished` (95%, or the credits window) turned a progress record into a ✓ in the
+  series modal, which meant a title could only be watched while its resume point still existed —
+  and dismissing it from Continue watching erased the only evidence. A mark is a different statement
+  from a position: a resume point is a place to come back to, a watched mark says there is nothing
+  to come back for, and one title can legitimately have had both (rewatching). So `watchedTitles`
+  is its own persisted map (`lib/watched.ts`, `watched_titles` in the app's store), keyed the way
+  progress already is — `movie:<id>` for films, the bare episode id for episodes, so nothing has to
+  be migrated — with oldest-first pruning at 5000 entries, the same shape as `transcodeMemory`.
+  **The interaction that makes it more than a badge:** marking a title watched **clears its progress
+  record**, because the Continue watching shelf reads positions, not marks — without it a film
+  ticked at 84% would still be offered as half-watched. **In the UI** a film tile carries a ✓ toggle
+  beside its favourite star (a sibling button, never nested — the invalid-HTML rule this app keeps
+  re-learning), an episode row carries one beside its play button, the watched verdict is now
+  `marked OR ≥95%` rather than progress alone, and the film grid gained a **Hide watched (N)**
+  toggle that reports how many it is hiding. 802 tests (4 new, on the pure model: the two key
+  shapes, mark/unmark purity, re-marking moving the timestamp rather than duplicating, and
+  pruning keeping the newest). Typecheck and lint clean. **Not covered by the GUI smoke** — the
+  tick and the filter are unit- and type-level only; a smoke check needs the synthetic provider to
+  serve a film, which it does, so that is the obvious next addition.
+
 - **0.22.0** the video-failed verdict — 0.16.1's count became something you can see and act on.
   That release started the roadmap's own instruction for "broken channel beyond the manifest"
   (*measure whether the population exists before building for it*) by recording a channel in

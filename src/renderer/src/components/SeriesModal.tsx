@@ -1,3 +1,4 @@
+import { watchedKey } from '../lib/watched'
 import { useAppStore } from '../store/useAppStore'
 
 export function SeriesModal(): JSX.Element | null {
@@ -7,6 +8,10 @@ export function SeriesModal(): JSX.Element | null {
   const closeSeriesDetail = useAppStore((s) => s.closeSeriesDetail)
   const play = useAppStore((s) => s.play)
   const episodeProgress = useAppStore((s) => s.episodeProgress)
+  // Explicit marks (0.23.0), alongside the progress-derived verdict: a position is what the player
+  // knows, a mark is what the viewer said, and either one is enough to call an episode watched.
+  const watchedTitles = useAppStore((s) => s.watchedTitles)
+  const setWatched = useAppStore((s) => s.setWatched)
   const isFavorited = useAppStore((s) => s.isFavorited)
   const toggleFavorite = useAppStore((s) => s.toggleFavorite)
 
@@ -58,6 +63,8 @@ export function SeriesModal(): JSX.Element | null {
                       progress && progress.durationSeconds > 0
                         ? Math.min(100, (progress.positionSeconds / progress.durationSeconds) * 100)
                         : 0
+                    const marked = Boolean(watchedTitles[watchedKey('series', episode.id)])
+                    const watched = marked || percent >= 95
                     return (
                       <li key={episode.id}>
                         <button
@@ -81,13 +88,22 @@ export function SeriesModal(): JSX.Element | null {
                         >
                           <span className="episode-label">
                             E{episode.episode_num} · {episode.title}
-                            {percent >= 95 && <span className="episode-watched"> ✓ Watched</span>}
+                            {watched && <span className="episode-watched"> ✓ Watched</span>}
                           </span>
                           {percent > 0 && percent < 95 && (
                             <span className="episode-progress">
                               <span className="episode-progress-fill" style={{ width: `${percent}%` }} />
                             </span>
                           )}
+                        </button>
+                        <button
+                          type="button"
+                          className={marked ? 'watched-toggle active' : 'watched-toggle'}
+                          aria-pressed={marked}
+                          title={marked ? 'Mark this episode unwatched' : 'Mark this episode watched'}
+                          onClick={() => setWatched('series', Number(episode.id), !marked)}
+                        >
+                          {marked ? '✓' : '○'}
                         </button>
                       </li>
                     )

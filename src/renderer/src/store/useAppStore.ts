@@ -25,6 +25,8 @@ import {
   saveRecentlyWatched,
   loadEpisodeProgress,
   saveEpisodeProgress,
+  loadWatchedTitles,
+  saveWatchedTitles,
   loadEpgReminders,
   saveEpgReminders,
   loadSettings,
@@ -63,6 +65,8 @@ import {
   type MediaPlaylistAnalysis
 } from '../lib/channelHealth'
 import { DEFAULT_SETTINGS, favoriteKey } from '../lib/types'
+import { movieProgressKey } from '../lib/continueWatching'
+import { markWatched, unmarkWatched, type WatchedEntry } from '../lib/watched'
 import { addStreamIds, kindOf, moveItem, removeStreamId } from '../lib/customCategories'
 import { shouldWarnOnVpnDisconnect } from '../lib/vpnStatus'
 import { createReminder, reminderId, splitDueReminders, type EpgReminder } from '../lib/reminders'
@@ -459,6 +463,8 @@ interface AppState {
   // tab's Refresh button show a busy state and avoid firing a second overlapping refresh.
   refreshingRecentlyWatched: boolean
   episodeProgress: Record<string, EpisodeProgress>
+  /** Explicit "I've seen this" marks (0.23.0) — keyed like progress: `movie:<id>` / bare episode id. */
+  watchedTitles: Record<string, WatchedEntry>
   epgReminders: EpgReminder[]
   settings: AppSettings
   unlockedCategoryIds: string[]
@@ -691,6 +697,10 @@ interface AppState {
   refreshRecentlyWatched: () => Promise<void>
 
   updateEpisodeProgress: (key: string, positionSeconds: number, durationSeconds: number) => void
+
+  /** Mark a film or episode watched, or clear the mark (0.23.0). Marking also drops its resume
+   *  point — a ticked title must not stay on the Continue watching shelf. */
+  setWatched: (kind: 'movie' | 'series', id: number, watched: boolean) => void
   /** Forgets one title's saved position — the continue-watching shelf's dismiss. */
   dismissContinueWatching: (key: string) => void
   // playlistId identifies which playlist's channel the programme belongs to — see reminderId and
@@ -833,6 +843,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   recentlyWatched: [],
   refreshingRecentlyWatched: false,
   episodeProgress: {},
+  watchedTitles: {},
   epgReminders: [],
   settings: DEFAULT_SETTINGS,
   unlockedCategoryIds: [],
@@ -864,12 +875,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   // with nothing but a console error to say why.
   init: async () => {
     try {
-      const [profiles, favorites, favoriteGroups, recentlyWatched, episodeProgress, epgReminders, settings] = await Promise.all([
+      const [profiles, favorites, favoriteGroups, recentlyWatched, episodeProgress, watchedTitles, epgReminders, settings] = await Promise.all([
         loadProfiles(),
         loadFavorites(),
         loadFavoriteGroups(),
         loadRecentlyWatched(),
         loadEpisodeProgress(),
+        loadWatchedTitles(),
         loadEpgReminders(),
         loadSettings()
       ])
@@ -880,6 +892,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         favoriteGroups,
         recentlyWatched,
         episodeProgress,
+        watchedTitles,
         epgReminders,
         settings,
         multiViewSlots: Array(settings.multiViewLayout).fill(null)
@@ -2600,6 +2613,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     set({ episodeProgress: updated })
     saveEpisodeProgress(updated).catch((err) => console.error('[store] failed to save episode progress:', err))
+  },
+
+  setWatched: (kind, id, watched) => {
+    const current = get().watchedTitles
+    const next = watched ? markWatched(current, kind, id) : unmarkWatched(current, kind, id)
+    set({ watchedTitles: next })
+    saveWatchedTitles(next).catch((err) => console.error('[store] failed to save watched marks:', err))
+    if (!watched) return
+    // The shelf reads progress, not marks: without this a film ticked at 84% would still be
+    // offered as "continue watching" — the exact contradiction v0.96.0's web note describes.
+    const progressKey = kind === 'movie' ? movieProgressKey(id) : String(id)
+    if (get().episodeProgress[progressKey]) get().dismissContinueWatching(progressKey)
   },
 
   dismissContinueWatching: (key) => {
