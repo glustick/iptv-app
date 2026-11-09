@@ -32,6 +32,8 @@ export interface OverlayState {
   updateInfo: unknown | null
   updateDismissed: boolean
   aboutOpen: boolean
+  /** The keyboard cheat-sheet (0.26.0) — a modal like About, closable before anything behind it. */
+  shortcutsOpen: boolean
   guideOpen: boolean
   // The per-channel match panel — open exactly while a channel match target is set (see
   // epgMatchTarget), so it is derived rather than independent state that could drift.
@@ -49,6 +51,7 @@ export interface OverlayState {
 export type OverlayEscapeAction =
   | 'dismissUpdate'
   | 'closeAbout'
+  | 'closeShortcuts'
   | 'closeChannelMatch'
   | 'closeGuide'
   | 'closeSettings'
@@ -63,6 +66,7 @@ export type OverlayEscapeAction =
 export function resolveEscapeAction(state: OverlayState): OverlayEscapeAction | null {
   if (state.updateInfo && !state.updateDismissed) return 'dismissUpdate'
   if (state.aboutOpen) return 'closeAbout'
+  if (state.shortcutsOpen) return 'closeShortcuts'
   if (state.channelMatchOpen) return 'closeChannelMatch'
   if (state.guideOpen) return 'closeGuide'
   if (state.settingsOpen) return 'closeSettings'

@@ -485,6 +485,7 @@ interface AppState {
   // the target, so the two can never disagree about whether the panel is open.
   channelMatchOpen: boolean
   aboutOpen: boolean
+  shortcutsOpen: boolean
 
   vpnStatus: VpnStatus
   vpnErrorMessage: string | null
@@ -731,6 +732,8 @@ interface AppState {
   importBackup: () => Promise<{ ok: boolean; imported: boolean; error?: string }>
   openAbout: () => void
   closeAbout: () => void
+  openShortcuts: () => void
+  closeShortcuts: () => void
 
   addVpnProfile: (profile: Omit<VpnProfile, 'id'>) => Promise<void>
   updateVpnProfile: (id: string, patch: Partial<Omit<VpnProfile, 'id'>>) => Promise<void>
@@ -854,6 +857,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   epgMatchTarget: null,
   channelMatchOpen: false,
   aboutOpen: false,
+  shortcutsOpen: false,
 
   vpnStatus: 'disconnected',
   vpnErrorMessage: null,
@@ -2747,6 +2751,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   openAbout: () => set({ aboutOpen: true }),
   closeAbout: () => set({ aboutOpen: false }),
+  openShortcuts: () => set({ shortcutsOpen: true }),
+  closeShortcuts: () => set({ shortcutsOpen: false }),
 
   addVpnProfile: async (profile) => {
     const newProfile: VpnProfile = { ...profile, id: crypto.randomUUID() }

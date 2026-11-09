@@ -4206,3 +4206,51 @@ body.resizing-col {
   color: var(--text-dim, #9aa1ad);
   border-top: 1px solid var(--border, #2a2f3a);
 }
+
+/* The keyboard cheat-sheet (0.26.0) — three columns of keys and actions, scrolling if the window
+   is short rather than clipping the last group. */
+.shortcuts-card {
+  width: min(820px, calc(100vw - 48px));
+  max-height: 82vh;
+  overflow-y: auto;
+}
+
+.shortcuts-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 18px;
+  margin: 12px 0 4px;
+}
+
+.shortcuts-groups h3 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim, #9aa1ad);
+}
+
+.shortcuts-groups dl {
+  margin: 0;
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.shortcut-row dt {
+  flex: 0 0 auto;
+  min-width: 96px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--text, #e7e9ee);
+}
+
+.shortcut-row dd {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim, #9aa1ad);
+}

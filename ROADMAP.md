@@ -231,6 +231,25 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.26.0** the keyboard cheat-sheet — `?` answers "what can I press?" for an app that now has a
+  dozen bindings across four components. `lib/shortcuts.ts` is a **curated** list rather than a
+  generated one, and the trade is recorded in the file: the handlers live in App's Escape chain, the
+  player, the grid and the channel list with no shared registry, so generating the help would mean
+  refactoring all four for the sake of a panel. Every entry was read out of the handler that
+  implements it — M for mute, ↑/↓ for volume, ←/→ with Shift for a longer skip, End for live, Space
+  for play/pause on live only, Shift-F10 as the keyboard's right-click, PageUp/PageDown for a page
+  at a time, and the three that are new this fortnight (⌘K, `/`, `?`) — rather than invented from
+  what the keys "usually" do. **It closes through the same chain as everything else**: `shortcutsOpen`
+  is a field in `OverlayState`, resolved by the pure `resolveEscapeAction` immediately after About,
+  with the order pinned by the existing test (which now carries the new entry, so the next overlay
+  cannot quietly fall behind it). The `?` handler ignores modifiers and refuses to fire while the
+  focus is in an input, a textarea or contenteditable — a question mark typed into a search box is
+  a question mark. 815 tests (3 new component tests: nothing renders until opened, every group is
+  listed, Close reaches the store; plus the overlay-chain entry). Typecheck and lint clean.
+  **Not verified interactively:** the `?` keystroke itself is typechecked, not exercised — App is too
+  heavy to mount in this suite, and the GUI smoke has no cheat-sheet check yet. The overlay renders
+  and closes correctly, which is the part a component test can hold.
+
 - **0.25.0** the palette becomes a navigator, and both of last round's features get the coverage they
   were missing. Two things, one release.
   **Commands.** The palette now also carries **Go to Live TV / Movies / Series / Sports /

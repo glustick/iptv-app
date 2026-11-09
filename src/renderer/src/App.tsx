@@ -4,6 +4,7 @@ import { resolveEscapeAction } from './lib/overlays'
 import { LoginScreen } from './components/LoginScreen'
 import { TopBar } from './components/TopBar'
 import { SearchPalette } from './components/SearchPalette'
+import { ShortcutsOverlay } from './components/ShortcutsOverlay'
 import { Sidebar } from './components/Sidebar'
 import { ChannelList } from './components/ChannelList'
 import { Player } from './components/Player'
@@ -73,6 +74,25 @@ function App(): JSX.Element {
   // shortcuts (different keys entirely, so there's no possible overlap left to race).
   // channelBarOpen and nowPlaying both live in the store specifically so this single
   // handler can include them in the same priority chain as every other overlay.
+  // ? opens the cheat-sheet (0.26.0). Guarded on the focused element so typing a question mark in a
+  // search box still types one, and absent modifiers so it cannot shadow a system shortcut.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent): void {
+      if (e.key !== '?' || e.metaKey || e.ctrlKey || e.altKey) return
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+      const state = useAppStore.getState()
+      if (state.shortcutsOpen) {
+        state.closeShortcuts()
+        return
+      }
+      e.preventDefault()
+      state.openShortcuts()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [])
+
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
       if (e.key !== 'Escape') return
@@ -102,6 +122,9 @@ function App(): JSX.Element {
           break
         case 'closeAbout':
           state.closeAbout()
+          break
+        case 'closeShortcuts':
+          state.closeShortcuts()
           break
         case 'closeChannelMatch':
           state.closeChannelMatch()
@@ -155,6 +178,7 @@ function App(): JSX.Element {
       <TopBar />
       {/* ⌘K / Ctrl-K anywhere (0.24.0) — the catalogues are in the store, so this needs no request. */}
       <SearchPalette />
+      <ShortcutsOverlay />
       {error && (
         <div className="banner-error banner-error--top">
           <span>{error}</span>
