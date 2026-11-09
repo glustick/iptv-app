@@ -446,6 +446,20 @@ async function main() {
       })
     }
   }
+  // '?' as a real keystroke, not a synthetic KeyboardEvent in the page: App's 0.26.0 handler
+  // reads e.key, and CDP's Input domain is the only path that produces one the document-level
+  // keydown listener genuinely receives. code/virtual key mirror shift+/ on a US layout.
+  const pressQuestionMark = async () => {
+    for (const type of ['keyDown', 'keyUp']) {
+      await cdp.send('Input.dispatchKeyEvent', {
+        type,
+        key: '?',
+        code: 'Slash',
+        windowsVirtualKeyCode: 191,
+        nativeVirtualKeyCode: 191
+      })
+    }
+  }
 
   // --vod-memory: the VOD transcode-memory skip, live-verified (0.16.1). Two launches: the
   // first plays the fixture movie long enough for the audio-fix remux to CONFIRM (fragments
@@ -1438,6 +1452,29 @@ async function main() {
     `(() => { const t = document.querySelector('.player-title')?.textContent || ''; return t.length > 0 && !t.includes('Unmatched Channel') })()`,
     20000
   )
+
+  // --- keyboard cheat-sheet (0.26.0) -----------------------------------------------------------
+  // The component test holds the render and Close; what it cannot hold is the keystroke itself,
+  // because App is too heavy to mount in the suite. These drive the real `?` through CDP and
+  // both of its exits: `?` again (the handler's own toggle branch) and Escape (the shortcutsOpen
+  // entry in resolveEscapeAction's chain). The player is left first so focus sits on the page,
+  // not an input — the handler deliberately ignores `?` typed into a field.
+  await pressEscape()
+  await sleep(1200)
+  await evaluate(cdp, `(document.activeElement && document.activeElement !== document.body && document.activeElement.blur?.(), true)`)
+  await pressQuestionMark()
+  await check('? opens the keyboard cheat-sheet', `!!document.querySelector('.shortcuts-card')`, 8000)
+  await check(
+    'the cheat-sheet lists its shortcuts',
+    `document.querySelectorAll('.shortcuts-card .shortcut-row').length >= 10`,
+    8000
+  )
+  await pressQuestionMark()
+  await check('? again closes the cheat-sheet', `!document.querySelector('.shortcuts-card')`, 8000)
+  await pressQuestionMark()
+  await check('the cheat-sheet reopens', `!!document.querySelector('.shortcuts-card')`, 8000)
+  await pressEscape()
+  await check('Escape closes the cheat-sheet', `!document.querySelector('.shortcuts-card')`, 8000)
 
   // --- Sports tab: the api-sports family rebuild (0.11.0 — SPORT_SOURCES + SportsView) ---------
   // The tab's middle pane is fed by api-football.com/api-sports.com through the settings API key,

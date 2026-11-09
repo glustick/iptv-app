@@ -246,9 +246,10 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
   focus is in an input, a textarea or contenteditable — a question mark typed into a search box is
   a question mark. 815 tests (3 new component tests: nothing renders until opened, every group is
   listed, Close reaches the store; plus the overlay-chain entry). Typecheck and lint clean.
-  **Not verified interactively:** the `?` keystroke itself is typechecked, not exercised — App is too
-  heavy to mount in this suite, and the GUI smoke has no cheat-sheet check yet. The overlay renders
-  and closes correctly, which is the part a component test can hold.
+  **Verified interactively (2026-11-09):** the GUI smoke now drives the real `?` keystroke over CDP
+  — opens, lists its rows, `?` toggles it closed, reopens, Escape closes — and passed **95/95**
+  against the v0.26.0 release artifact. (The transcode-memory caveat in "Next up" is also stale: the
+  remembered-path log line and the harness's `--vod-memory` mode landed in 0.16.1.)
 
 - **0.25.0** the palette becomes a navigator, and both of last round's features get the coverage they
   were missing. Two things, one release.
