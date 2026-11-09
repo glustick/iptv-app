@@ -4180,6 +4180,12 @@ body.resizing-col {
   border-color: color-mix(in srgb, #d2a8ff 40%, transparent);
 }
 
+/* Guide programmes (0.27.0) — the guide's listings, a shade apart from the catalogue kinds. */
+.search-palette-kind--programme {
+  color: #ffa657;
+  border-color: color-mix(in srgb, #ffa657 40%, transparent);
+}
+
 .search-palette-name {
   flex: 1 1 auto;
   overflow: hidden;

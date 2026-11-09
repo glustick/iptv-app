@@ -35,6 +35,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { keys: '↑ / ↓', action: 'Volume up or down' },
       { keys: '← / →', action: 'Skip back or forward (hold Shift for a longer step)' },
       { keys: 'End', action: 'Jump back to live (live TV only)' },
+      { keys: '[ / ]', action: 'Previous or next channel in the list, wrapping around (live TV only)' },
       { keys: 'Space', action: 'Play or pause (live TV only)' }
     ]
   },

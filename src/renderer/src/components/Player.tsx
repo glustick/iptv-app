@@ -12,6 +12,7 @@ import { SubtitleStylePanel } from './SubtitleStylePanel'
 import { PLAYBACK_SPEEDS, formatPlaybackSpeed, loadPlaybackSpeed, savePlaybackSpeed, type PlaybackSpeed } from '../lib/playbackSpeed'
 import { nextSleepMode, sleepModeLabel, type SleepMode } from '../lib/sleepTimer'
 import { previousLiveChannel } from '../lib/previousChannel'
+import { stepChannel, visibleLiveChannelList } from '../lib/channelStep'
 import { loadSubtitlePrefs, saveSubtitlePrefs, subtitleCssVariables, type SubtitlePrefs } from '../lib/subtitleStyle'
 import { VpnWarnings } from './VpnWarnings'
 import { useTranscodeFallback } from '../lib/useTranscodeFallback'
@@ -150,6 +151,9 @@ const VIDEO_SCALE_MODE_LABELS: Record<VideoScaleMode, string> = { contain: 'Fit'
 
 export function Player(): JSX.Element | null {
   const nowPlaying = useAppStore((s) => s.nowPlaying)
+  const liveStreams = useAppStore((s) => s.liveStreams)
+  const isChannelHidden = useAppStore((s) => s.isChannelHidden)
+  const showHiddenLiveChannels = useAppStore((s) => s.showHiddenLiveChannels)
   const stop = useAppStore((s) => s.stop)
   const markChannelVideoUndecodable = useAppStore((s) => s.markChannelVideoUndecodable)
   const clearChannelVideoUndecodable = useAppStore((s) => s.clearChannelVideoUndecodable)
@@ -1544,11 +1548,17 @@ export function Player(): JSX.Element | null {
       } else if (kind === 'live' && e.key === 'End') {
         e.preventDefault()
         goToLive()
+      } else if (kind === 'live' && (e.key === ']' || e.key === '[')) {
+        // Ch+ / Ch− (see stepLiveChannel for why these keys and not PageUp/PageDown). No
+        // preventDefault: `]` and `[` have no native behaviour to suppress.
+        stepLiveChannel(e.key === ']' ? 1 : -1)
       }
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [nowPlaying])
+    // stepLiveChannel closes over the live catalogue and the hidden filter, so those re-run this
+    // effect rather than leaving the stepper on a stale list.
+  }, [nowPlaying, liveStreams, showHiddenLiveChannels, isChannelHidden, play])
 
   useEffect(() => {
     const video = videoRef.current
@@ -1752,6 +1762,23 @@ export function Player(): JSX.Element | null {
       priorLiveChannel.tvArchive,
       priorLiveChannel.playlistId
     )
+  }
+
+  // Ch− / Ch+ (0.27.0): the remote's channel stepper, over the same ordered list the
+  // channel-swap bar shows (lib/channelStep — one build of the list, two consumers, so they can
+  // never disagree about what "next" means). Routed through the store's own play for the same
+  // reason every other switch here is: playlist-aware URL resolution and the previous-channel
+  // memory both live inside it. Deliberately NOT PageUp/PageDown — those already mean "page the
+  // list" in the guide and channel-list surfaces, including the EpgGrid that this very player
+  // overlays when the channel bar is open (its own PageUp/PageDown handler is on the document
+  // too, so a player-level binding would double-act there). `[` and `]` are bound nowhere else
+  // in the app and have no native scrolling behaviour to suppress.
+  function stepLiveChannel(delta: 1 | -1): void {
+    if (nowPlaying?.kind !== 'live') return
+    const list = visibleLiveChannelList(liveStreams, showHiddenLiveChannels, isChannelHidden)
+    const next = stepChannel(list, nowPlaying.streamId, delta)
+    if (!next) return
+    play('live', next.stream_id, next.name, 'm3u8', next.stream_icon, next.tv_archive, next.playlistId)
   }
 
   function startOverFromResume(): void {
@@ -1963,6 +1990,29 @@ export function Player(): JSX.Element | null {
               >
                 ◀ <span className="control-label">Previous</span>
               </button>
+            )}
+            {// Ch− / Ch+ (0.27.0): step through the same ordered list the channel-swap bar shows,
+            // wrapping around at both ends. Live-only, like every other channel-switching control
+            // in this header. Titles deliberately do NOT start with "Previous channel:" — that
+            // prefix is the 0.21.0 previous-channel button's own contract (and what the smoke
+            // harness keys off).
+            nowPlaying.kind === 'live' && (
+              <>
+                <button
+                  className="player-control-btn"
+                  onClick={() => stepLiveChannel(-1)}
+                  title="Ch− · previous channel in the list ([)"
+                >
+                  ▲ <span className="control-label">Ch−</span>
+                </button>
+                <button
+                  className="player-control-btn"
+                  onClick={() => stepLiveChannel(1)}
+                  title="Ch+ · next channel in the list (])"
+                >
+                  ▼ <span className="control-label">Ch+</span>
+                </button>
+              </>
             )}
             {nowPlaying.kind === 'live' && (
               <button className="player-control-btn" onClick={goToLive} title="Jump to the current live transmission">

@@ -231,6 +231,50 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.27.0** the remote's channel stepper and the guide in the palette — two things, one release.
+  **Channel up/down.** `[` and `]` step through the live player's channels, wrapping around at both
+  ends the way a set-top box does, with Ch− / Ch+ buttons beside the previous-channel button in the
+  player's control strip. The list stepped through is the one the fullscreen channel-swap bar has
+  always shown — the browsed category's channels, minus hidden ones when that filter is on —
+  extracted into `lib/channelStep.ts` so the bar and the stepper are literally the same function and
+  can never disagree about what "next" means; a channel not in the list (picked from Favorites, say)
+  steps nowhere rather than guessing, which `stepChannel` answers as null. Both keys and buttons
+  route through the store's own `play`, so playlist-aware URL resolution and the previous-channel
+  memory (0.21.0) keep working — stepping is just another way to switch. **Why `[`/`]` and not
+  PageUp/PageDown:** PageUp/PageDown already mean "a page at a time" in the guide and channel-list
+  surfaces (that binding is 0.26.0's own cheat-sheet row), and the EpgGrid this very player overlays
+  when the channel bar is open handles PageUp/PageDown on the same document — a player-level
+  binding would double-act exactly there. `[` and `]` are bound nowhere else in the app and carry no
+  native scrolling behaviour to suppress. The cheat-sheet carries the new Player row.
+  **Guide search in ⌘K.** The palette now also searches what is *on*: programmes on now or upcoming
+  across every loaded guide source, joined back to provider channels through the same tier ladder
+  the grid uses (`matchXmltvChannels` — EPG id, exact name, relaxed, manual), so a hit always names
+  a channel this app can actually play. Programme hits sit **below** the catalogue's own results —
+  the 0.24.0 ranking rule is untouched, and a channel called "News" should not be buried under
+  thirty programmes with "News" in the title. Enter on an on-air programme plays its channel; on an
+  upcoming one it toggles the same reminder the grid's bell sets (`toggleEpgReminder`, same call
+  shape). Cost is designed around rather than measured away: the real guide is ~178MB of XML across
+  ~11k channels, so `lib/guideSearch.ts` builds its index **once per guide/catalogue change**
+  (memoized in the palette; nothing re-indexes per keystroke) with every title pre-folded through
+  the 0.24.0 accent-folding helper, a keystroke only scans that flat list, and per-channel indexing
+  is capped at the first 48 now-or-future entries — the palette answers "what's on / what's coming
+  up", not "what airs Thursday", and the cap is stated here rather than hidden. Sources are deduped
+  by the pool's own priority rule (first source with programmes for a channel owns it) and hidden
+  sources contribute nothing, exactly as the grid behaves.
+  829 tests (14 new: channelStep's list filter and stepping incl. wrap-around and the
+  not-in-the-list answer; guideSearch's id/fuzzy join back to the channel, on-air-first ranking,
+  ended-programme exclusion and the two-character floor, priority dedupe across sources, hidden
+  sources and manual mappings, accent folding, and the result cap; plus a palette component test
+  that an on-air programme hit plays its channel with the row's own arguments). Typecheck and lint
+  clean. **Verified interactively (2026-11-09):** the GUI smoke drives both features against the
+  v0.27.0 build and passed **107/107** — the fixture's always-current "Two's Show" found as a GUIDE
+  hit naming "101 Two HD", `]`/`[` changing the player's title while live, and the Ch+ button
+  present in the strip. **Not verified:** the real 11k-channel guide's in-app search cost was not
+  measured — the index is bounded by design (48 programmes per channel, built once, pre-folded), but
+  the honest wall-clock number against the real 178MB guide is unmeasured; and Enter on an
+  *upcoming* programme (the reminder arm of the palette) is unit-covered only, since the fixture's
+  one upcoming programme belongs to the same channel the on-air check already plays.
+
 - **0.26.0** the keyboard cheat-sheet — `?` answers "what can I press?" for an app that now has a
   dozen bindings across four components. `lib/shortcuts.ts` is a **curated** list rather than a
   generated one, and the trade is recorded in the file: the handlers live in App's Escape chain, the

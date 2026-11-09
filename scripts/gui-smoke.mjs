@@ -1453,6 +1453,35 @@ async function main() {
     20000
   )
 
+  // --- channel up/down (0.27.0) -------------------------------------------------------------------
+  // Still inside the live player (the previous-channel click just switched it back). `]` steps to
+  // the next channel in the browsed category's ordered list, `[` back — the player's title is the
+  // surface that proves the store routed the right stream. The Ch+ button's presence is asserted
+  // too, since the keys and buttons share the one stepChannel path.
+  await check(
+    'the player offers Ch+ / Ch− buttons',
+    `[...document.querySelectorAll('button')].some((x) => (x.title || '').startsWith('Ch+ ·'))`,
+    8000
+  )
+  const titleBeforeStep = await evaluate(cdp, `document.querySelector('.player-title')?.textContent || ''`)
+  console.log('player title before stepping:', titleBeforeStep)
+  for (const type of ['keyDown', 'keyUp']) {
+    await cdp.send('Input.dispatchKeyEvent', { type, key: ']', code: 'BracketRight', windowsVirtualKeyCode: 221, nativeVirtualKeyCode: 221 })
+  }
+  await check(
+    '] steps to the next channel in the list',
+    `(document.querySelector('.player-title')?.textContent || '') !== ${JSON.stringify(titleBeforeStep)}`,
+    20000
+  )
+  for (const type of ['keyDown', 'keyUp']) {
+    await cdp.send('Input.dispatchKeyEvent', { type, key: '[', code: 'BracketLeft', windowsVirtualKeyCode: 219, nativeVirtualKeyCode: 219 })
+  }
+  await check(
+    '[ steps back to the channel it left',
+    `(document.querySelector('.player-title')?.textContent || '') === ${JSON.stringify(titleBeforeStep)}`,
+    20000
+  )
+
   // --- keyboard cheat-sheet (0.26.0) -----------------------------------------------------------
   // The component test holds the render and Close; what it cannot hold is the keystroke itself,
   // because App is too heavy to mount in the suite. These drive the real `?` through CDP and
@@ -1496,6 +1525,16 @@ async function main() {
   await check(
     'a query finds the fixture channel',
     `[...document.querySelectorAll('.search-palette-hit .search-palette-name')].some((n) => n.textContent.includes('One HD'))`,
+    8000
+  )
+  // The guide pool is in on-air programmes too (0.27.0): the fixture's always-current "Two's Show"
+  // is on now on the guide channel the relaxed tier joins to "101 Two HD", so the palette must
+  // offer it as a GUIDE-kind hit naming that channel. Not pressed here — Enter would start
+  // playback in the middle of the tab assertions below.
+  await typeIntoPalette("Two's Show")
+  await check(
+    "a query finds the guide's on-now programme as a programme hit",
+    `[...document.querySelectorAll('.search-palette-hit')].some((h) => !!h.querySelector('.search-palette-kind--programme') && (h.querySelector('.search-palette-name')?.textContent || '').includes("Two's Show") && (h.textContent || '').includes('101 Two HD'))`,
     8000
   )
   await typeIntoPalette('go to movies')

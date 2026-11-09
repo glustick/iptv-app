@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { EpgGrid } from './EpgGrid'
+import { visibleLiveChannelList } from '../lib/channelStep'
 import type { LiveStream, ShortEpgProgram } from '../lib/types'
 
 const ROW_HEIGHT = 34
@@ -27,9 +28,7 @@ export function PlayerChannelBar(): JSX.Element {
   // given (see the store), so the stand-in built here gets real catch-up availability instead
   // of always guessing "no catch-up".
   const channels = useMemo(() => {
-    const filtered = showHiddenLiveChannels
-      ? liveStreams
-      : liveStreams.filter((c) => !isChannelHidden(c.playlistId, c.stream_id))
+    const filtered = visibleLiveChannelList(liveStreams, showHiddenLiveChannels, isChannelHidden)
     if (nowPlaying?.kind !== 'live') return filtered
     if (filtered.some((c) => c.stream_id === nowPlaying.streamId)) return filtered
     const placeholder: LiveStream = {
