@@ -1476,6 +1476,47 @@ async function main() {
   await pressEscape()
   await check('Escape closes the cheat-sheet', `!document.querySelector('.shortcuts-card')`, 8000)
 
+  // --- search palette (0.24.0 / 0.25.0) ---------------------------------------------------------
+  // Unit and component tests hold the ranking and the list; these hold the parts only the real app
+  // has: ⌘K reaching the document listener, the input taking focus on mount, a query finding a
+  // fixture channel across the live catalogue, a "Go to" command switching the tab, and `/`.
+  const pressKey = async (key, code, keyCode, modifiers = 0) => {
+    for (const type of ['keyDown', 'keyUp']) {
+      await cdp.send('Input.dispatchKeyEvent', { type, key, code, modifiers, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode })
+    }
+  }
+  const typeIntoPalette = async (value) => {
+    await evaluate(cdp, `(() => { const i = document.querySelector('.search-palette-input'); i?.focus(); i?.select(); return true })()`)
+    await cdp.send('Input.insertText', { text: value })
+  }
+  await pressKey('k', 'KeyK', 75, 4) // 4 = Meta
+  await check('⌘K opens the search palette', `!!document.querySelector('.search-palette')`, 8000)
+  await check('the palette input takes focus', `document.activeElement?.classList.contains('search-palette-input') ?? false`, 8000)
+  await typeIntoPalette('One HD')
+  await check(
+    'a query finds the fixture channel',
+    `[...document.querySelectorAll('.search-palette-hit .search-palette-name')].some((n) => n.textContent.includes('One HD'))`,
+    8000
+  )
+  await typeIntoPalette('go to movies')
+  await check(
+    'the Go to command ranks first for its own words',
+    `document.querySelector('.search-palette-hit.active .search-palette-name')?.textContent.includes('Movies') ?? false`,
+    8000
+  )
+  await pressKey('Enter', 'Enter', 13)
+  await check('Enter on the command closes the palette', `!document.querySelector('.search-palette')`, 8000)
+  await check(
+    'and switches to the Movies tab',
+    `document.querySelector('.tabs .tab.active')?.textContent.trim() === 'Movies'`,
+    8000
+  )
+  await evaluate(cdp, `(document.activeElement?.blur?.(), true)`)
+  await pressKey('/', 'Slash', 191)
+  await check('/ opens the palette too', `!!document.querySelector('.search-palette')`, 8000)
+  await pressEscape()
+  await check('Escape closes the palette', `!document.querySelector('.search-palette')`, 8000)
+
   // --- Sports tab: the api-sports family rebuild (0.11.0 — SPORT_SOURCES + SportsView) ---------
   // The tab's middle pane is fed by api-football.com/api-sports.com through the settings API key,
   // NOT by the provider schedule the pre-rebuild tab showed — so the old drill-down (find the
