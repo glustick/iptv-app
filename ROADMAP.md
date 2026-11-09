@@ -231,6 +231,28 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.22.0** the video-failed verdict — 0.16.1's count became something you can see and act on.
+  That release started the roadmap's own instruction for "broken channel beyond the manifest"
+  (*measure whether the population exists before building for it*) by recording a channel in
+  `undecodableVideoChannels` when a codec-shaped **video** append fails, and showing a count in the
+  EPG panel. What it never did was tell you *which* channel, or let you do anything about it: the
+  number sat in the header while the row looked exactly like a working one. Now the row carries a
+  badge (**⊘**, dashed and muted rather than the red of a dead feed — the channel may be perfectly
+  live on another machine), the badge's tooltip says what happened, and the panel gained a
+  **Hide / Show video-failed (N)** toggle beside the existing not-live one. **Shown by default**: a
+  filter that silently removes rows is the worse mistake, so hiding is something you ask for.
+  **One rule, three readers** — `countVideoFailed` and `hasVideoFailed` in `lib/undecodableVideo.ts`
+  are what the count, the filter and the badge all call, so a row cannot be hidden but not counted,
+  or counted but not badged; `videoKey` is exported beside them so the composite-key convention
+  (bare id on the primary, `playlist:id` elsewhere) lives in one place instead of three. The panel's
+  own inline arithmetic — which had already drifted from the key helper — was replaced with the
+  shared count. 798 tests (3 new: the two key shapes including a channel whose playlist *is* the
+  primary, the count against mixed playlists, and the badge/filter question agreeing); typecheck and
+  lint clean. **Not verified in the packaged app:** the badge needs a channel that actually fails to
+  decode on this machine, which the synthetic provider does not serve — the logic is unit-tested and
+  the rendering is component-shaped, but no GUI smoke check covers it, and the entry says so rather
+  than implying a screenshot.
+
 - **0.21.0** the remote round — four things a viewer reaches for while watching, all ported from
   the web sibling: **playback speed**, **previous channel**, **"stop when this film ends"**, and
   the **tab the app reopens on**. **Speed** (web v0.93.0) is a 0.75× / 1× / 1.25× / 1.5× selector

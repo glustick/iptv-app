@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { useHlsAttach } from '../lib/useHlsAttach'
 import { useResizableWidth } from '../lib/useResizableWidth'
@@ -6,6 +6,7 @@ import { useDebouncedValue } from '../lib/useDebouncedValue'
 import { useNumericChannelEntry } from '../lib/useNumericChannelEntry'
 import { EpgGrid } from './EpgGrid'
 import { describeChannelHealth } from '../lib/channelHealth'
+import { countVideoFailed, hasVideoFailed, videoKey } from '../lib/undecodableVideo'
 import type { LiveStream, ShortEpgProgram } from '../lib/types'
 import { channelKey, channelKeyBelongsToPlaylist } from '../lib/channelIdentity'
 import { foldListText, matchesFoldedQuery } from '../lib/listFilter'
@@ -49,6 +50,9 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
   const channelHealthByStream = useAppStore((s) => s.channelHealthByStream)
   const undecodableVideoChannels = useAppStore((s) => s.settings.undecodableVideoChannels)
   const showNotLiveChannels = useAppStore((s) => s.showNotLiveChannels)
+  // Video-failed channels stay visible by default — hiding rows without being asked is the worse
+  // mistake — and the toggle is an opt-in to a shorter list (v0.22.0).
+  const [showVideoFailedChannels, setShowVideoFailedChannels] = useState(true)
   const setShowNotLiveChannels = useAppStore((s) => s.setShowNotLiveChannels)
   const openChannelPreview = useAppStore((s) => s.openChannelPreview)
   const epgSourceByStream = useAppStore((s) => s.epgSourceByStream)
@@ -100,8 +104,22 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
         return health !== 'loop' && health !== 'unavailable'
       })
     }
+    if (!showVideoFailedChannels) {
+      source = source.filter(
+        (c) => !hasVideoFailed(undecodableVideoChannels, videoKey(c.playlistId, c.stream_id, primaryPlaylistId))
+      )
+    }
     return source
-  }, [liveStreams, showHiddenLiveChannels, showNotLiveChannels, channelHealthByStream, isChannelHidden, primaryPlaylistId])
+  }, [
+    liveStreams,
+    showHiddenLiveChannels,
+    showNotLiveChannels,
+    showVideoFailedChannels,
+    channelHealthByStream,
+    undecodableVideoChannels,
+    isChannelHidden,
+    primaryPlaylistId
+  ])
 
   // Folded once per keystroke (lib/listFilter), not once per channel.
   const foldedSearch = foldListText(debouncedSearch)
@@ -136,8 +154,13 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
   // the only place their existence is visible. Hidden when zero; a channel that plays again
   // self-heals out of the set, so the count is "failed lately", not "failed ever".
   const undecodableVideoCount = useMemo(
-    () => channels.filter((c) => undecodableVideoChannels[channelKey(c.playlistId, c.stream_id, primaryPlaylistId)] !== undefined).length,
+    () => countVideoFailed(channels, undecodableVideoChannels, primaryPlaylistId),
     [channels, undecodableVideoChannels, primaryPlaylistId]
+  )
+  const isVideoFailed = useCallback(
+    (channel: { playlistId?: string; stream_id: number }) =>
+      hasVideoFailed(undecodableVideoChannels, videoKey(channel.playlistId, channel.stream_id, primaryPlaylistId)),
+    [undecodableVideoChannels, primaryPlaylistId]
   )
 
   // Suppress the small preview's own stream while the fullscreen player has one open for
@@ -292,6 +315,7 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
 
         <EpgGrid
           channels={channels}
+          isVideoFailed={isVideoFailed}
           activeStreamId={previewChannel.stream_id}
           clockFormat={clockFormat}
           rowHeight={compact ? 26 : 40}
@@ -339,6 +363,15 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
               )}
               {/* Appears only once something has actually been found, so the control can't be
                   mistaken for a filter that does nothing. */}
+              {undecodableVideoCount > 0 && (
+                <button
+                  className="epg-density-toggle"
+                  onClick={() => setShowVideoFailedChannels(!showVideoFailedChannels)}
+                  title="Channels this machine's playback engine could not decode — hidden only when you ask"
+                >
+                  {showVideoFailedChannels ? `Hide video-failed (${undecodableVideoCount})` : `Show video-failed (${undecodableVideoCount})`}
+                </button>
+              )}
               {notLiveCount > 0 && (
                 <button
                   className="epg-density-toggle"

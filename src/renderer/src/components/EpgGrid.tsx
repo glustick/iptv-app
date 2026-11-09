@@ -5,6 +5,7 @@ import { useResizableWidth } from '../lib/useResizableWidth'
 import { pct } from '../lib/epgTime'
 import { channelKey } from '../lib/channelIdentity'
 import { findAlsoOnCandidates, type AlsoOnCandidate } from '../lib/crossPlaylist'
+import { describeVideoFailure } from '../lib/undecodableVideo'
 import { describeChannelHealth } from '../lib/channelHealth'
 import type { LiveStream, ShortEpgProgram, ClockFormat } from '../lib/types'
 
@@ -61,6 +62,7 @@ interface RowProps {
   // so the menu itself can live at the grid level, where it doesn't get recycled by
   // virtualization and doesn't need a copy per row.
   onChannelContextMenu: (e: React.MouseEvent, channel: LiveStream) => void
+  isVideoFailed?: (channel: LiveStream) => boolean
 }
 
 function EpgRow({
@@ -74,6 +76,7 @@ function EpgRow({
   focusedIndex,
   clockFormat,
   onSelectChannel,
+  isVideoFailed,
   onWatchFullscreen,
   onWatchTimeshift,
   onChannelContextMenu
@@ -145,6 +148,11 @@ function EpgRow({
           )}
           {/* Only ever shown for a channel we have actually judged and found wanting — 'ok' and
               'unknown' both render nothing, so the normal case stays visually unchanged. */}
+          {isVideoFailed?.(channel) && (
+            <span className="epg-health-badge epg-health-badge--video" title={describeVideoFailure()}>
+              ⊘
+            </span>
+          )}
           {channelHealth && (channelHealth.health === 'loop' || channelHealth.health === 'unavailable') && (
             <span
               className={`epg-health-badge epg-health-badge--${channelHealth.health}`}
@@ -228,6 +236,9 @@ interface EpgGridProps {
   onSelectChannel: (channel: LiveStream) => void
   onWatchFullscreen: (channel: LiveStream) => void
   onWatchTimeshift: (channel: LiveStream, program: ShortEpgProgram) => void
+  /** Channels whose video this machine has already failed to decode (0.22.0) — the per-row
+   *  verdict the panel's count could not give. */
+  isVideoFailed?: (channel: LiveStream) => boolean
 }
 
 // The reusable Gantt-chart EPG guide: channels run down the vertical axis (virtualized, so
@@ -246,7 +257,8 @@ export function EpgGrid({
   initialScrollIndex,
   onSelectChannel,
   onWatchFullscreen,
-  onWatchTimeshift
+  onWatchTimeshift,
+  isVideoFailed
 }: EpgGridProps): JSX.Element {
   const [now, setNow] = useState(() => Date.now())
   const [windowOffsetMs, setWindowOffsetMs] = useState(0)
@@ -569,6 +581,7 @@ export function EpgGrid({
               onSelectChannel,
               onWatchFullscreen,
               onWatchTimeshift,
+              isVideoFailed,
               onChannelContextMenu: handleRowContextMenu
             }}
             rowComponent={EpgRow}

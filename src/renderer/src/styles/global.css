@@ -1874,6 +1874,13 @@ body.resizing-col {
   border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
 }
 
+/* Video this machine could not decode (0.22.0) — a different failure from a dead feed, so a
+   different glyph and a muted treatment: the channel may be perfectly live on another machine. */
+.epg-health-badge--video {
+  color: var(--text-dim);
+  border: 1px dashed color-mix(in srgb, var(--text-dim) 55%, transparent);
+}
+
 /* The per-channel match panel — opened from a channel row's right-click menu ("EPG match…").
    One channel, one decision: what is mapped now, a shortlist of close guide-channel matches
    (scored, strong first), and all of that source's guide channels behind an expander. */

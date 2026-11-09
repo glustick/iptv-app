@@ -45,3 +45,36 @@ export function pruneUndecodableVideo(
   for (const key of newestFirst.slice(0, cap)) kept[key] = record[key]
   return kept
 }
+
+/** One question, one place: is this channel in the failed set? */
+export function hasVideoFailed(
+  record: Record<string, UndecodableVideoEntry>,
+  key: string
+): boolean {
+  return record[key] !== undefined
+}
+
+/**
+ * How many of *these* channels have failed to decode here (0.22.0). The panel had this arithmetic
+ * inline; pulling it out makes the number the count, the filter and the badge all read from the
+ * same rule — which is what stops a row being hidden but not counted, or counted but not hidden.
+ */
+export function countVideoFailed(
+  channels: Array<{ playlistId?: string; stream_id: number }>,
+  record: Record<string, UndecodableVideoEntry>,
+  primaryPlaylistId?: string | null
+): number {
+  return channels.filter((channel) => hasVideoFailed(record, videoKey(channel.playlistId, channel.stream_id, primaryPlaylistId)))
+    .length
+}
+
+/** The composite key this app uses everywhere for a channel (bare id on the primary playlist). */
+export function videoKey(playlistId: string | null | undefined, streamId: number, primaryPlaylistId?: string | null): string {
+  const ref = playlistId && playlistId !== primaryPlaylistId ? playlistId : ''
+  return ref ? `${ref}:${streamId}` : String(streamId)
+}
+
+/** The sentence behind the row's badge — one wording, used by the badge's tooltip. */
+export function describeVideoFailure(): string {
+  return "This machine failed to decode this channel's video (a codec the playback engine cannot handle). The channel may still work elsewhere."
+}
