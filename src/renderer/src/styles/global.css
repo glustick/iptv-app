@@ -4087,3 +4087,122 @@ body.resizing-col {
   border-radius: 50%;
   border: 1px solid rgba(0, 0, 0, 0.5);
 }
+
+
+/* One search for the whole app (0.24.0). A modal over everything, because a result can belong to
+   any tab — the palette is the only surface that is not scoped to one of them. */
+.search-palette-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.62);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+}
+
+.search-palette {
+  width: min(680px, calc(100vw - 32px));
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel, #171a21);
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 10px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+
+.search-palette-input {
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text, #e7e9ee);
+  font-size: 18px;
+  padding: 16px 18px 10px;
+}
+
+.search-palette-meta {
+  padding: 0 18px 8px;
+  font-size: 11px;
+  color: var(--text-dim, #9aa1ad);
+  border-bottom: 1px solid var(--border, #2a2f3a);
+}
+
+.search-palette-results {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+}
+
+.search-palette-hit {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 16px;
+  background: none;
+  border: none;
+  color: var(--text, #e7e9ee);
+  text-align: left;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.search-palette-hit.active {
+  background: var(--bg-hover, #1d2230);
+}
+
+.search-palette-kind {
+  flex: 0 0 auto;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  padding: 2px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border, #2a2f3a);
+  color: var(--text-dim, #9aa1ad);
+}
+
+.search-palette-kind--live {
+  color: #7ee787;
+  border-color: color-mix(in srgb, #7ee787 40%, transparent);
+}
+
+.search-palette-kind--movie {
+  color: #79c0ff;
+  border-color: color-mix(in srgb, #79c0ff 40%, transparent);
+}
+
+.search-palette-kind--series {
+  color: #d2a8ff;
+  border-color: color-mix(in srgb, #d2a8ff 40%, transparent);
+}
+
+.search-palette-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-palette-note {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-dim, #9aa1ad);
+}
+
+.search-palette-empty {
+  padding: 18px;
+  font-size: 13px;
+  color: var(--text-dim, #9aa1ad);
+  text-align: center;
+}
+
+.search-palette-foot {
+  padding: 8px 16px;
+  font-size: 11px;
+  color: var(--text-dim, #9aa1ad);
+  border-top: 1px solid var(--border, #2a2f3a);
+}

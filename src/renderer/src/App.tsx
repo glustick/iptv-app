@@ -3,6 +3,7 @@ import { useAppStore } from './store/useAppStore'
 import { resolveEscapeAction } from './lib/overlays'
 import { LoginScreen } from './components/LoginScreen'
 import { TopBar } from './components/TopBar'
+import { SearchPalette } from './components/SearchPalette'
 import { Sidebar } from './components/Sidebar'
 import { ChannelList } from './components/ChannelList'
 import { Player } from './components/Player'
@@ -152,6 +153,8 @@ function App(): JSX.Element {
   return (
     <div className="app-shell">
       <TopBar />
+      {/* ⌘K / Ctrl-K anywhere (0.24.0) — the catalogues are in the store, so this needs no request. */}
+      <SearchPalette />
       {error && (
         <div className="banner-error banner-error--top">
           <span>{error}</span>

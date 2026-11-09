@@ -231,6 +231,28 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.24.0** one search for the whole app — ⌘K / Ctrl-K from anywhere, or `/` when the focus is not
+  in a field. Every tab already had its own filter (the channel list, the film grid, the guide), but
+  there was no way to type a name and be taken to it *regardless of which tab it lives on*, which is
+  the one search that a viewer actually wants when they cannot remember whether something is a
+  channel, a film or a show. The catalogues are already in memory, so this is a **filter, not a
+  request**: `lib/globalSearch.ts` folds case and accents, ranks a name that *starts* with the query
+  above one where a *word* does above a bare substring, keeps the catalogue's own order inside a
+  score band (a list that re-sorts under the cursor for invisible reasons is worse than an imperfect
+  order), and caps the result set. **Picking a result does what clicking it would have done**: a
+  channel or film plays through the store's own `play` with the same arguments the rows pass
+  (`m3u8` and the channel's `tv_archive` for live, the catalogue's `container_extension` for films),
+  while a series switches to the Series tab with its name in the filter — the show's episodes are
+  fetched by the modal, and the palette has no business duplicating that. **Keyboard:** ↑/↓ move,
+  Enter plays, Esc closes; the palette focuses its input in a mount effect rather than with
+  `autoFocus`, because React's `autoFocus` never fires for a dynamically-mounted element — the
+  lesson this codebase already learned once in 0.5.0 and keeps in its notes. 808 tests (6 new, all
+  on the model: the three ranking bands, a word inside a numbered name, accent/case folding, the
+  two-character floor, stable order within a band, the cap and the per-kind counts). Typecheck and
+  lint clean. **Not covered by the GUI smoke** — the palette has no scripted check yet; it is a
+  modal over the store, so a smoke check needs only a keystroke and a result click, which is the
+  obvious next addition.
+
 - **0.23.0** the watched mark — "I've seen this", said rather than inferred. Until now the app only
   *guessed*: `isFinished` (95%, or the credits window) turned a progress record into a ✓ in the
   series modal, which meant a title could only be watched while its resume point still existed —
