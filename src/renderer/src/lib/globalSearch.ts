@@ -10,7 +10,7 @@
  * keep the catalogue's own order, because re-sorting by anything else would make the list move
  * under the cursor for reasons nobody can see.
  */
-export type SearchKind = 'live' | 'movie' | 'series'
+export type SearchKind = 'live' | 'movie' | 'series' | 'command'
 
 export interface SearchEntry {
   kind: SearchKind
@@ -28,7 +28,9 @@ export interface SearchHit extends SearchEntry {
   score: number
 }
 
-const KIND_ORDER: Record<SearchKind, number> = { live: 0, movie: 1, series: 2 }
+// Commands sit above catalogue results: "go to movies" is a thing you know you want, while a
+// channel match is a guess.
+const KIND_ORDER: Record<SearchKind, number> = { command: 0, live: 1, movie: 2, series: 3 }
 
 export function foldForSearch(value: string): string {
   return value
@@ -60,7 +62,7 @@ export function searchAll(entries: SearchEntry[], query: string, limit = 40): Se
 }
 
 /** How many of each kind are in a result set — used for the palette's section counts. */
-export function countByKind(hits: SearchHit[]): Record<SearchKind, number> {
+export function countByKind(hits: SearchHit[]): Record<Exclude<SearchKind, 'command'>, number> {
   return {
     live: hits.filter((hit) => hit.kind === 'live').length,
     movie: hits.filter((hit) => hit.kind === 'movie').length,

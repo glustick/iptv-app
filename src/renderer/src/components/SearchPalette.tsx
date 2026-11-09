@@ -23,6 +23,19 @@ export function SearchPalette(): JSX.Element | null {
   const [highlight, setHighlight] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  // Commands are part of the same list, so one keystroke reaches both "where is that channel" and
+  // "take me to the films" (0.25.0).
+  const commands = useMemo<SearchEntry[]>(
+    () => [
+      { kind: 'command', id: 1, name: 'Go to Live TV', note: 'Tab' },
+      { kind: 'command', id: 2, name: 'Go to Movies', note: 'Tab' },
+      { kind: 'command', id: 3, name: 'Go to Series', note: 'Tab' },
+      { kind: 'command', id: 4, name: 'Go to Sports', note: 'Tab' },
+      { kind: 'command', id: 5, name: 'Go to Multi-view', note: 'Tab' }
+    ],
+    []
+  )
+
   const entries = useMemo<SearchEntry[]>(() => {
     const live: SearchEntry[] = liveStreams.map((channel) => ({
       kind: 'live',
@@ -45,8 +58,8 @@ export function SearchPalette(): JSX.Element | null {
       name: show.name,
       note: 'Series'
     }))
-    return [...live, ...movies, ...shows]
-  }, [liveStreams, vodStreams, series])
+    return [...commands, ...live, ...movies, ...shows]
+  }, [commands, liveStreams, vodStreams, series])
 
   const hits = useMemo(() => searchAll(entries, query), [entries, query])
   const counts = useMemo(() => countByKind(hits), [hits])
@@ -89,7 +102,10 @@ export function SearchPalette(): JSX.Element | null {
   if (!open) return null
 
   const pick = (hit: SearchHit): void => {
-    if (hit.kind === 'live') {
+    if (hit.kind === 'command') {
+      const modes = ['live', 'movies', 'series', 'sports', 'multiview'] as const
+      void setViewMode(modes[hit.id - 1] ?? 'live')
+    } else if (hit.kind === 'live') {
       const channel = liveStreams.find((entry) => entry.stream_id === hit.id)
       if (channel) play('live', channel.stream_id, channel.name, 'm3u8', channel.stream_icon, channel.tv_archive, channel.playlistId)
     } else if (hit.kind === 'movie') {
@@ -143,7 +159,7 @@ export function SearchPalette(): JSX.Element | null {
                 onClick={() => pick(hit)}
               >
                 <span className={`search-palette-kind search-palette-kind--${hit.kind}`}>
-                  {hit.kind === 'live' ? 'LIVE' : hit.kind === 'movie' ? 'FILM' : 'SERIES'}
+                  {hit.kind === 'live' ? 'LIVE' : hit.kind === 'movie' ? 'FILM' : hit.kind === 'series' ? 'SERIES' : 'GO'}
                 </span>
                 <span className="search-palette-name">{hit.name}</span>
                 {hit.note && <span className="search-palette-note">{hit.note}</span>}

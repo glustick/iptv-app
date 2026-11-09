@@ -231,6 +231,27 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.25.0** the palette becomes a navigator, and both of last round's features get the coverage they
+  were missing. Two things, one release.
+  **Commands.** The palette now also carries **Go to Live TV / Movies / Series / Sports /
+  Multi-view**, so one keystroke answers both "where is that channel" and "take me to the films" —
+  the second question used to need the sidebar. They are ordinary entries scored by the same rule
+  as everything else, which is a decision worth recording: a command wins when it *starts* with what
+  you typed ("go to movies"), while a channel called "Movies Night" still outranks a command that
+  merely contains the word. The alternative — pinning commands to the top always — would push a
+  genuinely better match down the list for a button you could also just click.
+  **Coverage.** The palette had none beyond typecheck, and the GUI smoke cannot run here (no
+  packaged bundle). So `SearchPalette.test.tsx` renders the real component against the real store and
+  holds the three wirings a human would otherwise click through: **Ctrl-K opens it and the chosen
+  channel is played with exactly the arguments its row passes** (`m3u8`, the channel's `tv_archive`,
+  the playlist id), **a film is played with the catalogue's own extension**, **a command switches
+  tab**, and **Escape closes it**. The first version of the command test asserted that commands rank
+  above a channel that starts with the query — the code does not do that and shouldn't, so the test
+  was corrected rather than the ranking. 812 tests (4 new component tests, plus 6 for the search model
+  in 0.24.0); typecheck and lint clean. **Still not smoke-covered:** the watched tick from 0.23.0 —
+  the film grid is a virtualised surface, which this project's own notes record as untestable in
+  jsdom (react-window renders no rows at height 0), so that one genuinely needs the packaged harness.
+
 - **0.24.0** one search for the whole app — ⌘K / Ctrl-K from anywhere, or `/` when the focus is not
   in a field. Every tab already had its own filter (the channel list, the film grid, the guide), but
   there was no way to type a name and be taken to it *regardless of which tab it lives on*, which is
