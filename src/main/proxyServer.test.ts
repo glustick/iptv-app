@@ -132,6 +132,7 @@ function makeDeps(overrides: Partial<ProxyServerDeps> = {}): ProxyServerDeps {
     resolveHostIp: () => Promise.resolve(null),
     onTunneledHostIpChanged: () => {},
     handleTranscodeRequest: () => {},
+    handleRecordingsRequest: () => {},
     ...overrides
   }
 }

@@ -1,6 +1,20 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
+// Mirrors RecordingEntry from src/main/recordingService.ts — restated here (rather than
+// imported) because the preload bundle intentionally compiles standalone.
+export interface RecordingEntryPreload {
+  id: string
+  channelKey: string
+  channelName: string
+  programmeTitle?: string
+  startedAt: number
+  endedAt?: number
+  status: 'scheduled' | 'recording' | 'done' | 'partial' | 'failed'
+  bytes?: number
+  dir: string
+}
+
 const api = {
   app: {
     getInfo: () =>
@@ -89,6 +103,38 @@ const api = {
         audioTracks: { index: number; language: string | null; codec: string; channelLayout: string }[]
         subtitleTracks: { index: number; language: string | null; supported: boolean }[]
       }>
+  },
+  recordings: {
+    // Live TV recording (0.29.0) — see src/main/recordingService.ts. Entries are pushed at the
+    // renderer via the onChanged listener below (fired on every index change), matching the
+    // update:* event pattern.
+    start: (options: {
+      channelKey: string
+      channelName: string
+      programmeTitle?: string
+      sourceUrl: string
+    }) => ipcRenderer.invoke('recording:start', options) as Promise<RecordingEntryPreload>,
+    stop: (id: string) => ipcRenderer.invoke('recording:stop', id) as Promise<void>,
+    schedule: (options: {
+      programmeTitle: string
+      channelKey: string
+      channelName: string
+      sourceUrl: string
+      startAt: number
+      endAt: number
+      prerollSeconds?: number
+      postrollSeconds?: number
+    }) => ipcRenderer.invoke('recording:schedule', options) as Promise<RecordingEntryPreload>,
+    cancelScheduled: (id: string) => ipcRenderer.invoke('recording:cancelScheduled', id) as Promise<void>,
+    list: () => ipcRenderer.invoke('recording:list') as Promise<RecordingEntryPreload[]>,
+    remove: (id: string) => ipcRenderer.invoke('recording:remove', id) as Promise<void>,
+    reveal: (id: string) => ipcRenderer.invoke('recording:reveal', id) as Promise<void>,
+    setDir: (dir: string | null) => ipcRenderer.invoke('recording:setDir', dir) as Promise<void>,
+    onChanged: (callback: (entries: RecordingEntryPreload[]) => void) => {
+      const listener = (_event: unknown, entries: RecordingEntryPreload[]): void => callback(entries)
+      ipcRenderer.on('recording:changed', listener)
+      return () => ipcRenderer.removeListener('recording:changed', listener)
+    }
   },
   keepAwake: {
     // Idempotent — the renderer sends its current "is something actually playing" state, not

@@ -318,6 +318,32 @@ export function Player(): JSX.Element | null {
   // `if (!nowPlaying) return null` early return: hooks must run on every render, and this
   // component really does render with nowPlaying null (it stays mounted and returns null).
   const [miniDragPos, setMiniDragPos] = useState<{ x: number; y: number } | null>(null)
+  // Recording (0.29.0) — every hook here must sit ABOVE the `if (!nowPlaying) return null`
+  // early return like the ones around it (see miniDragPos's own comment): this component stays
+  // mounted and renders null whenever nothing is playing.
+  const recordings = useAppStore((s) => s.recordings)
+  const recordNowPlaying = useAppStore((s) => s.recordNowPlaying)
+  const stopRecording = useAppStore((s) => s.stopRecording)
+  const isRecordingChannel = useAppStore((s) => s.isRecordingChannel)
+  const currentChannelRecording = recordings.find(
+    (r) =>
+      r.status === 'recording' &&
+      isRecordingChannel(nowPlaying?.playbackPlaylistId, nowPlaying?.streamId ?? -1)
+  )
+  // Elapsed mm:ss for the REC chip — one tick per second, only while recording this channel.
+  const [recordingElapsed, setRecordingElapsed] = useState(0)
+  useEffect(() => {
+    if (!currentChannelRecording) {
+      setRecordingElapsed(0)
+      return
+    }
+    const startedAt = currentChannelRecording.startedAt
+    setRecordingElapsed(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)))
+    const timer = setInterval(() => {
+      setRecordingElapsed(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)))
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [currentChannelRecording?.id, currentChannelRecording?.startedAt, currentChannelRecording])
   const [sleepTimerRemainingSeconds, setSleepTimerRemainingSeconds] = useState<number | null>(null)
   // Read by the ended handler, which was registered when this effect ran and would otherwise see
   // the mode from that render forever.
@@ -2103,6 +2129,31 @@ export function Player(): JSX.Element | null {
                 🔴 <span className="control-label">Live</span>
               </button>
             )}
+            {// Record (0.29.0): live-only — VOD has nothing to "record" that the file isn't
+            // already. While this channel is being recorded the button becomes a red REC chip
+            // with the elapsed time and a stop control.
+            nowPlaying.kind === 'live' &&
+              (currentChannelRecording ? (
+                <button
+                  className="player-control-btn player-record-btn player-record-btn--active"
+                  onClick={() => void stopRecording(currentChannelRecording.id)}
+                  title="Stop recording this channel"
+                >
+                  ● REC{' '}
+                  <span className="control-label">
+                    {String(Math.floor(recordingElapsed / 60)).padStart(2, '0')}:
+                    {String(recordingElapsed % 60).padStart(2, '0')}
+                  </span>
+                </button>
+              ) : (
+                <button
+                  className="player-control-btn player-record-btn"
+                  onClick={() => void recordNowPlaying()}
+                  title="Record this channel to disk"
+                >
+                  ● <span className="control-label">Record</span>
+                </button>
+              ))}
             {upcomingEpisode && seriesContext && (
               // The web sibling's Next-episode switch (v0.95.0), in this app's own header: the
               // episode list came from the modal that started playback, so this costs no request.

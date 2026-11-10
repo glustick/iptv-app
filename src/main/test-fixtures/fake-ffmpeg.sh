@@ -124,6 +124,50 @@ case "${FAKE_FFMPEG_MODE:-}" in
   hang_forever)
     sleep 300
     ;;
+  # ---- recordingService.test.ts (0.29.0) — the recording argv also ends with its output
+  # playlist path, so the same last_arg trick works. ffmpeg's HLS event muxer never writes
+  # #EXT-X-ENDLIST on a SIGTERM death, and these fixtures reproduce that honestly.
+  recording_success)
+    # A healthy recorder: playlist appears immediately (no ENDLIST — the event is still open),
+    # then it "records" until signaled. SIGTERM is left to kill the process (signal-death),
+    # exactly like the real recorder being stopped by the service.
+    printf '#EXTM3U
+#EXTINF:6.0,
+seg0.ts
+' > "$last_arg"
+    printf 'fake-segment-bytes' > "$(dirname "$last_arg")/seg0.ts"
+    sleep 300
+    ;;
+  recording_die)
+    # An unexpected death — nonzero exit, no output at all.
+    echo "fake ffmpeg: recording died unexpectedly" >&2
+    exit 1
+    ;;
+  recording_die_then_live)
+    # Dies unexpectedly the first time, succeeds on the service's one restart attempt.
+    marker="${FAKE_FFMPEG_ARGV_FILE:?FAKE_FFMPEG_ARGV_FILE must be set for this mode}.rec-retried"
+    if [ -f "$marker" ]; then
+      printf '#EXTM3U
+#EXTINF:6.0,
+seg0.ts
+' > "$last_arg"
+      sleep 300
+    else
+      touch "$marker"
+      echo "fake ffmpeg: recording died unexpectedly" >&2
+      exit 1
+    fi
+    ;;
+  recording_natural_end)
+    # The stream simply ends: ffmpeg exits 0 having written a complete playlist with its own
+    # ENDlist (the event muxer writes one on natural EOF).
+    printf '#EXTM3U
+#EXTINF:6.0,
+seg0.ts
+#EXT-X-ENDLIST
+' > "$last_arg"
+    exit 0
+    ;;
   *)
     echo "fake ffmpeg: unset or unknown FAKE_FFMPEG_MODE: ${FAKE_FFMPEG_MODE:-<unset>}" >&2
     exit 1

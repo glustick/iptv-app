@@ -9,7 +9,7 @@ import type { ViewMode } from '../store/useAppStore'
  * functions; this file imports only the store's type).
  */
 const STORAGE_KEY = 'allisoniptv-last-view'
-const VIEW_MODES: ViewMode[] = ['live', 'movies', 'series', 'sports', 'favorites', 'history', 'multiview']
+const VIEW_MODES: ViewMode[] = ['live', 'movies', 'series', 'sports', 'favorites', 'history', 'multiview', 'recordings']
 
 export function isViewMode(value: unknown): value is ViewMode {
   return typeof value === 'string' && (VIEW_MODES as string[]).includes(value)

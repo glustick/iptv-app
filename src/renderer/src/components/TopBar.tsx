@@ -7,6 +7,7 @@ const TABS: { mode: ViewMode; label: string }[] = [
   { mode: 'sports', label: 'Sports' },
   { mode: 'favorites', label: 'Favorites' },
   { mode: 'history', label: 'History' },
+  { mode: 'recordings', label: 'Recordings' },
   { mode: 'multiview', label: 'Multi-View' }
 ]
 

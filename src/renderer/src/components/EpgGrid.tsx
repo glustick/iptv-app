@@ -40,6 +40,24 @@ function formatTime(epochSeconds: string, clockFormat: ClockFormat): string {
 // this carrying the same channel is a catalogue oddity, not a menu.
 const MAX_ALSO_ON_ITEMS = 4
 
+// The scheduled-recording entry for this programme, if one exists — matched by channel key,
+// programme title AND listed start time, so two same-named programmes in a day's listings stay
+// distinct. Pure so the block's render-side lookup is trivially correct.
+function scheduledRecordingOf(
+  channelId: string,
+  program: ShortEpgProgram,
+  recordings: { id: string; channelKey: string; programmeTitle?: string; startedAt: number; status: string }[]
+): { id: string } | null {
+  const hit = recordings.find(
+    (r) =>
+      r.status === 'scheduled' &&
+      r.channelKey === channelId &&
+      r.programmeTitle === program.title &&
+      r.startedAt === Number(program.start_timestamp) * 1000
+  )
+  return hit ?? null
+}
+
 /** An open channel context menu: which channel, and where on screen it was opened. */
 interface ChannelMenuState {
   channel: LiveStream
@@ -92,6 +110,9 @@ function EpgRow({
   const isEpgReminderSet = useAppStore((s) => s.isEpgReminderSet)
   const probeChannelHealth = useAppStore((s) => s.probeChannelHealth)
   const channelHealth = useAppStore((s) => s.channelHealthByStream[channelId])
+  const scheduleRecording = useAppStore((s) => s.scheduleRecording)
+  const cancelScheduledRecording = useAppStore((s) => s.cancelScheduledRecording)
+  const recordings = useAppStore((s) => s.recordings)
 
   // Rows are virtualized, so this only fires for channels actually scrolled into view —
   // fine even against a 24k-channel catalog. This is also the workaround for providers
@@ -207,6 +228,34 @@ function EpgRow({
                   }}
                 >
                   {reminderSet ? '🔔' : '🔕'}
+                </button>
+              )}
+              {// ⏺ (0.29.0): schedule this programme to be recorded (the main process starts
+              // ffmpeg preroll seconds before the listed start — see recordingService.schedule).
+              // Matched back by channel + programme + start so the button reflects an existing
+              // schedule and can cancel it.
+              isUpcoming && (
+                <button
+                  className={`epg-reminder-button${scheduledRecordingOf(channelId, p, recordings) ? ' epg-reminder-button--set' : ''}`}
+                  style={{ left: `calc(${left + width}% - 54px)` }}
+                  title={
+                    scheduledRecordingOf(channelId, p, recordings)
+                      ? `Cancel scheduled recording of ${p.title}`
+                      : `Record ${p.title} (${formatTime(p.start_timestamp, clockFormat)})`
+                  }
+                  aria-label={
+                    scheduledRecordingOf(channelId, p, recordings)
+                      ? `Cancel recording of ${p.title}`
+                      : `Record ${p.title}`
+                  }
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    const existing = scheduledRecordingOf(channelId, p, recordings)
+                    if (existing) void cancelScheduledRecording(existing.id)
+                    else void scheduleRecording(channel, p)
+                  }}
+                >
+                  {scheduledRecordingOf(channelId, p, recordings) ? '⏹' : '⏺'}
                 </button>
               )}
             </span>

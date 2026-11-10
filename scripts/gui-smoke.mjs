@@ -1521,6 +1521,65 @@ async function main() {
   )
   await sleep(800)
 
+  // --- recordings (0.29.0) -----------------------------------------------------------------------
+  // The whole record-to-disk path end to end, against the real bundled ffmpeg: start a recording
+  // from the player header's ●, let it run (the fixture's live playlist is a short finished one,
+  // so ffmpeg naturally hits EOF and finalises with its own ENDLIST — the 'done' this asserts),
+  // find the entry in the Recordings tab, play it back through the /__recordings/ proxy route,
+  // and confirm the video actually advances. The fixture stream is only ~6s, so the recorder is
+  // expected to finish on its own well inside the wait.
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('button.epg-row-channel')][0]?.click() || true`
+  )
+  await sleep(1500)
+  await click('.watch-now-button')
+  await check(
+    'a live channel is playing before recording starts',
+    `[...document.querySelectorAll('video')].some((v) => v.classList.contains('player-video') && v.readyState >= 2)`,
+    30000
+  )
+  await evaluate(
+    cdp,
+    `(() => { const b = [...document.querySelectorAll('button')].find((x) => (x.title || '') === 'Record this channel to disk'); b?.click(); return !!b })()`
+  )
+  await check(
+    'the player header shows the active REC chip',
+    `[...document.querySelectorAll('button')].some((x) => (x.title || '') === 'Stop recording this channel' && x.textContent.includes('REC'))`,
+    10000
+  )
+  // Give the recorder real time to write segments (and, on this short fixture, to finish).
+  await sleep(12000)
+  // Leave the player and open the Recordings tab.
+  await pressEscape()
+  await sleep(1200)
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('.tabs .tab')].find((b) => b.textContent.trim() === 'Recordings')?.click() || true`
+  )
+  await check('the Recordings tab lists an entry', `document.querySelectorAll('.recordings-row').length >= 1`, 15000)
+  await check(
+    'the finished recording is marked done',
+    `[...document.querySelectorAll('.recordings-row')].some((r) => r.textContent.includes('done'))`,
+    20000
+  )
+  await evaluate(
+    cdp,
+    `(() => { const b = [...document.querySelectorAll('.recordings-row button')].find((x) => x.textContent.trim() === 'Play'); b?.click(); return !!b })()`
+  )
+  await check(
+    'the recording plays back from the /__recordings/ route and advances',
+    `[...performance.getEntriesByType('resource')].some((e) => e.name.includes('/__recordings/')) && [...document.querySelectorAll('video')].some((v) => v.classList.contains('player-video') && v.readyState >= 2 && v.currentTime > 0.5)`,
+    30000
+  )
+  await pressEscape()
+  await sleep(1200)
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('.tabs .tab')].find((b) => b.textContent.trim() === 'Live TV')?.click() || true`
+  )
+  await sleep(800)
+
   // --- keyboard cheat-sheet (0.26.0) -----------------------------------------------------------
   // The component test holds the render and Close; what it cannot hold is the keystroke itself,
   // because App is too heavy to mount in the suite. These drive the real `?` through CDP and

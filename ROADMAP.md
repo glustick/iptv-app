@@ -231,6 +231,48 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.29.0** record live TV to disk. One ffmpeg per recording reads the channel's own stream URL
+  and writes an HLS **event** playlist (`-c:v copy` video, audio remuxed to AAC like the transcode
+  fallback, `-re` input pacing for the same firehose reasoning, 6s segments, nothing ever evicted)
+  under `userData/recordings/<id>/` — or the folder set in Settings — so a recording can be watched
+  while it is still being made and played back afterwards from the same files. **Entry points:** a
+  ● Record button in the live player's header (● REC mm:ss + Stop while the on-screen channel is
+  being recorded; disabled in spirit for VOD — it simply isn't offered there), and ⏺ on an upcoming
+  programme block in the EPG grid beside the bell, which **schedules** the recording from a
+  main-process timer with preroll (default 60s before the listed start) and postroll (default 120s
+  past the listed end) — both settings. A **Recordings tab** lists every entry (programme, channel,
+  status chip, size, start time) with Play / Reveal (Finder) / Delete (shell.trashItem) per row, and
+  the ⌘K palette gained a "Go to Recordings" command. **Single-connection account rule:** opening a
+  channel that is currently being recorded plays the recording's own playlist instead of opening a
+  second connection to the same one-slot account (the play() substitution, unit-tested), and
+  opening a *different* live channel mid-recording asks first via a plain `window.confirm` — noted
+  honestly: this app has no styled confirm dialog, and confirm() is the 0.29.0 answer rather than
+  building one for a single prompt. **Engineering:** the whole engine is `src/main/recordingService.ts`,
+  Electron-decoupled and dependency-injected the transcodeService way (fake-ffmpeg fixture tests
+  for start→stop→#EXT-X-ENDLIST appended and status done, natural-EOF done without a duplicated
+  tag, unexpected exit→one restart→partial, the injected-clock scheduler with preroll/postroll,
+  atomic recordings.json writes, remove-trashes); playback is served through the existing local
+  proxy at `/__recordings/<id>/<file>` **with HTTP Range support** (206 + Content-Range, streamed
+  via fs read streams — a finished recording is gigabytes, unlike the transcode route's small
+  segments; `parseRangeHeader` is a pure, separately-tested helper; path traversal is refused by
+  resolving inside the recordings root). ffmpeg's event muxer never writes #EXT-X-ENDLIST on a
+  SIGTERM death, so the service appends it itself once the process is fully dead — a stopped
+  recording's playlist is honestly terminated for both hls.js and external players. An
+  unexpected ffmpeg exit gets exactly one restart (a transient provider hiccup shouldn't lose the
+  rest of the programme), then finalises as 'partial'. Quitting the app mid-recording SIGTERMs,
+  waits briefly, closes the playlist, and marks the entry 'partial' (preventDefault-then-requit,
+  the VPN teardown's own pattern). Recordings fire from main-process timers, so they work with the
+  window closed but **need the app itself running** — a quit app records nothing. 853 tests (23
+  new: the service suite, range parsing, RecordingsView render/wiring, playRecording and the
+  play() substitution + confirm-declines paths). Typecheck and lint clean. **GUI smoke 116/116**
+  on a locally-built bundle, exercising the real bundled ffmpeg end to end (● start → REC chip →
+  Recordings tab → done → Play advances from the /__recordings/ route). **Caveats, honestly:**
+  no hvc1 tagging — recordings are ordinary MPEG-TS HLS, so an HEVC recording plays wherever
+  HEVC-in-TS does (native video in many players, VLC) but may be refused by Chromium's MSE in-app;
+  the real provider's single-connection behaviour while recording is reasoned about and
+  unit-tested at the store level, not verified against the live account; scheduled recordings
+  need the app running; the mid-recording channel-switch prompt is a plain confirm().
+
 - **0.28.0** the mini-player — playback shrinks to a corner card and keeps going while you use
   the app behind it. One button in the player's control strip (⤡ Mini, beside PiP, which answers
   the same "I want to do something else while this plays" request as an OS window instead) turns

@@ -2874,3 +2874,71 @@ describe('previous channel and the last tab (0.21.0)', () => {
     expect(globalThis.localStorage.getItem('allisoniptv-last-view')).toBe('"history"')
   })
 })
+
+// ---- Recordings (0.29.0) -------------------------------------------------------------------
+
+describe('recordings', () => {
+  function recordingClient(): XtreamClient {
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    vi.spyOn(client, 'getStreamUrl').mockReturnValue('http://example.com/live.m3u8')
+    return client
+  }
+
+  function recordingEntry(overrides: Partial<import('../lib/types').RecordingEntry> = {}): import('../lib/types').RecordingEntry {
+    return {
+      id: 'rec-1',
+      channelKey: '42',
+      channelName: 'Test TV',
+      startedAt: Date.now() - 1000,
+      status: 'recording',
+      dir: '/tmp/recordings/rec-1',
+      ...overrides
+    }
+  }
+
+  it('playRecording points nowPlaying at the proxy-served /__recordings/ playlist', () => {
+    useAppStore.setState({ client: recordingClient(), proxyBase: 'http://proxy', nowPlaying: null, recordings: [] })
+    useAppStore.getState().playRecording(recordingEntry({ status: 'done', programmeTitle: 'The Programme' }))
+    const np = useAppStore.getState().nowPlaying
+    expect(np?.url).toBe('http://proxy/__recordings/rec-1/index.m3u8')
+    expect(np?.kind).toBe('live')
+    expect(np?.name).toBe('Test TV — The Programme')
+  })
+
+  // The store's play() asks via window.confirm when a DIFFERENT channel is opened mid-recording;
+  // these tests run in plain Node, so a minimal window stand-in carries the spy.
+  function stubWindowConfirm(result: boolean): () => void {
+    const confirm = vi.fn(() => result)
+    ;(globalThis as unknown as { window: { confirm: typeof confirm } }).window = { confirm }
+    return () => delete (globalThis as unknown as { window?: unknown }).window
+  }
+
+  it('play() of a channel being recorded uses the recording playlist instead of the origin URL (single connection)', () => {
+    const restoreWindow = stubWindowConfirm(true)
+    useAppStore.setState({
+      client: recordingClient(),
+      proxyBase: 'http://proxy',
+      recordings: [recordingEntry()],
+      primaryPlaylistId: null,
+      nowPlaying: null
+    })
+    useAppStore.getState().play('live', 42, 'Test TV', 'm3u8')
+    // 42 on the primary playlist keys as the bare id — matches the entry's channelKey.
+    expect(useAppStore.getState().nowPlaying?.url).toBe('http://proxy/__recordings/rec-1/index.m3u8')
+    restoreWindow()
+  })
+
+  it('play() of a DIFFERENT channel while recording asks, and declines abort playback', () => {
+    const restoreWindow = stubWindowConfirm(false)
+    useAppStore.setState({
+      client: recordingClient(),
+      proxyBase: 'http://proxy',
+      recordings: [recordingEntry()],
+      primaryPlaylistId: null,
+      nowPlaying: null
+    })
+    useAppStore.getState().play('live', 99, 'Other TV', 'm3u8')
+    expect(useAppStore.getState().nowPlaying).toBeNull()
+    restoreWindow()
+  })
+})

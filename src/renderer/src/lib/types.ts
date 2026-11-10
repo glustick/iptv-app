@@ -365,6 +365,16 @@ export interface AppSettings {
   // against the current window on apply, so a position remembered on a bigger screen can never
   // strand the card off-screen.
   miniPlayerPosition: { x: number; y: number } | null
+  // Where live-TV recordings are written (0.29.0) — null = the default (the app's own
+  // userData/recordings folder). Pushed to the main process via recording:setDir whenever it
+  // changes; the index and the /__recordings/ proxy route follow it.
+  recordingsDir: string | null
+  // How many seconds before a scheduled programme's listed start the recorder actually connects
+  // (guides are approximate; late programme starts would otherwise clip the beginning).
+  recordingPrerollSeconds: number
+  // How many seconds past the listed end the recorder keeps rolling — live programmes
+  // routinely overrun, and a recording cut at the exact listed end is the failure users notice.
+  recordingPostrollSeconds: number
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -395,10 +405,30 @@ export const DEFAULT_SETTINGS: AppSettings = {
   sportsFixturesCache: null,
   sportsLeftWidth: 260,
   sportsMiddleWidth: 460,
-  miniPlayerPosition: null
+  miniPlayerPosition: null,
+  recordingsDir: null,
+  recordingPrerollSeconds: 60,
+  recordingPostrollSeconds: 120
 }
 
 export type VpnStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
+
+// One recording in the main process's recordings.json index (0.29.0) — mirrors RecordingEntry
+// from src/main/recordingService.ts, restated here because the preload boundary ships it as a
+// plain DTO. status: 'scheduled' (waiting on its main-process timer), 'recording' (ffmpeg
+// running), 'done' (stopped cleanly or the stream ended), 'partial' (ffmpeg died twice, or the
+// app quit mid-recording), 'failed' (never started).
+export interface RecordingEntry {
+  id: string
+  channelKey: string
+  channelName: string
+  programmeTitle?: string
+  startedAt: number
+  endedAt?: number
+  status: 'scheduled' | 'recording' | 'done' | 'partial' | 'failed'
+  bytes?: number
+  dir: string
+}
 
 export interface VpnState {
   status: VpnStatus

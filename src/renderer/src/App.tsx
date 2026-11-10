@@ -13,6 +13,7 @@ import { SeriesModal } from './components/SeriesModal'
 import { EpgGridPanel } from './components/EpgGridPanel'
 import { MultiView } from './components/MultiView'
 import { SportsView } from './components/SportsView'
+import { RecordingsView } from './components/RecordingsView'
 import { PinPrompt } from './components/PinPrompt'
 import { SettingsPage } from './components/SettingsPage'
 import { GuideSettingsPage } from './components/GuideSettingsPage'
@@ -204,6 +205,9 @@ function App(): JSX.Element {
           <MultiView />
         ) : viewMode === 'sports' ? (
           <SportsView />
+        ) : viewMode === 'recordings' ? (
+          // Full width like Sports — a recordings list has no per-category sidebar filtering.
+          <RecordingsView />
         ) : (
           <>
             <main className="content-area">

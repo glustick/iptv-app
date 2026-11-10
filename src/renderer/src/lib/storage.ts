@@ -252,6 +252,26 @@ export async function loadSettings(): Promise<AppSettings> {
     console.warn('[settings] miniPlayerPosition was not a {x, y} of numbers on disk — resetting it')
     result.miniPlayerPosition = null
   }
+  // Recordings (0.29.0): the folder override must be a string or null, and the preroll/postroll
+  // seconds sane positive numbers — anything else reads as "unset" rather than reaching the
+  // recorder's scheduling math.
+  if (typeof result.recordingsDir !== 'string' && result.recordingsDir !== null) {
+    result.recordingsDir = null
+  }
+  if (
+    typeof result.recordingPrerollSeconds !== 'number' ||
+    !Number.isFinite(result.recordingPrerollSeconds) ||
+    result.recordingPrerollSeconds < 0
+  ) {
+    result.recordingPrerollSeconds = DEFAULT_SETTINGS.recordingPrerollSeconds
+  }
+  if (
+    typeof result.recordingPostrollSeconds !== 'number' ||
+    !Number.isFinite(result.recordingPostrollSeconds) ||
+    result.recordingPostrollSeconds < 0
+  ) {
+    result.recordingPostrollSeconds = DEFAULT_SETTINGS.recordingPostrollSeconds
+  }
   // Namespaced lock IDs — drop legacy bare ones rather than guessing which section they meant.
   result.lockedCategoryIds = result.lockedCategoryIds.filter((id) => id.includes(':'))
   let needsMigration = false

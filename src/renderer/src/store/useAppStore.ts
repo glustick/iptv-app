@@ -64,7 +64,7 @@ import {
   type ChannelHealth,
   type MediaPlaylistAnalysis
 } from '../lib/channelHealth'
-import { DEFAULT_SETTINGS, favoriteKey } from '../lib/types'
+import { DEFAULT_SETTINGS, favoriteKey, type RecordingEntry } from '../lib/types'
 import { movieProgressKey } from '../lib/continueWatching'
 import { markWatched, unmarkWatched, type WatchedEntry } from '../lib/watched'
 import { addStreamIds, kindOf, moveItem, removeStreamId } from '../lib/customCategories'
@@ -84,7 +84,7 @@ export interface PlaylistConnection {
   categories: Category[]
 }
 
-export type ViewMode = 'live' | 'movies' | 'series' | 'sports' | 'favorites' | 'history' | 'multiview'
+export type ViewMode = 'live' | 'movies' | 'series' | 'sports' | 'favorites' | 'history' | 'multiview' | 'recordings'
 export type ConnectionStatus = 'idle' | 'connecting' | 'ready' | 'error'
 
 // Both the main EPG grid and the fullscreen channel-swap bar lazy-load per-row short EPG as
@@ -720,6 +720,36 @@ interface AppState {
   isEpgReminderSet: (streamId: number, programId: string, playlistId?: string | null) => boolean
   checkEpgReminders: () => Promise<void>
 
+  // ---- Recordings (0.29.0) — see src/main/recordingService.ts -----------------------------
+  // The main process's recordings.json index, mirrored here. Pushed on every change via
+  // recording:changed (subscribed in init) and pull-refreshed on demand.
+  recordings: RecordingEntry[]
+  refreshRecordings: () => Promise<void>
+  // Records the given live channel from its own stream URL (one recording per channel — the
+  // account is single-connection, and a second recorder for a channel already being recorded
+  // is refused by the main process).
+  startRecording: (channel: LiveStream) => Promise<void>
+  stopRecording: (id: string) => Promise<void>
+  // Schedules a future recording (⏺ on an EPG programme block) with this app's preroll/postroll
+  // settings. Fires from a main-process timer, so it works with the window closed — but only
+  // while the app itself is running.
+  scheduleRecording: (
+    channel: LiveStream,
+    program: ShortEpgProgram
+  ) => Promise<void>
+  cancelScheduledRecording: (id: string) => Promise<void>
+  removeRecording: (id: string) => Promise<void>
+  revealRecording: (id: string) => Promise<void>
+  // True while this exact channel has a recording in flight — the Player header's ● REC chip
+  // and play()'s single-connection substitution below both read this.
+  isRecordingChannel: (playlistId: string | null | undefined, streamId: number) => boolean
+  playRecording: (entry: RecordingEntry) => void
+  // The player header's ● button: records whatever live channel is on screen right now, using
+  // nowPlaying's own URL (the same direct source URL the transcode fallback reads). Refuses
+  // silently when the player is showing a recording's own playlist — that channel is already
+  // being recorded.
+  recordNowPlaying: () => Promise<void>
+
   updateSettings: (patch: Partial<AppSettings>) => void
   setCategoryLocked: (categoryId: string, locked: boolean) => void
   submitPinAttempt: (pin: string) => void
@@ -828,6 +858,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   shortEpgFetchedAt: {},
   channelHealthByStream: {},
   proxyBase: null,
+  recordings: [],
 
   nowPlaying: null,
   channelBarOpen: false,
@@ -942,6 +973,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       window.api?.vpn?.onStreamRouteWarning((payload) => {
         set({ vpnStreamRouteWarning: payload.message })
       })
+
+      // Recordings (0.29.0): the main process pushes its whole index on every change (start,
+      // stop, schedule, finalize, remove) — no polling, same push pattern as vpn:status-changed.
+      window.api?.recordings?.onChanged((entries) => {
+        set({ recordings: entries })
+      })
+      void get().refreshRecordings()
+      // The recordings folder is a renderer-side setting; main only needs the override itself.
+      if (typeof window !== 'undefined' && window.api?.recordings) {
+        window.api.recordings.setDir(get().settings.recordingsDir).catch(() => {})
+      }
 
       // updateAvailable resets updateDismissed too — a version found on a later check (the next
       // launch, or a manual "Check for Updates") should prompt again even if the user dismissed
@@ -2349,6 +2391,26 @@ export const useAppStore = create<AppState>((set, get) => ({
     // would happily play a different channel that happens to share the id.
     const source = playlistId ? (playlists.find((playlist) => playlist.profileId === playlistId)?.client ?? client) : client
     if (!source) return
+    let url = source.getStreamUrl(kind, streamId, extension)
+    // Single-connection recording rule (0.29.0): opening a channel that is currently being
+    // recorded would open a SECOND connection to the same account the recorder is already
+    // holding — on this provider's one-slot accounts that kills one of the two. Watching the
+    // recording's own playlist instead costs nothing (it is the same feed, seconds behind
+    // live) and keeps the one connection the recorder owns.
+    const { recordings, proxyBase } = get()
+    const thisKey = channelKey(playlistId, streamId, get().primaryPlaylistId)
+    const activeRecording = recordings.find((r) => r.status === 'recording')
+    if (kind === 'live' && activeRecording && proxyBase) {
+      if (activeRecording.channelKey === thisKey) {
+        url = `${proxyBase}/__recordings/${activeRecording.id}/index.m3u8`
+      } else if (
+        !window.confirm(
+          `A recording is in progress on ${activeRecording.channelName}. This account allows only one connection — opening ${name} now may interrupt that recording. Continue anyway?`
+        )
+      ) {
+        return
+      }
+    }
     set({
       nowPlaying: {
         kind,
@@ -2359,7 +2421,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         extension,
         tvArchive,
         icon,
-        url: source.getStreamUrl(kind, streamId, extension)
+        url
       },
       // Starting something new while the mini card is up is an explicit "watch this" — restore
       // the full player rather than silently swapping the stream inside a 360px card (the
@@ -2412,6 +2474,125 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   stop: () => set({ nowPlaying: null, channelBarOpen: false, subtitleStyleOpen: false, miniPlayer: false }),
+
+  // ---- Recordings (0.29.0) ------------------------------------------------------------------
+
+  refreshRecordings: async () => {
+    if (typeof window === 'undefined' || !window.api?.recordings) return
+    try {
+      set({ recordings: await window.api.recordings.list() })
+    } catch (err) {
+      console.error('[store] failed to list recordings:', err)
+    }
+  },
+
+  startRecording: async (channel) => {
+    const { client, playlists, primaryPlaylistId } = get()
+    // Same multi-playlist rule as play(): the URL must come from the channel's OWN playlist's
+    // client, or the recorder would open the wrong account's stream entirely.
+    const source = channel.playlistId
+      ? playlists.find((playlist) => playlist.profileId === channel.playlistId)?.client ?? client
+      : client
+    if (!source) return
+    try {
+      await window.api?.recordings?.start({
+        channelKey: channelKey(channel.playlistId, channel.stream_id, primaryPlaylistId),
+        channelName: channel.name,
+        sourceUrl: source.getStreamUrl('live', channel.stream_id, 'm3u8')
+      })
+      await get().refreshRecordings()
+    } catch (err) {
+      console.error('[store] failed to start recording:', err)
+      set({ error: err instanceof Error ? err.message : 'Failed to start recording' })
+    }
+  },
+
+  stopRecording: async (id) => {
+    await window.api?.recordings?.stop(id)
+    await get().refreshRecordings()
+  },
+
+  scheduleRecording: async (channel, program) => {
+    const { client, playlists, primaryPlaylistId, settings } = get()
+    const source = channel.playlistId
+      ? playlists.find((playlist) => playlist.profileId === channel.playlistId)?.client ?? client
+      : client
+    if (!source) return
+    try {
+      await window.api?.recordings?.schedule({
+        programmeTitle: program.title,
+        channelKey: channelKey(channel.playlistId, channel.stream_id, primaryPlaylistId),
+        channelName: channel.name,
+        sourceUrl: source.getStreamUrl('live', channel.stream_id, 'm3u8'),
+        startAt: Number(program.start_timestamp) * 1000,
+        endAt: Number(program.stop_timestamp) * 1000,
+        prerollSeconds: settings.recordingPrerollSeconds,
+        postrollSeconds: settings.recordingPostrollSeconds
+      })
+      await get().refreshRecordings()
+    } catch (err) {
+      console.error('[store] failed to schedule recording:', err)
+      set({ error: err instanceof Error ? err.message : 'Failed to schedule recording' })
+    }
+  },
+
+  cancelScheduledRecording: async (id) => {
+    await window.api?.recordings?.cancelScheduled(id)
+    await get().refreshRecordings()
+  },
+
+  removeRecording: async (id) => {
+    await window.api?.recordings?.remove(id)
+    await get().refreshRecordings()
+  },
+
+  revealRecording: async (id) => {
+    await window.api?.recordings?.reveal(id)
+  },
+
+  isRecordingChannel: (playlistId, streamId) => {
+    const { recordings, primaryPlaylistId } = get()
+    const candidates = channelKeyCandidates(playlistId, streamId, primaryPlaylistId)
+    return recordings.some((r) => r.status === 'recording' && candidates.includes(r.channelKey))
+  },
+
+  recordNowPlaying: async () => {
+    const np = get().nowPlaying
+    if (!np || np.kind !== 'live' || np.url.includes('/__recordings/')) return
+    try {
+      await window.api?.recordings?.start({
+        channelKey: channelKey(np.playbackPlaylistId, np.streamId, get().primaryPlaylistId),
+        channelName: np.name,
+        sourceUrl: np.url
+      })
+      await get().refreshRecordings()
+    } catch (err) {
+      console.error('[store] failed to start recording:', err)
+      set({ error: err instanceof Error ? err.message : 'Failed to start recording' })
+    }
+  },
+
+  playRecording: (entry) => {
+    const { proxyBase } = get()
+    if (!proxyBase) return
+    // Same shape playTimeshift builds — kind 'live' over the local proxy's /__recordings/ HLS
+    // playlist (served with Range support by the main process). An in-progress recording's
+    // event playlist keeps growing, so this works both mid-recording and after it finishes.
+    set({
+      nowPlaying: {
+        kind: 'live',
+        streamId: 0,
+        name: entry.programmeTitle
+          ? `${entry.channelName} — ${entry.programmeTitle}`
+          : `${entry.channelName} — recording`,
+        url: `${proxyBase}/__recordings/${entry.id}/index.m3u8`,
+        extension: 'm3u8',
+        tvArchive: 0,
+        icon: ''
+      },
+      miniPlayer: false
+    })
+  },
   setChannelBarOpen: (open) => set({ channelBarOpen: open }),
   setSubtitleStyleOpen: (open) => set({ subtitleStyleOpen: open }),
   setMiniPlayer: (open) => set({ miniPlayer: open }),
@@ -2698,6 +2879,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     const updated = { ...get().settings, ...patch }
     set({ settings: updated })
     saveSettings(updated).catch((err) => console.error('[store] failed to save settings:', err))
+    // The recordings folder lives in the main process (that's where ffmpeg writes) — push the
+    // override across the boundary whenever it actually changes. Best-effort: main refuses
+    // mid-recording changes, and the next launch re-pushes whatever settings say then.
+    if ('recordingsDir' in patch && typeof window !== 'undefined' && window.api?.recordings) {
+      window.api.recordings.setDir(updated.recordingsDir).catch(() => {})
+    }
   },
 
   setCategoryLocked: (categoryId, locked) => {

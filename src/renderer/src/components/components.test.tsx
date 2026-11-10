@@ -20,6 +20,7 @@ import { GuideSettingsPage } from './GuideSettingsPage'
 import { MultiViewChannelPicker } from './MultiViewChannelPicker'
 import { ContinueWatchingShelf, type ContinueWatchingItem } from './ContinueWatchingShelf'
 import { ListToolbar } from './ListToolbar'
+import { RecordingsView } from './RecordingsView'
 import { SubtitleStylePanel } from './SubtitleStylePanel'
 import { useAppStore, PROVIDER_GUIDE_LABEL } from '../store/useAppStore'
 import { DEFAULT_SETTINGS } from '../lib/types'
@@ -619,5 +620,71 @@ describe('SubtitleStylePanel', () => {
     render(<SubtitleStylePanel prefs={prefs} onChange={() => {}} onClose={() => { closed += 1 }} />)
     fireEvent.click(screen.getByLabelText('Close subtitle appearance'))
     expect(closed).toBe(1)
+  })
+})
+
+// ---- Recordings (0.29.0) -------------------------------------------------------------------
+
+describe('RecordingsView', () => {
+  function recordingEntry(overrides: Partial<import('../lib/types').RecordingEntry> = {}): import('../lib/types').RecordingEntry {
+    return {
+      id: 'rec-1',
+      channelKey: '42',
+      channelName: 'Test TV',
+      programmeTitle: 'The Programme',
+      startedAt: new Date('2026-11-01T20:00:00').getTime(),
+      status: 'done',
+      bytes: 12_345_678,
+      dir: '/tmp/recordings/rec-1',
+      ...overrides
+    }
+  }
+
+  it('renders each entry with its programme, channel, status and Play/Delete actions', () => {
+    useAppStore.setState({
+      recordings: [recordingEntry(), recordingEntry({ id: 'rec-2', status: 'recording', programmeTitle: undefined })]
+    })
+    render(<RecordingsView />)
+    expect(screen.getByText('The Programme')).toBeTruthy()
+    expect(screen.getByText('Test TV')).toBeTruthy()
+    expect(screen.getAllByText('done').length).toBe(1)
+    expect(screen.getAllByText('recording').length).toBe(1)
+    expect(screen.getAllByText('Play').length).toBe(2)
+    expect(screen.getAllByText('Delete').length).toBe(2)
+    expect(screen.getAllByText('11.8 MB').length).toBe(2)
+  })
+
+  it('shows the empty state when there are no recordings', () => {
+    useAppStore.setState({ recordings: [] })
+    render(<RecordingsView />)
+    expect(screen.getByText(/No recordings yet/)).toBeTruthy()
+  })
+
+  it("Play hands the entry to the store's playRecording (nowPlaying gets the /__recordings/ playlist)", () => {
+    useAppStore.setState({
+      recordings: [recordingEntry()],
+      proxyBase: 'http://127.0.0.1:9999',
+      nowPlaying: null
+    })
+    render(<RecordingsView />)
+    fireEvent.click(screen.getByText('Play'))
+    const np = useAppStore.getState().nowPlaying
+    expect(np?.url).toBe('http://127.0.0.1:9999/__recordings/rec-1/index.m3u8')
+    expect(np?.name).toContain('The Programme')
+    expect(np?.kind).toBe('live')
+  })
+
+  it('Delete asks for confirmation and only removes on accept', () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const removeRecording = vi.fn()
+    useAppStore.setState({ recordings: [recordingEntry()], removeRecording })
+    render(<RecordingsView />)
+    fireEvent.click(screen.getByText('Delete'))
+    expect(confirmSpy).toHaveBeenCalledOnce()
+    expect(removeRecording).not.toHaveBeenCalled()
+    confirmSpy.mockReturnValue(true)
+    fireEvent.click(screen.getByText('Delete'))
+    expect(removeRecording).toHaveBeenCalledWith('rec-1')
+    confirmSpy.mockRestore()
   })
 })

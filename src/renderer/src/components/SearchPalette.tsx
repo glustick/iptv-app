@@ -66,7 +66,8 @@ export function SearchPalette(): JSX.Element | null {
       { kind: 'command', id: 2, name: 'Go to Movies', note: 'Tab' },
       { kind: 'command', id: 3, name: 'Go to Series', note: 'Tab' },
       { kind: 'command', id: 4, name: 'Go to Sports', note: 'Tab' },
-      { kind: 'command', id: 5, name: 'Go to Multi-view', note: 'Tab' }
+      { kind: 'command', id: 5, name: 'Go to Multi-view', note: 'Tab' },
+      { kind: 'command', id: 6, name: 'Go to Recordings', note: 'Tab' }
     ],
     []
   )
@@ -158,7 +159,7 @@ export function SearchPalette(): JSX.Element | null {
 
   const pick = (hit: PaletteHit): void => {
     if (hit.kind === 'command') {
-      const modes = ['live', 'movies', 'series', 'sports', 'multiview'] as const
+      const modes = ['live', 'movies', 'series', 'sports', 'multiview', 'recordings'] as const
       void setViewMode(modes[hit.id - 1] ?? 'live')
     } else if (hit.kind === 'live') {
       const channel = liveStreams.find((entry) => entry.stream_id === hit.id)

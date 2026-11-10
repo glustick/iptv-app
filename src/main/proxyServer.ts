@@ -134,6 +134,11 @@ export interface ProxyServerDeps {
   // Transcoded HLS output lives on local disk, not upstream — index.ts wires this to
   // serveTranscodeFile so /__transcode/ requests never get treated as something to proxy.
   handleTranscodeRequest: (url: string, res: ServerResponse) => void
+  // Same idea as handleTranscodeRequest, for on-disk recordings (0.29.0) — but the request's
+  // Range header is handed over too, because a finished recording is routinely gigabytes and
+  // is served as byte ranges from disk (see recordingService.serveRecordingFile), unlike the
+  // transcode route's small in-flight segments.
+  handleRecordingsRequest: (url: string, rangeHeader: string | undefined, res: ServerResponse) => void
   // 45s in production (see the reasoning at this option's use below) — overridable so tests
   // don't have to wait out a real 45-second timeout to exercise the retry path.
   upstreamTimeoutMs?: number
@@ -350,6 +355,13 @@ export function createProxyServer(deps: ProxyServerDeps): Server {
     // of treating it as something to proxy to the Xtream server.
     if (req.url?.startsWith('/__transcode/')) {
       deps.handleTranscodeRequest(req.url, res)
+      return
+    }
+
+    // On-disk recordings (0.29.0) — served straight from the recordings directory, never proxied.
+    if (req.url?.startsWith('/__recordings/')) {
+      const range = Array.isArray(req.headers.range) ? req.headers.range[0] : req.headers.range
+      deps.handleRecordingsRequest(req.url, range, res)
       return
     }
 

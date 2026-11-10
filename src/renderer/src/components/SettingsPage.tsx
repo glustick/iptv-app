@@ -42,6 +42,9 @@ export function SettingsPage(): JSX.Element | null {
   // list of many saved configs doesn't turn into a wall of always-expanded forms.
   const [editingProfileId, setEditingProfileId] = useState<string | null>(null)
   const [backupMessage, setBackupMessage] = useState<string | null>(null)
+  // Recordings folder draft — saved on blur (explicit), not per keystroke, same
+  // draft-then-save pattern as the PIN above.
+  const [recordingsDirDraft, setRecordingsDirDraft] = useState('')
 
   if (!settingsOpen) return null
 
@@ -182,6 +185,55 @@ export function SettingsPage(): JSX.Element | null {
           <p className="settings-hint">
             Smooth buffers further ahead to avoid stalls on inconsistent connections. Low latency stays closer to
             the live edge but is more prone to rebuffering.
+          </p>
+        </section>
+
+        <section className="settings-section">
+          <h3>Recordings</h3>
+          <div className="settings-choice">
+            <label className="settings-hint" style={{ display: 'block', marginBottom: 4 }}>
+              Recordings folder (leave blank for the default)
+            </label>
+            <input
+              className="search-input"
+              style={{ maxWidth: 420 }}
+              placeholder={settings.recordingsDir ?? ''}
+              value={recordingsDirDraft}
+              onChange={(e) => setRecordingsDirDraft(e.target.value)}
+              onBlur={() => updateSettings({ recordingsDir: recordingsDirDraft.trim() || null })}
+            />
+          </div>
+          <div className="settings-choice" style={{ gap: 16, marginTop: 10 }}>
+            <label className="settings-hint">
+              Preroll (seconds)
+              <input
+                className="search-input"
+                style={{ width: 80, marginLeft: 8 }}
+                type="number"
+                min={0}
+                value={settings.recordingPrerollSeconds}
+                onChange={(e) =>
+                  updateSettings({ recordingPrerollSeconds: Math.max(0, Number(e.target.value) || 0) })
+                }
+              />
+            </label>
+            <label className="settings-hint">
+              Postroll (seconds)
+              <input
+                className="search-input"
+                style={{ width: 80, marginLeft: 8 }}
+                type="number"
+                min={0}
+                value={settings.recordingPostrollSeconds}
+                onChange={(e) =>
+                  updateSettings({ recordingPostrollSeconds: Math.max(0, Number(e.target.value) || 0) })
+                }
+              />
+            </label>
+          </div>
+          <p className="settings-hint">
+            Scheduled recordings start before a programme's listed time (guides are approximate) and keep rolling
+            past its end. They are started by the app itself, so it must be running when the programme begins.
           </p>
         </section>
 

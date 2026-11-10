@@ -73,6 +73,46 @@ interface TranscodeAPI {
   probeTracks: (sourceUrl: string) => Promise<{ audioTracks: AudioTrackInfo[]; subtitleTracks: SubtitleTrackInfo[] }>
 }
 
+// One recording in the main process's recordings.json index — mirrors RecordingEntry from
+// src/main/recordingService.ts (see recordingService.ts for the field meanings).
+interface RecordingEntryDTO {
+  id: string
+  channelKey: string
+  channelName: string
+  programmeTitle?: string
+  startedAt: number
+  endedAt?: number
+  status: 'scheduled' | 'recording' | 'done' | 'partial' | 'failed'
+  bytes?: number
+  dir: string
+}
+
+interface RecordingsAPI {
+  start: (options: {
+    channelKey: string
+    channelName: string
+    programmeTitle?: string
+    sourceUrl: string
+  }) => Promise<RecordingEntryDTO>
+  stop: (id: string) => Promise<void>
+  schedule: (options: {
+    programmeTitle: string
+    channelKey: string
+    channelName: string
+    sourceUrl: string
+    startAt: number
+    endAt: number
+    prerollSeconds?: number
+    postrollSeconds?: number
+  }) => Promise<RecordingEntryDTO>
+  cancelScheduled: (id: string) => Promise<void>
+  list: () => Promise<RecordingEntryDTO[]>
+  remove: (id: string) => Promise<void>
+  reveal: (id: string) => Promise<void>
+  setDir: (dir: string | null) => Promise<void>
+  onChanged: (callback: (entries: RecordingEntryDTO[]) => void) => () => void
+}
+
 interface KeepAwakeAPI {
   setEnabled: (enabled: boolean) => Promise<boolean>
 }
@@ -138,6 +178,7 @@ declare global {
       backup: BackupAPI
       proxy: ProxyAPI
       transcode: TranscodeAPI
+      recordings: RecordingsAPI
       keepAwake: KeepAwakeAPI
       safeStorage: SafeStorageAPI
       vpn: VpnAPI

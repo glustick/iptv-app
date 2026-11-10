@@ -34,6 +34,11 @@ import { createProxyServer, type UpstreamClientRequest } from './proxyServer'
 import { createFfmpegResolver } from './ffmpegResolver'
 import { createGuideCache } from './guideCache'
 import { createTranscodeService } from './transcodeService'
+import {
+  createRecordingService,
+  type RecordingStartOptions,
+  type RecordingScheduleOptions
+} from './recordingService'
 import { createVpnRecoveryService } from './vpnRecoveryService'
 import { buildRouteScriptText, normalizeRouteIps } from './vpnRouteScript'
 import { createKeepAwakeService } from './keepAwakeService'
@@ -166,6 +171,21 @@ const transcodeService = createTranscodeService({
   resolveFfmpegPath,
   canDecodeHevc: () => clientCanDecodeHevc,
   log: logLifecycle
+})
+
+// Records live TV to disk (0.29.0) — one ffmpeg per recording writing an HLS event playlist
+// under userData/recordings (or the renderer-configured override, via recording:setDir). The
+// actual spawn/schedule/serve logic lives in recordingService.ts, Electron-decoupled the same
+// way transcodeService is — see recordingService.test.ts.
+const recordingService = createRecordingService({
+  recordingsDir: join(app.getPath('userData'), 'recordings'),
+  resolveFfmpegPath,
+  trashItem: (path) => shell.trashItem(path),
+  showItemInFolder: (path) => shell.showItemInFolder(path),
+  log: logLifecycle
+})
+recordingService.onChange((entries) => {
+  mainWindowRef?.webContents.send('recording:changed', entries)
 })
 
 // Holds off display sleep while the renderer reports actual playback (see the keepAwake:setEnabled
@@ -830,7 +850,9 @@ function startLocalProxy(): Promise<number> {
           message: `${tunneledHost} now resolves to ${resolvedIp}, which the VPN isn't routing — traffic to it may be bypassing the tunnel. Reconnecting the VPN will route the address it resolves to now.`
         })
       },
-      handleTranscodeRequest: (url, res) => void transcodeService.serveTranscodeFile(url, res)
+      handleTranscodeRequest: (url, res) => void transcodeService.serveTranscodeFile(url, res),
+      handleRecordingsRequest: (url, rangeHeader, res) =>
+        void recordingService.serveRecordingFile(url, rangeHeader, res)
     })
     server.on('error', reject)
     server.listen(0, '127.0.0.1', () => {
@@ -1271,6 +1293,19 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('transcode:stop', (_event, sessionId: string) => transcodeService.stopTranscode(sessionId))
   ipcMain.handle('transcode:probeTracks', (_event, sourceUrl: string) => transcodeService.probeTracks(sourceUrl))
+
+  // Recordings (0.29.0). Preroll/postroll ride along per schedule call — settings themselves stay
+  // renderer-side; only the recordings folder override crosses this boundary (recording:setDir).
+  ipcMain.handle('recording:start', (_event, options: RecordingStartOptions) => recordingService.start(options))
+  ipcMain.handle('recording:stop', (_event, id: string) => recordingService.stop(id))
+  ipcMain.handle('recording:schedule', (_event, options: RecordingScheduleOptions) =>
+    recordingService.schedule(options))
+  ipcMain.handle('recording:cancelScheduled', (_event, id: string) => recordingService.cancelScheduled(id))
+  ipcMain.handle('recording:list', () => recordingService.list())
+  ipcMain.handle('recording:remove', (_event, id: string) => recordingService.remove(id))
+  ipcMain.handle('recording:reveal', (_event, id: string) => recordingService.reveal(id))
+  ipcMain.handle('recording:setDir', (_event, dir: string | null) =>
+    recordingService.setRecordingsDir(dir ?? join(app.getPath('userData'), 'recordings')))
   // The renderer re-sends its current watching state whenever playback starts, pauses, errors,
   // or stops (Player.tsx's keep-awake effect) — idempotent on both ends, so a lost or duplicate
   // message can never stack blockers or leave one dangling.
@@ -1500,6 +1535,7 @@ app.on('window-all-closed', () => {
 // guarantees the tunnel is actually closed first; the `quitting` flag stops this same handler
 // from preventing that second, deliberate app.quit() call from going through.
 let quittingAfterVpnStop = false
+let quittingAfterRecordingStop = false
 app.on('before-quit', (event) => {
   transcodeService.stopAll()
   // Belt-and-braces: the renderer's keep-awake effect releases the blocker itself when
@@ -1511,5 +1547,15 @@ app.on('before-quit', (event) => {
     event.preventDefault()
     quittingAfterVpnStop = true
     void stopVpn().finally(() => app.quit())
+    return
+  }
+  // Same preventDefault-then-requit shape as the VPN teardown above: a recording in flight
+  // needs its ffmpeg SIGTERM'd and its playlist closed with #EXT-X-ENDLIST (and the index
+  // updated) before the process goes away — a plain fire-and-forget could lose that final
+  // write to Electron's own quit race.
+  if (recordingService.isRecording() && !quittingAfterRecordingStop) {
+    event.preventDefault()
+    quittingAfterRecordingStop = true
+    void recordingService.stopAll().finally(() => app.quit())
   }
 })
