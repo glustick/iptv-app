@@ -23,6 +23,12 @@
  *   8b. the player's own subtitle-style popover — inside the player, but a thing you opened on
  *      purpose, so it closes before the player does (and before the channel-swap bar, which is a
  *      navigation layer rather than a dialog)
+ *   8c. the mini-player card — Escape restores the full player rather than stopping playback,
+ *      because while the card is up the app behind it is the thing being used (the card exists
+ *      so browsing continues while video keeps playing; stopping it is what the card's own ✕
+ *      is for). Before the channel-swap bar for the same 8b reason: it's a layout mode of the
+ *      player, not a dialog, but it must resolve before "the player itself" would stop the
+ *      stream — which is exactly the fall-through bug this chain exists to prevent.
  *   9. the player itself
  *   10. the docked channel preview
  * Fullscreen-exit is handled before any of this (in App.tsx) because fullscreen is the outermost
@@ -43,6 +49,10 @@ export interface OverlayState {
   pinPromptCategoryId: string | null
   openSeries: unknown | null
   subtitleStyleOpen: boolean
+  /** Mini-player mode (0.28.0) — playback continues in a corner card while the app behind it
+   *  stays interactive. True only while something is playing (the store clears it with
+   *  nowPlaying), so it cannot outlive the player it belongs to. */
+  miniPlayer: boolean
   channelBarOpen: boolean
   nowPlaying: unknown | null
   previewChannel: unknown | null
@@ -59,6 +69,7 @@ export type OverlayEscapeAction =
   | 'cancelPinPrompt'
   | 'closeSeries'
   | 'closeSubtitleStyle'
+  | 'restorePlayer'
   | 'closeChannelBar'
   | 'stopPlayback'
   | 'closePreview'
@@ -74,6 +85,7 @@ export function resolveEscapeAction(state: OverlayState): OverlayEscapeAction | 
   if (state.pinPromptCategoryId) return 'cancelPinPrompt'
   if (state.openSeries) return 'closeSeries'
   if (state.subtitleStyleOpen) return 'closeSubtitleStyle'
+  if (state.miniPlayer) return 'restorePlayer'
   if (state.channelBarOpen) return 'closeChannelBar'
   if (state.nowPlaying) return 'stopPlayback'
   if (state.previewChannel) return 'closePreview'

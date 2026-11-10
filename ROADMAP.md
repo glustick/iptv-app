@@ -231,6 +231,43 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.28.0** the mini-player — playback shrinks to a corner card and keeps going while you use
+  the app behind it. One button in the player's control strip (⤡ Mini, beside PiP, which answers
+  the same "I want to do something else while this plays" request as an OS window instead) turns
+  the full-screen player into a 360px draggable card: title bar with restore (⤢) and stop (✕),
+  video above it at 16:9. The whole feature is a **CSS mode on the same `.player-overlay` element
+  and the same `<video>`/hls.js instance** — the card is never a remount, precisely because this
+  account allows one connection at a time and re-attaching would drop and re-open the origin
+  stream; the GUI smoke pins that property directly (minimise → switch to the Movies tab → the
+  video is still decoding and its currentTime ADVANCING → restore), which no unit test can.
+  **The Escape chain gained its entry:** `miniPlayer` resolves to `restorePlayer` between the
+  subtitle-style popover and the channel bar — Escape gives the full player back rather than
+  stopping the stream, because while the card is up the app behind it is the thing being used
+  (stopping is what the card's own ✕ is for). The chain-order test carries the new entry so the
+  next overlay cannot quietly fall behind it. **While the card is up, the player gives up its
+  keyboard bindings** (M, arrows, Space, End, `[`/`]`) — every one of those is a key the surface
+  being browsed legitimately wants (arrows for list navigation, Space for buttons, `[` could be
+  typed into a search), so the card is mouse-driven plus Escape. **Decisions recorded:** starting
+  something new while mini (palette Enter, grid click, Next episode) restores the full player
+  rather than silently swapping the stream inside a 360px card — a new play is an explicit
+  "watch this"; a click on the card's video restores rather than pausing, for the same reason;
+  the card's drag position persists in settings (`miniPlayerPosition`, shape-checked on load,
+  clamped against the current window so a position remembered on a bigger screen cannot strand
+  the card off-screen), defaulting to the bottom-right corner until the first drag. z-index
+  stays 50 — below the modals' 60 — so Settings/About/palette still paint above the card.
+  **One real bug caught by the smoke before release:** the drag state's `useState` was first
+  written below Player's `if (!nowPlaying) return null` early return — Player really does render
+  with nowPlaying null (it stays mounted and returns null), so the hook count differed between
+  those renders and opening any VOD title crashed the player ("Rendered more hooks than during
+  the previous render"). Moved above the early return with a comment; the VOD-open smoke check is
+  what caught it. 830 tests (1 new chain test: Escape restores the mini card rather than
+  stopping the stream it is still playing). Typecheck and lint clean. **GUI smoke 111/111** on a
+  locally-built bundle (4 new checks: the card appears, carries its title bar, playback keeps
+  advancing while another tab is used, restore returns the full player). **Not verified
+  interactively:** the drag itself (pointer-event sequence not driven by the harness — position
+  persistence and clamping are reasoned about, not exercised) and mini mode against the real
+  provider.
+
 - **0.27.0** the remote's channel stepper and the guide in the palette — two things, one release.
   **Channel up/down.** `[` and `]` step through the live player's channels, wrapping around at both
   ends the way a set-top box does, with Ch− / Ch+ buttons beside the previous-channel button in the

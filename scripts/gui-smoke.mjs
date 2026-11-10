@@ -1482,6 +1482,45 @@ async function main() {
     20000
   )
 
+  // --- mini-player (0.28.0) ---------------------------------------------------------------------
+  // The one property that matters most is the one only the real app can prove: minimising must
+  // NOT interrupt the stream (the same <video>/hls.js instance keeps playing — this fixture's
+  // account shape is the single-connection one that makes a remount drop the origin). So:
+  // minimise, leave the player's surface for another tab, and only then assert the video is
+  // still decoding and ADVANCING (two samples, not one — a frozen element can hold a stale
+  // readyState). Then restore and confirm the full player is back.
+  await click('.player-mini-toggle')
+  await check('the player shrinks to the mini card', `!!document.querySelector('.player-overlay--mini')`, 8000)
+  await check('the mini card carries its title bar', `!!document.querySelector('.player-mini-bar')`, 8000)
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('.tabs .tab')].find((b) => b.textContent.trim() === 'Movies')?.click() || true`
+  )
+  await sleep(1500)
+  const miniT1 = Number(await evaluate(cdp, `(() => { const v = document.querySelector('video.player-video'); return v ? v.currentTime : -1 })()`))
+  await sleep(2500)
+  const miniT2 = Number(await evaluate(cdp, `(() => { const v = document.querySelector('video.player-video'); return v ? v.currentTime : -1 })()`))
+  console.log('mini-player currentTime while browsing Movies:', miniT1, '→', miniT2)
+  await check(
+    'playback keeps advancing in the mini card while another tab is used',
+    `(() => { const v = document.querySelector('video.player-video'); return !!v && v.readyState >= 2 })() && ${miniT2} > ${miniT1}`,
+    8000
+  )
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('button')].find((b) => (b.title || '') === 'Restore the full player (Esc)')?.click() || true`
+  )
+  await check('restore returns the full player', `!document.querySelector('.player-overlay--mini') && !!document.querySelector('.player-header')`, 8000)
+  // Leave the player for the sections below, and put Live TV back — the check above switched to
+  // Movies, and the sections that follow (cheat-sheet, palette) assume the app's default surface.
+  await pressEscape()
+  await sleep(1200)
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('.tabs .tab')].find((b) => b.textContent.trim() === 'Live TV')?.click() || true`
+  )
+  await sleep(800)
+
   // --- keyboard cheat-sheet (0.26.0) -----------------------------------------------------------
   // The component test holds the render and Close; what it cannot hold is the keystroke itself,
   // because App is too heavy to mount in the suite. These drive the real `?` through CDP and

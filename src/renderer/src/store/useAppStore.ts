@@ -419,6 +419,12 @@ interface AppState {
   /** The player's subtitle-appearance popover — see lib/subtitleStyle. Lives here (not in
    *  Player.tsx) so the one central Escape chain can close it in the right order. */
   subtitleStyleOpen: boolean
+  /** Mini-player mode (0.28.0): the fullscreen player shrinks to a draggable corner card while
+   *  playback continues on the same <video>/hls.js instance. In the store (not Player.tsx local
+   *  state) for the same reason as channelBarOpen above — the one central Escape chain resolves
+   * it (Escape restores the full player rather than stopping) — and so `play()` can clear it:
+   *  starting something new while mini is an explicit "watch this" and restores the full player. */
+  miniPlayer: boolean
 
   openSeries: SeriesItem | null
   seriesInfo: SeriesInfo | null
@@ -636,6 +642,10 @@ interface AppState {
   stop: () => void
   setChannelBarOpen: (open: boolean) => void
   setSubtitleStyleOpen: (open: boolean) => void
+  /** Shrinks/restores the player without touching the stream — the whole point of the mini
+   *  card is that the same hls.js instance keeps its connection to a single-connection
+   *  account, so this only ever flips layout mode. */
+  setMiniPlayer: (open: boolean) => void
 
   openSeriesDetail: (item: SeriesItem) => Promise<void>
   closeSeriesDetail: () => void
@@ -822,6 +832,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   nowPlaying: null,
   channelBarOpen: false,
   subtitleStyleOpen: false,
+  miniPlayer: false,
 
   openSeries: null,
   seriesInfo: null,
@@ -1173,6 +1184,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       proxyBase: null,
       nowPlaying: null,
       channelBarOpen: false,
+      miniPlayer: false,
       unlockedCategoryIds: [],
       numericChannelCatalog: null,
       vodCatalog: null,
@@ -2349,6 +2361,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         icon,
         url: source.getStreamUrl(kind, streamId, extension)
       },
+      // Starting something new while the mini card is up is an explicit "watch this" — restore
+      // the full player rather than silently swapping the stream inside a 360px card (the
+      // decision recorded in the ROADMAP's 0.28.0 entry; staying mini was the alternative).
+      miniPlayer: false,
       // The modal's own fetch is the list the player's "Next episode" reads — keeping it here
       // means switching episodes costs no request, and the cache survives the modal closing.
       ...(series ? { seriesCache: { ...get().seriesCache, [series.id]: series } } : {}),
@@ -2389,13 +2405,16 @@ export const useAppStore = create<AppState>((set, get) => ({
         tvArchive: channel.tv_archive,
         icon: channel.stream_icon,
         url
-      }
+      },
+      // Same rule as play(): a new programme is an explicit watch — leave mini mode.
+      miniPlayer: false
     })
   },
 
-  stop: () => set({ nowPlaying: null, channelBarOpen: false, subtitleStyleOpen: false }),
+  stop: () => set({ nowPlaying: null, channelBarOpen: false, subtitleStyleOpen: false, miniPlayer: false }),
   setChannelBarOpen: (open) => set({ channelBarOpen: open }),
   setSubtitleStyleOpen: (open) => set({ subtitleStyleOpen: open }),
+  setMiniPlayer: (open) => set({ miniPlayer: open }),
 
   openSeriesDetail: async (item) => {
     const { client } = get()

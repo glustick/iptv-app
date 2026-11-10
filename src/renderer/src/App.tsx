@@ -147,6 +147,9 @@ function App(): JSX.Element {
         case 'closeSubtitleStyle':
           state.setSubtitleStyleOpen(false)
           break
+        case 'restorePlayer':
+          state.setMiniPlayer(false)
+          break
         case 'closeChannelBar':
           state.setChannelBarOpen(false)
           break

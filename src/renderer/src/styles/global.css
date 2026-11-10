@@ -968,6 +968,77 @@ body.resizing-col {
   flex-direction: column;
 }
 
+/* Mini-player (0.28.0): the same .player-overlay element and the SAME <video>/hls.js instance,
+   shrunk to a corner card — a CSS mode rather than a second component, precisely so the stream
+   is never re-attached (this account allows one connection; a remount would drop and re-open
+   it). inset:auto takes the card out of full-viewport flow; until the card has been dragged
+   (Player.tsx then sets an inline left/top) it parks in the bottom-right corner. z-index stays
+   50 — below the modals' 60, so Settings/About/palette still paint above the card. */
+.player-overlay--mini {
+  inset: auto;
+  right: 16px;
+  bottom: 16px;
+  width: 360px;
+  height: fit-content;
+  background: #0b0d12;
+  border-radius: 10px;
+  overflow: hidden;
+  outline: 1px solid var(--accent);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.6);
+}
+
+/* The full player's header has no meaning in a 360px card — it is replaced by the mini bar,
+   hidden here rather than unmounted so nothing that could re-trigger a stream reload runs just
+   because the card is up. */
+.player-overlay--mini .player-header {
+  display: none;
+}
+
+.player-overlay--mini .player-video {
+  height: auto;
+  aspect-ratio: 16 / 9;
+}
+
+.player-mini-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px 0 10px;
+  height: 34px;
+  background: rgba(11, 13, 18, 0.92);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.player-mini-bar:active {
+  cursor: grabbing;
+}
+
+.player-mini-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.player-mini-btn {
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 13px;
+  line-height: 1;
+  padding: 6px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.player-mini-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
 .player-header {
   display: flex;
   align-items: center;

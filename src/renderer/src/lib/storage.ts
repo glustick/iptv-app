@@ -235,6 +235,23 @@ export async function loadSettings(): Promise<AppSettings> {
     console.warn('[settings] sportsFixturesCache was not an object on disk — resetting it')
     result.sportsFixturesCache = null
   }
+  // The mini-player card's remembered corner (0.28.0) — must be a plain {x, y} of finite numbers
+  // or absent; anything else (a hand-edited string, a truncated write) falls back to the default
+  // bottom-right placement rather than positioning the card off-screen or failing to render it.
+  const miniPos = result.miniPlayerPosition
+  if (
+    miniPos !== null &&
+    miniPos !== undefined &&
+    (typeof miniPos !== 'object' ||
+      Array.isArray(miniPos) ||
+      typeof miniPos.x !== 'number' ||
+      typeof miniPos.y !== 'number' ||
+      !Number.isFinite(miniPos.x) ||
+      !Number.isFinite(miniPos.y))
+  ) {
+    console.warn('[settings] miniPlayerPosition was not a {x, y} of numbers on disk — resetting it')
+    result.miniPlayerPosition = null
+  }
   // Namespaced lock IDs — drop legacy bare ones rather than guessing which section they meant.
   result.lockedCategoryIds = result.lockedCategoryIds.filter((id) => id.includes(':'))
   let needsMigration = false

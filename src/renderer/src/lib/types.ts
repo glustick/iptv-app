@@ -359,6 +359,12 @@ export interface AppSettings {
   // width; the right pane flexes to fill whatever remains.
   sportsLeftWidth: number
   sportsMiddleWidth: number
+  // Where the mini-player card (0.28.0) sits on screen, in CSS pixels from the window's top-left
+  // — null until the card has been dragged, so a fresh install (or a window resized since the
+  // last drag) falls to the default bottom-right corner rather than a stale coordinate. Clamped
+  // against the current window on apply, so a position remembered on a bigger screen can never
+  // strand the card off-screen.
+  miniPlayerPosition: { x: number; y: number } | null
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -388,7 +394,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   apiFootballKey: null,
   sportsFixturesCache: null,
   sportsLeftWidth: 260,
-  sportsMiddleWidth: 460
+  sportsMiddleWidth: 460,
+  miniPlayerPosition: null
 }
 
 export type VpnStatus = 'disconnected' | 'connecting' | 'connected' | 'error'

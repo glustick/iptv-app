@@ -147,6 +147,29 @@ const CHANNEL_INFO_ZONE_FRACTION = 0.1
 // values (see VideoScaleMode in lib/types.ts).
 const VIDEO_SCALE_MODES: VideoScaleMode[] = ['contain', 'cover', 'fill']
 const VIDEO_SCALE_MODE_LABELS: Record<VideoScaleMode, string> = { contain: 'Fit', cover: 'Zoom', fill: 'Stretch' }
+// The mini-player card (0.28.0): fixed width, the video keeps its 16:9 shape above the title
+// bar, and the whole card keeps an 8px margin from every window edge when dragged or when a
+// remembered position is re-applied (so a position saved on a bigger screen can never strand
+// part of the card off-screen).
+const MINI_CARD_WIDTH = 360
+const MINI_BAR_HEIGHT = 34
+const MINI_EDGE_MARGIN = 8
+const miniCardHeight = (): number => MINI_BAR_HEIGHT + Math.round((MINI_CARD_WIDTH * 9) / 16)
+// The default placement before the first drag — the same bottom-right corner the CSS uses
+// before any inline left/top exists, expressed as coordinates so the drag math starts from
+// where the card actually is.
+const defaultMiniPosition = (): { x: number; y: number } => ({
+  x: window.innerWidth - MINI_CARD_WIDTH - 16,
+  y: window.innerHeight - miniCardHeight() - 16
+})
+function clampMiniPosition(x: number, y: number): { x: number; y: number } {
+  const maxX = Math.max(MINI_EDGE_MARGIN, window.innerWidth - MINI_CARD_WIDTH - MINI_EDGE_MARGIN)
+  const maxY = Math.max(MINI_EDGE_MARGIN, window.innerHeight - miniCardHeight() - MINI_EDGE_MARGIN)
+  return {
+    x: Math.min(Math.max(x, MINI_EDGE_MARGIN), maxX),
+    y: Math.min(Math.max(y, MINI_EDGE_MARGIN), maxY)
+  }
+}
 
 
 export function Player(): JSX.Element | null {
@@ -183,6 +206,9 @@ export function Player(): JSX.Element | null {
   const primaryPlaylistId = useAppStore((s) => s.primaryPlaylistId)
   const rememberLiveTranscodeOutcome = useAppStore((s) => s.rememberLiveTranscodeOutcome)
   const forgetLiveTranscodeOutcome = useAppStore((s) => s.forgetLiveTranscodeOutcome)
+  const miniPlayer = useAppStore((s) => s.miniPlayer)
+  const setMiniPlayer = useAppStore((s) => s.setMiniPlayer)
+  const miniPlayerPosition = useAppStore((s) => s.settings.miniPlayerPosition)
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const hlsRef = useRef<Hls | null>(null)
@@ -288,6 +314,10 @@ export function Player(): JSX.Element | null {
   // reset-on-close rather than relying on fresh initial state.
   // null = off, a number = minutes, 'end' = stop when the title finishes (VOD/series only).
   const [sleepMode, setSleepMode] = useState<SleepMode>(null)
+  // Mini-player drag position (0.28.0) — declared with the other state, ABOVE the
+  // `if (!nowPlaying) return null` early return: hooks must run on every render, and this
+  // component really does render with nowPlaying null (it stays mounted and returns null).
+  const [miniDragPos, setMiniDragPos] = useState<{ x: number; y: number } | null>(null)
   const [sleepTimerRemainingSeconds, setSleepTimerRemainingSeconds] = useState<number | null>(null)
   // Read by the ended handler, which was registered when this effect ran and would otherwise see
   // the mode from that render forever.
@@ -1524,6 +1554,11 @@ export function Player(): JSX.Element | null {
   // which already covers closing the channel bar and the player itself in the right order.
   useEffect(() => {
     if (!nowPlaying) return
+    // While the mini card is up, the app BEHIND it is the thing being used — and every binding
+    // below is a key that surface legitimately wants (arrows for list navigation, Space for
+    // buttons, [/] could even be typed into a search). The player gives them all up in mini
+    // mode; the card itself is mouse-driven, and Escape restores (the central chain).
+    if (miniPlayer) return
     const kind = nowPlaying.kind
     function onKeyDown(e: KeyboardEvent): void {
       const video = videoRef.current
@@ -1557,8 +1592,9 @@ export function Player(): JSX.Element | null {
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
     // stepLiveChannel closes over the live catalogue and the hidden filter, so those re-run this
-    // effect rather than leaving the stepper on a stale list.
-  }, [nowPlaying, liveStreams, showHiddenLiveChannels, isChannelHidden, play])
+    // effect rather than leaving the stepper on a stale list. miniPlayer is a dependency for the
+    // early return above — entering/leaving the card must re-bind or re-release the keys.
+  }, [nowPlaying, miniPlayer, liveStreams, showHiddenLiveChannels, isChannelHidden, play])
 
   useEffect(() => {
     const video = videoRef.current
@@ -1901,6 +1937,47 @@ export function Player(): JSX.Element | null {
     if (video.volume > 0 && video.muted) video.muted = false
   }
 
+  // Mini-player (0.28.0). Entering mini mode is layout-only: the same <video>/hls.js instance
+  // keeps its stream (this account is single-connection — re-attaching would drop and re-open
+  // the origin connection), so this closes the player's own chrome that has no meaning in a
+  // 360px card and flips one store flag the CSS and the Escape chain both read. Restoring is
+  // the same flag back — never a remount.
+  function enterMiniPlayer(): void {
+    setSubtitleStyleOpen(false)
+    setShowChannelBar(false)
+    setMiniPlayer(true)
+  }
+  function restoreFromMini(): void {
+    setMiniPlayer(false)
+  }
+  // The drag: pointer events on the card's title bar (the buttons stop propagation so a click
+  // on Restore/Stop never starts a drag). The card follows local state while dragging — a
+  // settings write per pointermove would be absurd — and the final position is clamped AND
+  // persisted once, on release.
+  function handleMiniBarPointerDown(e: React.PointerEvent<HTMLDivElement>): void {
+    if (e.button !== 0) return
+    const startX = e.clientX
+    const startY = e.clientY
+    const base = miniDragPos ?? miniPlayerPosition ?? defaultMiniPosition()
+    const onMove = (ev: PointerEvent): void => {
+      setMiniDragPos(clampMiniPosition(base.x + ev.clientX - startX, base.y + ev.clientY - startY))
+    }
+    const onUp = (ev: PointerEvent): void => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      const final = clampMiniPosition(base.x + ev.clientX - startX, base.y + ev.clientY - startY)
+      setMiniDragPos(final)
+      updateSettings({ miniPlayerPosition: final })
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
+  // Where the card sits right now: a position being dragged, else the remembered one
+  // (re-clamped against the current window), else nothing — no inline left/top, and the CSS
+  // default bottom-right corner applies.
+  const effectiveMiniPos =
+    miniDragPos ?? (miniPlayerPosition ? clampMiniPosition(miniPlayerPosition.x, miniPlayerPosition.y) : null)
+
   // Live only — VOD/series render native <video controls>, which already give a plain click
   // play/pause and a double-click fullscreen toggle for free (confirmed live), so adding our own
   // here would just fight the native behavior. The bottom zone doubles as the in-video EPG
@@ -1908,6 +1985,12 @@ export function Player(): JSX.Element | null {
   // fixed, full-viewport layer (see global.css) so window.innerHeight is the right measure in
   // both windowed and fullscreen mode.
   function handlePlayAreaClick(e: React.MouseEvent<HTMLVideoElement>): void {
+    // In the mini card a click is far more likely "give me the player back" than "pause" —
+    // the card is small, sits over whatever is being browsed, and pause is one restore away.
+    if (miniPlayer) {
+      restoreFromMini()
+      return
+    }
     if (nowPlaying?.kind !== 'live') return
     if (e.clientY > window.innerHeight - BOTTOM_ZONE_PX) {
       setShowChannelBar(!showChannelBar)
@@ -1925,8 +2008,9 @@ export function Player(): JSX.Element | null {
 
   return (
     <div
-      className="player-overlay"
+      className={`player-overlay${miniPlayer ? ' player-overlay--mini' : ''}`}
       ref={attachPlayerRef}
+      style={miniPlayer && effectiveMiniPos ? { left: effectiveMiniPos.x, top: effectiveMiniPos.y } : undefined}
     >
       <div className={`player-header player-header--overlay${!headerVisible ? ' player-header--hidden' : ''}`}>
         <span className="player-title">
@@ -2367,6 +2451,18 @@ export function Player(): JSX.Element | null {
             <button className="player-pip" onClick={togglePip} title="Picture in picture">
               ⧉ <span className="control-label">{pipActive ? 'Exit PiP' : 'PiP'}</span>
             </button>
+            {// The mini card (0.28.0) — playback keeps going on the same hls.js instance while
+            // the app behind becomes usable again. Sits beside PiP because they answer the same
+            // "I want to do something else while this plays" request, in-app rather than as an
+            // OS floating window. Works for live and VOD alike.
+            <button
+              className="player-control-btn player-mini-toggle"
+              onClick={enterMiniPlayer}
+              title="Mini-player — keeps playing in a corner card while you browse"
+            >
+              ⤡ <span className="control-label">Mini</span>
+            </button>
+            }
           </div>
           <button className="player-close" onClick={stop} title="Close">
             ✕ <span className="control-label">Close</span>
@@ -2374,7 +2470,33 @@ export function Player(): JSX.Element | null {
         </div>
       </div>
       <div className="player-body">
-        {subtitleStyleOpen && (
+        {// The mini card's own chrome: a drag handle doubling as the title row, plus the two
+        // actions the card exists to offer — restore and stop. Rendered as a sibling BEFORE the
+        // video (never around it — moving the <video> in the tree would remount it and drop the
+        // stream, the one thing mini mode must not do).
+        }
+        {miniPlayer && (
+          <div className="player-mini-bar" onPointerDown={handleMiniBarPointerDown}>
+            <span className="player-mini-title">{nowPlaying.name}</span>
+            <button
+              className="player-mini-btn"
+              onClick={restoreFromMini}
+              onPointerDown={(e) => e.stopPropagation()}
+              title="Restore the full player (Esc)"
+            >
+              ⤢
+            </button>
+            <button
+              className="player-mini-btn"
+              onClick={stop}
+              onPointerDown={(e) => e.stopPropagation()}
+              title="Stop playback"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+        {subtitleStyleOpen && !miniPlayer && (
           <SubtitleStylePanel
             prefs={subtitlePrefs}
             onChange={changeSubtitlePrefs}
@@ -2446,7 +2568,7 @@ export function Player(): JSX.Element | null {
         {// Left-edge hover panel, live-only — see the channelInfoVisible mousemove effect above.
         // Deliberately pointer-events: none (see global.css) so it never intercepts the
         // click-to-pause/double-click-to-fullscreen handlers on the video underneath it.
-        nowPlaying.kind === 'live' && (
+        nowPlaying.kind === 'live' && !miniPlayer && (
           <div
             className={`player-channel-info-panel${channelInfoVisible ? ' player-channel-info-panel--visible' : ''}`}
           >
@@ -2491,9 +2613,9 @@ export function Player(): JSX.Element | null {
         {// Hidden while the channel bar/EPG is open (both anchor to the bottom edge, and the
         // channel bar already shows its own sense of "when" via the EPG grid's now-line) and
         // unless the cursor is actually near the bottom edge — see the mousemove effect above.
-        nowPlaying.kind === 'live' && !showChannelBar && cursorNearBottom && <PlayerSeekBar videoRef={videoRef} />}
-        {showChannelBar && <PlayerChannelBar />}
-        {statsVisible && <PlayerStatsOverlay videoRef={videoRef} hlsRef={hlsRef} isLive={nowPlaying.kind === 'live'} />}
+        nowPlaying.kind === 'live' && !showChannelBar && !miniPlayer && cursorNearBottom && <PlayerSeekBar videoRef={videoRef} />}
+        {showChannelBar && !miniPlayer && <PlayerChannelBar />}
+        {statsVisible && !miniPlayer && <PlayerStatsOverlay videoRef={videoRef} hlsRef={hlsRef} isLive={nowPlaying.kind === 'live'} />}
       </div>
       {/* Rendered here too (App.tsx also mounts one) since .player-overlay is a fixed,
           full-viewport layer that covers everything else, fullscreen or not — without this,

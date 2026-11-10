@@ -13,6 +13,7 @@ const base: OverlayState = {
   pinPromptCategoryId: null,
   openSeries: null,
   subtitleStyleOpen: false,
+  miniPlayer: false,
   channelBarOpen: false,
   nowPlaying: null,
   previewChannel: null
@@ -30,6 +31,7 @@ const ORDER: Array<{ key: keyof OverlayState; action: OverlayEscapeAction; on: u
   { key: 'pinPromptCategoryId', action: 'cancelPinPrompt', on: 'live:12' },
   { key: 'openSeries', action: 'closeSeries', on: { series_id: 1 } },
   { key: 'subtitleStyleOpen', action: 'closeSubtitleStyle', on: true },
+  { key: 'miniPlayer', action: 'restorePlayer', on: true },
   { key: 'channelBarOpen', action: 'closeChannelBar', on: true },
   { key: 'nowPlaying', action: 'stopPlayback', on: { kind: 'live' } },
   { key: 'previewChannel', action: 'closePreview', on: { stream_id: 4 } }
@@ -67,6 +69,10 @@ describe('resolveEscapeAction', () => {
     expect(
       resolveEscapeAction({ ...base, updateInfo: { version: '1.2.3' }, updateDismissed: true, previewChannel: { stream_id: 1 } })
     ).toBe('closePreview')
+  })
+
+  it('Escape restores the mini card rather than stopping the stream it is still playing (0.28.0)', () => {
+    expect(resolveEscapeAction({ ...base, miniPlayer: true, nowPlaying: { kind: 'live' } })).toBe('restorePlayer')
   })
 
   it('closes the manager rather than the thing behind it (the 0.7.81 bug)', () => {
