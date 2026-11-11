@@ -28,6 +28,7 @@ import { nextReconnectDelayMs, shouldResetReconnectAttempts } from '../lib/recon
 import { describeHlsLevel } from '../lib/hlsLevels'
 import type { VideoScaleMode } from '../lib/types'
 import { channelKey } from '../lib/channelIdentity'
+import { analyzeMediaPlaylist } from '../lib/channelHealth'
 
 const MAX_NETWORK_RETRIES = 4
 // A short pause before actually retrying a failed network load, rather than reloading the
@@ -53,6 +54,10 @@ const MAX_STALL_ERROR_RECOVERIES = 3
 // the far more responsive recovery hls.js already does on its own.
 const STALL_RECOVERY_AFTER_MS = 10000
 const STALL_CHECK_INTERVAL_MS = 2000
+// How often the off-air re-probe re-fetches the media playlist after a not-broadcasting verdict
+// (0.31.0). 30s rather than 60: the probe is one small GET through the local proxy, and half a
+// minute of dead air is already long enough for a viewer to give up and change channel.
+const OFF_AIR_REPROBE_MS = 30000
 // A live channel whose playlist turns out to be *finished* (see the ended handler) is
 // restarted rather than left stopped. If a restart ends again almost immediately the "loop" is
 // a broken/empty stream rather than a repeating feed, so it stops being attempted.
@@ -426,6 +431,9 @@ export function Player(): JSX.Element | null {
   // button renders off it.
   const reconnectAttemptsRef = useRef(0)
   const [reconnectExhausted, setReconnectExhausted] = useState(false)
+  // The viewer's "attempt this channel anyway" override past a known-unavailable health verdict
+  // (0.31.0) — the health-informed attach below refuses once, this makes the retry honest.
+  const [healthOverride, setHealthOverride] = useState(false)
   // When continuous good playback started (cleared on any interruption), read by the reconnect
   // effect's reset rule: 30s of unbroken playback retires the current offline period's budget.
   const cleanPlaybackSinceRef = useRef<number | null>(null)
@@ -488,6 +496,14 @@ export function Player(): JSX.Element | null {
     // never be restored into this one, and the open-time resume machinery owns the first seek.
     vodRestorePositionRef.current = null
     vodRestorePendingRef.current = false
+    // A new channel is a new context for the reconnect budget too (0.31.0): whatever the last
+    // offline period spent fighting a different channel's provider connection says nothing
+    // about this one, and an inherited "exhausted" would suppress the very first auto-reconnect.
+    reconnectAttemptsRef.current = 0
+    setReconnectExhausted(false)
+    // The health verdict the attach check consults is per-channel; a refusal belongs to the
+    // channel that earned it, not to whatever the viewer picks next.
+    setHealthOverride(false)
     resetTranscodeFallback()
   }, [nowPlaying, resetTranscodeFallback])
 
@@ -569,6 +585,25 @@ export function Player(): JSX.Element | null {
     video.defaultPlaybackRate = elementSpeed
 
     setPlaybackError(null)
+    // Health-informed attach (0.31.0): a channel the health probe has already classified
+    // 'unavailable' would burn its full attach → 10s stall → give-up cycle to rediscover what
+    // the grid already knows — so refuse once, honestly, with the error UI's Try again (the
+    // viewer's override) one click away. The verdict is keyed by the channel's composite key and
+    // the refusal is skipped entirely for anything the probe hasn't classified. Live only: VOD
+    // has no channel health.
+    if (nowPlaying.kind === 'live' && !healthOverride) {
+      const healthKey = channelKey(nowPlaying.playbackPlaylistId, nowPlaying.streamId, primaryPlaylistId)
+      // Via getState, not a selector dep: the health map changes as background probes land for
+      // OTHER channels, and a selector here would tear down and re-attach live playback each
+      // time. This read wants the map exactly once, at attach time.
+      if (useAppStore.getState().channelHealthByStream[healthKey]?.health === 'unavailable') {
+        setPlaybackError(
+          'This channel was flagged as not live when it was last checked — it is likely off air. ' +
+            'Try again to attempt it anyway.'
+        )
+        return
+      }
+    }
     setBuffering(true)
     setHlsSubtitleTracks([])
     setActiveHlsSubtitleTrack(-1)
@@ -596,6 +631,7 @@ export function Player(): JSX.Element | null {
     let progressInterval: ReturnType<typeof setInterval> | null = null
     let silentAudioCheckTimer: ReturnType<typeof setInterval> | null = null
     let watchdogTimer: ReturnType<typeof setInterval> | null = null
+    let offAirProbeTimer: ReturnType<typeof setInterval> | null = null
 
     if (hlsRef.current) {
       hlsRef.current.destroy()
@@ -1032,8 +1068,39 @@ export function Player(): JSX.Element | null {
         el.pause()
         setPlaybackError(
           'This channel does not appear to be broadcasting right now — its playlist has not advanced for 30 seconds. ' +
-            'Automatic retries are paused to spare the provider connection; press play to check again.'
+            'Checking every 30 seconds and resuming by itself the moment it comes back.'
         )
+        // The off-air re-probe (0.31.0): instead of a dead stop that needs a human, re-fetch the
+        // media playlist on a slow cadence (one small GET through the local proxy — the provider
+        // connection the verdict exists to spare stays untouched) and rejoin automatically the
+        // moment the window moves again. "Moved" means the (media sequence, segment count) pair
+        // differs from the frozen one, or the playlist turned finished (#EXT-X-ENDLIST — a
+        // placeholder loop; the reload's own loop-restart machinery takes it from there).
+        const frozenStartSN = details.startSN
+        const frozenSegments = details.endSN - details.startSN + 1
+        offAirProbeTimer = setInterval(() => {
+          void fetch(nowPlaying.url)
+            .then((response) => (response.ok ? response.text() : null))
+            .then((text) => {
+              if (!text) return
+              const analysis = analyzeMediaPlaylist(text)
+              if (!analysis || analysis.isMaster || analysis.mediaSequence === null) return
+              if (
+                analysis.mediaSequence !== frozenStartSN ||
+                analysis.segmentCount !== frozenSegments ||
+                analysis.hasEndList
+              ) {
+                if (offAirProbeTimer) clearInterval(offAirProbeTimer)
+                offAirProbeTimer = null
+                setPlaybackError(null)
+                setStatusNotice('The channel is back — rejoining…')
+                setReloadTick((t) => t + 1)
+              }
+            })
+            .catch(() => {
+              /* the feed is off air; the next probe tries again */
+            })
+        }, OFF_AIR_REPROBE_MS)
       })
       // Quality levels: hls.js exposes its own variant list, and only reports a *switch* — the
       // set itself has to be read from the instance once the manifest is parsed. Auto is hls.js's
@@ -1441,6 +1508,7 @@ export function Player(): JSX.Element | null {
       video.removeEventListener('canplay', handleCanPlay)
       video.removeEventListener('ended', handleEnded)
       if (watchdogTimer) clearInterval(watchdogTimer)
+      if (offAirProbeTimer) clearInterval(offAirProbeTimer)
       if (errorResetTimer) clearTimeout(errorResetTimer)
       if (networkRetryTimer) clearTimeout(networkRetryTimer)
       if (progressInterval) clearInterval(progressInterval)
@@ -1461,7 +1529,9 @@ export function Player(): JSX.Element | null {
         hlsRef.current = null
       }
     }
-  }, [nowPlaying, bufferProfile, reloadTick])
+    // healthOverride (0.31.0): flipping it re-runs the attach so the refused channel plays;
+    // everything else here is unchanged from pre-0.31.0.
+  }, [nowPlaying, bufferProfile, reloadTick, healthOverride])
 
   // A live channel with a remembered transcode outcome (settings.transcodeMemory — an audio
   // fix or a raw-TS verdict; 0.17.0 unified the two memories) opens straight into the ffmpeg
@@ -2702,7 +2772,39 @@ export function Player(): JSX.Element | null {
         {!isOnline && (
           <div className="player-error">No network connection — will resume automatically once you're back online.</div>
         )}
-        {playbackError && isOnline && <div className="player-error">{playbackError}</div>}
+        {// A terminal error now carries its own way out (0.31.0): Try again re-attaches from
+        // scratch (and, for a health-refused channel, clears the override so the retry is real),
+        // and a live channel offers the 0.27.0 stepper's neighbours — a genuinely dead feed
+        // costs one click instead of a navigation trip. The off-air verdict's message says it
+        // will resume by itself; these actions are for the viewer who won't wait.}
+        playbackError && isOnline && (
+          <div className="player-error" role="alert">
+            {playbackError}
+            <div className="player-error-actions">
+              <button
+                className="player-resume-chip-action"
+                onClick={() => {
+                  setPlaybackError(null)
+                  setStatusNotice(null)
+                  setHealthOverride(true)
+                  setReloadTick((t) => t + 1)
+                }}
+              >
+                Try again
+              </button>
+              {nowPlaying.kind === 'live' && (
+                <>
+                  <button className="player-resume-chip-action" onClick={() => stepLiveChannel(-1)}>
+                    ◀ Previous channel
+                  </button>
+                  <button className="player-resume-chip-action" onClick={() => stepLiveChannel(1)}>
+                    Next channel ▶
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
         {// The reconnect budget's honest end (0.30.0): after five spaced attempts the player
         // stops retrying on its own and says so — with the one action that makes sense, a fresh
         // attach on the viewer's command (which also restores a VOD title to where it was).

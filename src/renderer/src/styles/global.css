@@ -1449,6 +1449,14 @@ body.resizing-col {
   text-align: center;
 }
 
+/* The terminal error's own way out (0.31.0): Try again / Previous channel / Next channel. */
+.player-error-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .player-crash-overlay {
   position: fixed;
   inset: 0;

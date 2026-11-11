@@ -1444,6 +1444,43 @@ async function main() {
   // gone closes the channel preview the grid's rows live inside ("Loading channels…", zero
   // rows), which silently no-ops every row click after it (found the hard way, 0.30.0).
 
+  // --- off air, then back — by itself (0.31.0) ---------------------------------------------------
+  // The off-air fixture freezes long enough (70s) for the not-broadcasting verdict, then
+  // advances again. Under test: the verdict's honest message appears (checking, will resume),
+  // and then the channel REALLY DOES come back on its own — the re-probe notices the window
+  // moving and rejoins, no user action anywhere. Slow by smoke standards (~2 min dwell); it is
+  // the only end-to-end proof of the feature.
+  await pressEscape() // leave the stall player
+  await sleep(1200)
+  try { await fetch('http://127.0.0.1:8123/__reset-offair') } catch { /* fresh provider */ }
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('button.epg-row-channel')].find((b) => b.textContent.includes('Off Air Feed'))?.click() || true`
+  )
+  await sleep(1500)
+  await click('.watch-now-button')
+  // Verdict lands around t+40s (30s frozen window + drained playhead); re-probe fires every
+  // 30s after that; the feed resumes at t+70s, so the rejoin lands on the t+70–100s probe.
+  await check(
+    'the not-broadcasting verdict appears with its checking message',
+    `document.body.innerText.includes("Checking every 30 seconds")`,
+    60000
+  )
+  const offAirVerdictAt = Date.now()
+  await check(
+    'the off-air channel resumes by itself once the feed returns',
+    `(() => { const v = document.querySelector('video.player-video'); return !!v && v.readyState >= 2 && v.currentTime > 0.5 })()`,
+    100000
+  )
+  console.log('off-air verdict → auto-resume took', Math.round((Date.now() - offAirVerdictAt) / 1000) + 's')
+  await check(
+    'the off-air error is gone after the resume',
+    `!document.body.innerText.includes("does not appear to be broadcasting")`,
+    8000
+  )
+  // Again no trailing pressEscape — the E-AC-3 section's own escape stops this player (see the
+  // comment in the stall section above for why a second escape here would break everything).
+
   // The E-AC-3 ("Dolby") channel: the app should detect the unsupported audio and engage its ffmpeg
   // audio-fix fallback, which then has to end in actual playback. That whole path is invisible to
   // an AAC-only fixture, and it is the feature most exposed to a Chromium upgrade.

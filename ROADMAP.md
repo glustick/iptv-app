@@ -231,6 +231,37 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.31.0** the dead feed, handled honestly — the off-air verdict stops being a dead end.
+  **Auto-resume from off air.** A not-broadcasting verdict used to pause everything and wait for
+  a human. The message now says what actually happens: *checking every 30 seconds and resuming
+  by itself the moment it comes back* — and it does. A re-probe re-fetches the media playlist on
+  a slow cadence (one small GET through the local proxy; the provider connection the verdict
+  exists to spare stays untouched) and rejoins automatically when the window's (media sequence,
+  segment count) pair differs from the frozen one, or the playlist turned finished (a
+  placeholder loop — the reload's own loop-restart machinery takes it from there). The fixture
+  gained an **Off Air Feed** (freezes 70s — past the verdict — then advances; the two frozen
+  feeds share one `makeFrozenThenAdvancingPlaylist` factory with per-run reset routes), and the
+  smoke sits through the whole arc: verdict with its honest message → **auto-resume 60s later,
+  zero user action** → the error gone. **Health-informed attach.** A channel the health probe
+  already classified 'unavailable' no longer burns its full attach → 10s stall → give-up cycle
+  to rediscover what the grid knows — the player refuses once, says the channel was flagged not
+  live, and the error UI's Try again clears the override for a real attempt. The health map is
+  read via `getState` at attach time, deliberately not a selector dep: probes land for other
+  channels constantly, and a selector here would tear down live playback each time one did.
+  **The terminal error's own way out.** Every terminal playback error now carries actions:
+  Try again (fresh attach), and — live only — Previous/Next channel via the 0.27.0 stepper, so
+  a genuinely dead feed costs one click instead of a navigation trip. **Budgets reset on
+  channel switch.** The reconnect budget was the one recovery counter a channel switch did not
+  already reset (the stall ladder and transcode fallback did) — an inherited "exhausted" from a
+  previous channel's outage would have suppressed the new channel's very first auto-reconnect.
+  866 tests (no new ones — the probe's window comparison reuses the tested `analyzeMediaPlaylist`,
+  and the verdict/probe wiring is the GUI smoke's to prove, which it does end to end). Typecheck
+  and lint clean. **GUI smoke 122/122** on a locally-built bundle (3 new checks: the verdict's
+  message, the self-resume, the error cleared). **Not verified interactively:** health-informed
+  attach against a real provider's genuinely-off-air channel (the 0.15.2-era live-verification
+  list's standing caveat — no provider channel was in that state during any pass), and the
+  off-air arc against the real provider rather than the fixture.
+
 - **0.30.0** the stall ladder, upgraded — four changes aimed at one thing: a stream that stalls
   should recover itself, cheaply and in the right order.
   **Live-edge rejoin, the new cheapest-first rung.** A live channel that stops progressing is
