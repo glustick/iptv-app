@@ -52,13 +52,14 @@ describe('Xtream client + EPG pipeline against a synthetic provider', () => {
 
     const streams = await client.getLiveStreams()
     // Three guide-covered channels plus the deliberately-unplaceable residue one, plus the
-    // six Sports-tab fixtures (see the fixture's own comment).
-    expect(streams).toHaveLength(10)
+    // six Sports-tab fixtures (see the fixture's own comment), plus the stalled-feed recovery
+    // fixture (0.30.0), which lives in the same category as the guide-covered ones.
+    expect(streams).toHaveLength(11)
     expect(streams.map((s) => s.stream_id)).toContain(mock.ids.channelMatchedById)
 
     // …and the same via a category filter, which is how the store loads a browsed category.
     const filtered = await client.getLiveStreams(mock.ids.categoryLive)
-    expect(filtered).toHaveLength(4)
+    expect(filtered).toHaveLength(5)
   })
 
   it('decodes per-channel short EPG', async () => {
@@ -111,8 +112,8 @@ describe('Xtream client + EPG pipeline against a synthetic provider', () => {
     expect(state.epgSourceMatchStats[0]).toMatchObject({
       source: 'Provider guide (xmltv.php)',
       available: true,
-      // 4 guide-covered fixture channels + 6 Sports-tab fixtures.
-      loadedChannels: 10,
+      // 4 guide-covered fixture channels + 6 Sports-tab fixtures + the stalled-feed fixture.
+      loadedChannels: 11,
       matched: 2,
       byId: 1,
       byFuzzy: 1

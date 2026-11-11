@@ -29,11 +29,29 @@ export function isBufferStallError(details: string): boolean {
  * without the stream having delivered anything; unquantised, that jitter would keep resetting a
  * watchdog whose entire job is to notice when nothing is really moving.
  */
-export function playbackSignature(readyState: number, currentTime: number): string {
-  return `${readyState}:${Math.round(currentTime * 4)}`
+export function playbackSignature(readyState: number, currentTime: number, bufferedEnd?: number): string {
+  // The buffer-health component (0.30.0): buffered-ahead, quantised like the playhead. Two
+  // stalls that look identical from the playhead alone — the picture frozen with data already
+  // buffered ahead (a render/decode wedge) versus frozen with the buffer draining to nothing
+  // (the network died) — differ here, and only the first wants the hastened recovery delay.
+  // Omitted for callers that have no buffer (and in the pre-0.30.0 tests), keeping the
+  // two-component format those already assert on.
+  const health = bufferedEnd === undefined ? '' : `:${Math.max(0, Math.round((bufferedEnd - currentTime) * 4))}`
+  return `${readyState}:${Math.round(currentTime * 4)}${health}`
 }
 
-export type StallAction = 'nudge' | 'reload' | 'giveUp'
+/**
+ * The recovery wait when the picture is frozen *with data already buffered ahead* (a
+ * render-side wedge — the network is fine, the player just isn't moving) or when the browser
+ * itself has raised `stalled`: half the normal patience, because there is nothing left to wait
+ * for. A frozen playhead with the buffer draining is the opposite case — data may still arrive
+ * — so it keeps the full STALL_RECOVERY_AFTER_MS.
+ */
+export function stallRecoveryDelayMs(bufferAheadSeconds: number, stalledEventSeen: boolean, baseMs = 10000): number {
+  return stalledEventSeen || bufferAheadSeconds > 0.25 ? baseMs / 2 : baseMs
+}
+
+export type StallAction = 'liveEdge' | 'nudge' | 'reload' | 'giveUp'
 
 /**
  * The escalation ladder for a confirmed stall, given how many recovery attempts have already
@@ -42,8 +60,30 @@ export type StallAction = 'nudge' | 'reload' | 'giveUp'
  *   1..maxReloads → reload (re-attach the source from scratch — a second of black screen)
  *   beyond that → giveUp  (a genuinely dead stream; stop pretending anything is coming)
  */
-export function nextStallAction(completedRecoveries: number, maxReloads = 2): StallAction {
-  if (completedRecoveries <= 0) return 'nudge'
-  if (completedRecoveries <= maxReloads) return 'reload'
+export function nextStallAction(completedRecoveries: number, maxReloads = 2, isLive = false): StallAction {
+  // Live content gets one extra, cheapest-first rung (0.30.0): a live channel that stops
+  // progressing is most often simply parked behind the live edge (a finished placeholder
+  // playlist, a DVR window that slid, a brief feed gap the player never chased) — and jumping
+  // back to the live edge fixes exactly that, invisibly, without spending a provider
+  // connection on a reload. Only if the playhead still refuses to move does the ladder
+  // continue up the old nudge → reload → give-up sequence, unchanged for VOD (where there is
+  // no live edge to rejoin, and the first rung stays the nudge).
+  if (isLive && completedRecoveries <= 0) return 'liveEdge'
+  const vodRung = completedRecoveries - (isLive ? 1 : 0)
+  if (vodRung <= 0) return 'nudge'
+  if (vodRung <= maxReloads) return 'reload'
   return 'giveUp'
+}
+
+/**
+ * Clamp a remembered VOD position into the new instance's seekable range (0.30.0). A position
+ * captured before an internal reload can sit past the new instance's buffer window (or before
+ * its start, after a seekable-range shift), so restoring it verbatim would throw or seek into
+ * a hole. Returns null when there is nothing sensible to seek to — not seekable yet, or a
+ * degenerate range — leaving the caller to just play from the default position.
+ */
+export function clampRestorePosition(positionSeconds: number, seekableStart: number, seekableEnd: number): number | null {
+  if (!Number.isFinite(positionSeconds) || positionSeconds <= 0) return null
+  if (!Number.isFinite(seekableStart) || !Number.isFinite(seekableEnd) || seekableEnd <= seekableStart) return null
+  return Math.min(Math.max(positionSeconds, seekableStart), Math.max(seekableStart, seekableEnd - 1))
 }

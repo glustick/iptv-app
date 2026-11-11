@@ -1404,6 +1404,46 @@ async function main() {
     20000
   )
 
+  // --- the stalled feed recovers on its own (0.30.0) ------------------------------------------------
+  // Re-arm the fixture's freeze first (the provider process may have served this channel in an
+  // earlier run) so THIS run starts a fresh 20s freeze the moment the app requests the playlist.
+  try { await fetch('http://127.0.0.1:8123/__reset-stall') } catch { /* the harness shell curl fallback below */ }
+  // The stall fixture's playlist window freezes for 20s from its first request, then advances
+  // again. The point under test: the player hits the frozen window, the watchdog ladder does
+  // its work (live-edge rejoin first, reload behind it), and when the window starts moving the
+  // picture starts moving again — with NO user action anywhere in the sequence. The freeze is
+  // shorter than the not-broadcasting detector's 30s span, so this exercises the ladder, not
+  // the off-air verdict.
+  await pressEscape() // leave the player
+  await sleep(1200)
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('button.epg-row-channel')].find((b) => b.textContent.includes('Stall Test Feed'))?.click() || true`
+  )
+  await sleep(1500)
+  await click('.watch-now-button')
+  await check(
+    'the stalled feed starts playing',
+    `[...document.querySelectorAll('video')].some((v) => v.classList.contains('player-video') && v.readyState >= 2)`,
+    30000
+  )
+  const stallT1 = Number(await evaluate(cdp, `(() => { const v = document.querySelector('video.player-video'); return v ? v.currentTime : -1 })()`))
+  // Sit through the freeze and past it: ~20s frozen (ladder liveEdge/nudge/reload fire in
+  // there), then the window advances and playback must resume within this generous window.
+  await sleep(35000)
+  const stallT2 = Number(await evaluate(cdp, `(() => { const v = document.querySelector('video.player-video'); return v ? v.currentTime : -1 })()`))
+  console.log('stalled feed currentTime, before freeze vs after:', stallT1, '→', stallT2)
+  await check(
+    'playback recovers by itself once the stalled feed resumes advancing',
+    `(() => { const v = document.querySelector('video.player-video'); return !!v && v.readyState >= 2 && !v.paused })() && ${stallT2} > ${stallT1} + 5`,
+    30000
+  )
+  await check('no playback error was surfaced for the stalled feed', `!document.body.innerText.includes("Playback stalled")`, 5000)
+  // No trailing pressEscape here, deliberately: the E-AC-3 section below opens with its own, and
+  // this section's player must be stopped by THAT one — a second escape after the player is
+  // gone closes the channel preview the grid's rows live inside ("Loading channels…", zero
+  // rows), which silently no-ops every row click after it (found the hard way, 0.30.0).
+
   // The E-AC-3 ("Dolby") channel: the app should detect the unsupported audio and engage its ffmpeg
   // audio-fix fallback, which then has to end in actual playback. That whole path is invisible to
   // an AAC-only fixture, and it is the feature most exposed to a Chromium upgrade.

@@ -23,7 +23,8 @@ import { createPlaylistStallTracker } from '../lib/playlistStall'
 import { useNumericChannelEntry } from '../lib/useNumericChannelEntry'
 import { useToolbarOverflow } from '../lib/useToolbarOverflow'
 import { useHoverAutoHide } from '../lib/useHoverAutoHide'
-import { isBufferStallError, nextStallAction, playbackSignature } from '../lib/playbackWatchdog'
+import { clampRestorePosition, isBufferStallError, nextStallAction, playbackSignature, stallRecoveryDelayMs } from '../lib/playbackWatchdog'
+import { nextReconnectDelayMs, shouldResetReconnectAttempts } from '../lib/reconnectBackoff'
 import { describeHlsLevel } from '../lib/hlsLevels'
 import type { VideoScaleMode } from '../lib/types'
 import { channelKey } from '../lib/channelIdentity'
@@ -169,6 +170,11 @@ function clampMiniPosition(x: number, y: number): { x: number; y: number } {
     x: Math.min(Math.max(x, MINI_EDGE_MARGIN), maxX),
     y: Math.min(Math.max(y, MINI_EDGE_MARGIN), maxY)
   }
+}
+// The end of whatever is buffered, falling back to the playhead when nothing is (0.30.0) — the
+// watchdog's buffer-health input. A plain read, not state: the watchdog polls on its interval.
+function bufferedEndOf(video: HTMLVideoElement): number {
+  return video.buffered.length > 0 ? video.buffered.end(video.buffered.length - 1) : video.currentTime
 }
 
 
@@ -413,6 +419,22 @@ export function Player(): JSX.Element | null {
   // signature change after our own nudge/reload is swallowed; only a *second*, independent
   // change — i.e. playback genuinely moving — resets the ladder.
   const stallLadderRef = useRef({ lastSignature: '', lastProgressAt: 0, recoveries: 0, ignoreNextProgress: false })
+  // Reconnect backoff (0.30.0) — the offline→online effect's attempt schedule, kept in refs
+  // because it must survive the reloads it itself triggers (a state counter re-created per
+  // attach would reset every cycle, exactly the reload-resets-the-ladder bug stallLadderRef
+  // above exists to prevent). `reconnectExhausted` is state because the in-player Reconnect
+  // button renders off it.
+  const reconnectAttemptsRef = useRef(0)
+  const [reconnectExhausted, setReconnectExhausted] = useState(false)
+  // When continuous good playback started (cleared on any interruption), read by the reconnect
+  // effect's reset rule: 30s of unbroken playback retires the current offline period's budget.
+  const cleanPlaybackSinceRef = useRef<number | null>(null)
+  // VOD position restore across internal reloads (0.30.0): a title's currentTime, stashed the
+  // moment the watchdog or the network-error path reloads it, plus the flag that tells the new
+  // attach a restore is pending (live reloads rejoin the live edge instead — see the ladder's
+  // liveEdge rung — so this is VOD/series only, and never shows the resume chip).
+  const vodRestorePositionRef = useRef<number | null>(null)
+  const vodRestorePendingRef = useRef(false)
   const [transcodeElapsedSeconds, setTranscodeElapsedSeconds] = useState(0)
   // The viewer's quality ceiling for the re-encode tier (v0.75.0 port): Source keeps what the
   // provider sent; 1080p/720p caps the picture only on channels this machine plays through the
@@ -462,19 +484,53 @@ export function Player(): JSX.Element | null {
     // A genuinely different channel starts the stall ladder over (see stallLadderRef) — only a
     // channel change may, which is why this lives here rather than in the playback effect.
     stallLadderRef.current = { lastSignature: '', lastProgressAt: 0, recoveries: 0, ignoreNextProgress: false }
+    // The reload-continuity stash is title-scoped (0.30.0): a different title's position must
+    // never be restored into this one, and the open-time resume machinery owns the first seek.
+    vodRestorePositionRef.current = null
+    vodRestorePendingRef.current = false
     resetTranscodeFallback()
   }, [nowPlaying, resetTranscodeFallback])
 
-  // Auto-reconnect: if the whole network dropped (not just this fragment), hls.js's own
-  // retry budget may already be exhausted by the time connectivity returns. Force a fresh
-  // attach once we're back online rather than leaving a dead player up.
+  // Auto-reconnect with backoff (0.30.0): if the whole network dropped (not just this
+  // fragment), hls.js's own retry budget may already be exhausted by the time connectivity
+  // returns, so force a fresh attach once we're back online. But the old version bumped the
+  // reload the instant the link came up — and if the *provider* was still down (connectivity
+  // returning before the internet genuinely worked, or a flapping link), that one reload died
+  // too and nothing ever retried. Now each offline period gets up to five attempts, spaced
+  // 2s→4s→8s (capped); once the budget is spent, auto-retry stops and an in-player Reconnect
+  // button takes over. A solid 30s of uninterrupted playback retires the budget so the next
+  // outage starts fresh (see cleanPlaybackSinceRef, kept current by handlePlaying/handleWaiting
+  // in the playback effect).
   useEffect(() => {
     if (!isOnline) {
       wasOffline.current = true
-    } else if (wasOffline.current) {
-      wasOffline.current = false
-      if (nowPlaying) setReloadTick((t) => t + 1)
+      return
     }
+    if (!wasOffline.current) return
+    wasOffline.current = false
+    if (!nowPlaying) return
+    // Returning online after good playback: an old budget from a previous offline period may
+    // still be standing — retire it before counting this period's first attempt.
+    if (cleanPlaybackSinceRef.current !== null && shouldResetReconnectAttempts(Date.now() - cleanPlaybackSinceRef.current)) {
+      reconnectAttemptsRef.current = 0
+      setReconnectExhausted(false)
+    }
+    const attempt = reconnectAttemptsRef.current + 1
+    const delay = nextReconnectDelayMs(attempt)
+    if (delay === null) {
+      // Budget spent: stop auto-retrying against a provider that is evidently not coming back
+      // on its own, and let the viewer decide when to try again.
+      setReconnectExhausted(true)
+      return
+    }
+    reconnectAttemptsRef.current = attempt
+    const timer = setTimeout(() => {
+      // A VOD/series title reconnects where it left off (0.30.0) — arm the reload-continuity
+      // restore; the position itself is kept current by the watchdog's tick.
+      if (nowPlaying.kind !== 'live') vodRestorePendingRef.current = true
+      setReloadTick((t) => t + 1)
+    }, delay)
+    return () => clearTimeout(timer)
   }, [isOnline, nowPlaying])
 
   // The audio-fix wait for movies/series has no real progress to report — ffmpeg either hasn't
@@ -546,8 +602,12 @@ export function Player(): JSX.Element | null {
       hlsRef.current = null
     }
 
+    let stalledEventSeen = false
     const handleWaiting = (): void => {
       setBuffering(true)
+      // An interruption ends any run of "clean" playback (see cleanPlaybackSinceRef) — the
+      // reconnect budget's 30s reset must be earned by 30 *unbroken* seconds.
+      cleanPlaybackSinceRef.current = null
       // Still recovering — don't let a stretch of genuinely uninterrupted playback earlier
       // in the session forgive an error that's actively recurring right now.
       if (errorResetTimer) {
@@ -555,8 +615,28 @@ export function Player(): JSX.Element | null {
         errorResetTimer = null
       }
     }
+    // `stalled` (0.30.0): the browser's own "the feed stopped while I wanted data" signal —
+    // distinct from `waiting` in that it fires on the *delivery* stopping, and useful to the
+    // watchdog as a hasten signal: when the engine itself says it is stalled, waiting the full
+    // recovery delay buys nothing. Cleared on the next `playing`.
+    const handleStalled = (): void => {
+      stalledEventSeen = true
+      cleanPlaybackSinceRef.current = null
+    }
     const handlePlaying = (): void => {
       setBuffering(false)
+      stalledEventSeen = false
+      if (cleanPlaybackSinceRef.current === null) cleanPlaybackSinceRef.current = Date.now()
+      // A solid stretch of uninterrupted playback retires the reconnect budget (0.30.0) —
+      // whatever the offline period's attempts were fighting is over.
+      if (
+        reconnectAttemptsRef.current > 0 &&
+        cleanPlaybackSinceRef.current !== null &&
+        shouldResetReconnectAttempts(Date.now() - cleanPlaybackSinceRef.current)
+      ) {
+        reconnectAttemptsRef.current = 0
+        setReconnectExhausted(false)
+      }
       // A stretch of real, uninterrupted playback means whatever caused an earlier media or
       // network error is very likely no longer happening — reset both recovery counts so a
       // later, unrelated blip gets its own full set of attempts instead of inheriting counts
@@ -571,7 +651,27 @@ export function Player(): JSX.Element | null {
         networkRetryCount = 0
       }, ERROR_RESET_AFTER_MS)
     }
-    const handleCanPlay = (): void => setBuffering(false)
+    const handleCanPlay = (): void => {
+      setBuffering(false)
+      // The reload-continuity restore (0.30.0): an internal reload of a VOD/series title seeks
+      // back to where the old instance was the moment the new one can play. This is continuity,
+      // not a resume decision — the open-time resume chip machinery stays the only thing that
+      // ever asks the viewer anything.
+      if (vodRestorePendingRef.current) {
+        vodRestorePendingRef.current = false
+        const position = vodRestorePositionRef.current
+        if (position !== null && video.seekable.length > 0) {
+          const target = clampRestorePosition(position, video.seekable.start(0), video.seekable.end(video.seekable.length - 1))
+          if (target !== null) {
+            try {
+              video.currentTime = target
+            } catch {
+              // Not seekable in practice — play from the default position.
+            }
+          }
+        }
+      }
+    }
     // A channel the user picked as Live TV can come back as a *finished* playlist, and this app's
     // own provider does exactly that on many channels — measured 2026-09-21: three unrelated
     // channels (Sky News, BBC One HD, Sky Sports Main Event UHD) all answered with the same
@@ -616,6 +716,7 @@ export function Player(): JSX.Element | null {
       void video.play().catch(() => setReloadTick((t) => t + 1))
     }
     video.addEventListener('waiting', handleWaiting)
+    video.addEventListener('stalled', handleStalled)
     video.addEventListener('playing', handlePlaying)
     video.addEventListener('canplay', handleCanPlay)
     video.addEventListener('ended', handleEnded)
@@ -632,7 +733,7 @@ export function Player(): JSX.Element | null {
     // exactly the reload-resets-the-ladder bug stallLadderRef exists to fix. A fresh attach's
     // first signature update happens naturally on the first watchdog tick either way.
     if (ladder.lastProgressAt === 0) {
-      ladder.lastSignature = playbackSignature(video.readyState, video.currentTime)
+      ladder.lastSignature = playbackSignature(video.readyState, video.currentTime, bufferedEndOf(video))
       ladder.lastProgressAt = Date.now()
     }
     // Reloads of the SAME source (the ladder's own reload, a network-reconnect reload) must not
@@ -646,11 +747,16 @@ export function Player(): JSX.Element | null {
       // the media, or the audio-fix wait (which pauses the element on purpose) — resets the clock
       // rather than counting as a stall.
       if (video.paused || video.seeking || video.ended) {
-        ladder.lastSignature = playbackSignature(video.readyState, video.currentTime)
+        ladder.lastSignature = playbackSignature(video.readyState, video.currentTime, bufferedEndOf(video))
         ladder.lastProgressAt = now
         return
       }
-      const signature = playbackSignature(video.readyState, video.currentTime)
+      // The VOD reload-continuity stash (0.30.0): refreshed every tick while the title actually
+      // plays, so whichever code path triggers an internal reload next has a fresh position.
+      if (nowPlaying.kind !== 'live' && !video.seeking && video.currentTime > 0.5) {
+        vodRestorePositionRef.current = video.currentTime
+      }
+      const signature = playbackSignature(video.readyState, video.currentTime, bufferedEndOf(video))
       if (signature !== ladder.lastSignature) {
         // The first movement after our own nudge/reload is not evidence of recovery — it is the
         // nudge's +0.1s or the reload's reposition (see stallLadderRef's ignoreNextProgress).
@@ -667,11 +773,34 @@ export function Player(): JSX.Element | null {
         ladder.recoveries = 0
         return
       }
-      if (now - ladder.lastProgressAt < STALL_RECOVERY_AFTER_MS) return
-      const action = nextStallAction(ladder.recoveries)
+      // How long to wait before acting depends on WHY it looks stuck (0.30.0): a frozen picture
+      // with data still buffered ahead (or the browser's own `stalled`) is waiting on nothing —
+      // half patience. A frozen picture with the buffer drained may simply be waiting for data.
+      const bufferAhead = Math.max(0, bufferedEndOf(video) - video.currentTime)
+      const recoveryDelayMs = stallRecoveryDelayMs(bufferAhead, stalledEventSeen, STALL_RECOVERY_AFTER_MS)
+      if (now - ladder.lastProgressAt < recoveryDelayMs) return
+      const action = nextStallAction(ladder.recoveries, 2, nowPlaying.kind === 'live')
       ladder.recoveries += 1
       ladder.lastProgressAt = now
-      if (action === 'nudge') {
+      if (action === 'liveEdge') {
+        // Live's cheapest-first rung (0.30.0): a live channel that stopped progressing is most
+        // often just parked behind the live edge — jump to it, which costs nothing (no reload,
+        // no provider connection) and fixes exactly that. Half a second shy of the true edge so
+        // the playhead doesn't land on an unfetched boundary; startLoad re-arms fetching either
+        // way. The seek itself moves the playhead, so swallow one signature change like the
+        // nudge does — if the feed is genuinely moving again the ladder resets on the next tick.
+        ladder.ignoreNextProgress = true
+        const edge = video.seekable.length > 0 ? video.seekable.end(video.seekable.length - 1) : NaN
+        if (Number.isFinite(edge)) {
+          try {
+            video.currentTime = Math.max(video.currentTime, edge - 0.5)
+          } catch {
+            // Not seekable — the nudge rung (next attempt) still runs startLoad.
+          }
+        }
+        hlsRef.current?.startLoad()
+        void video.play().catch(() => {})
+      } else if (action === 'nudge') {
         // Via the ref, not the local `hls`: this watchdog is registered for every source (a
         // native VOD stream has no instance at all), and hlsRef.current is the live instance
         // whenever there is one.
@@ -684,6 +813,13 @@ export function Player(): JSX.Element | null {
         }
       } else if (action === 'reload') {
         ladder.ignoreNextProgress = true
+        // Arm the reload-continuity restore (VOD/series only — a live reload rejoins the live
+        // edge, see the liveEdge rung) so the new instance seeks back to this position on
+        // CANPLAY rather than starting the title over.
+        if (nowPlaying.kind !== 'live') {
+          if (video.currentTime > 0.5) vodRestorePositionRef.current = video.currentTime
+          vodRestorePendingRef.current = true
+        }
         setReloadTick((t) => t + 1)
       } else {
         // A live channel that froze solid is, on this provider, most often a remux whose ffmpeg
@@ -1300,6 +1436,7 @@ export function Player(): JSX.Element | null {
 
     return () => {
       video.removeEventListener('waiting', handleWaiting)
+      video.removeEventListener('stalled', handleStalled)
       video.removeEventListener('playing', handlePlaying)
       video.removeEventListener('canplay', handleCanPlay)
       video.removeEventListener('ended', handleEnded)
@@ -2566,6 +2703,25 @@ export function Player(): JSX.Element | null {
           <div className="player-error">No network connection — will resume automatically once you're back online.</div>
         )}
         {playbackError && isOnline && <div className="player-error">{playbackError}</div>}
+        {// The reconnect budget's honest end (0.30.0): after five spaced attempts the player
+        // stops retrying on its own and says so — with the one action that makes sense, a fresh
+        // attach on the viewer's command (which also restores a VOD title to where it was).
+        reconnectExhausted && !playbackError && (
+          <div className="player-error" role="status">
+            Reconnection tried five times and gave up — the provider seems to be down.{' '}
+            <button
+              className="player-resume-chip-action"
+              onClick={() => {
+                reconnectAttemptsRef.current = 0
+                setReconnectExhausted(false)
+                if (nowPlaying.kind !== 'live') vodRestorePendingRef.current = true
+                setReloadTick((t) => t + 1)
+              }}
+            >
+              Reconnect now
+            </button>
+          </div>
+        )}
         {!playbackError && statusNotice && isOnline && (
           <div className="player-error" role="status">{statusNotice}</div>
         )}

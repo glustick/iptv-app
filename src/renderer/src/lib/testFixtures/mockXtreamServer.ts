@@ -29,6 +29,7 @@ export interface MockXtreamServer {
     channelResidue: number
     movieId: number
     seriesId: number
+    channelStallFeed: number
   }
   close: () => Promise<void>
 }
@@ -101,7 +102,12 @@ const ids = {
   // found 2026-10-24 when the --vod-memory verification came back green-but-empty: nothing was
   // wrong, the fixture just never needed the fix).
   movieDolbyId: 202,
-  seriesId: 301
+  seriesId: 301,
+  // A live channel whose playlist window FREEZES for a short while and then advances again
+  // (0.30.0) — the stalled-feed recovery fixture. The freeze is deliberately shorter than the
+  // not-broadcasting detector's 30s window (playlistStall.ts) so the smoke exercises the
+  // playback watchdog's ladder, not the off-air verdict.
+  channelStallFeed: 960
 }
 
 const LIVE_STREAMS = [
@@ -124,7 +130,8 @@ const LIVE_STREAMS = [
   live(920, 'FBL-B1: Arsenal vs Chelsea (Backup) @ 3:00 pm', null, '50'),
   live(930, 'FBL04: Spurs 20:00 Liverpool', null, '40'),
   live(940, 'NFL01: Chiefs vs Ravens @ 8:15 PM', null, '60'),
-  live(950, '401 Sky Sports Main Event HD', null, '40')
+  live(950, '401 Sky Sports Main Event HD', null, '40'),
+  live(ids.channelStallFeed, 'Stall Test Feed', null, '10')
 ]
 
 function live(streamId: number, name: string, epgChannelId: string | null, categoryId: string) {
@@ -175,6 +182,15 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
       res.end(body)
     }
 
+    // Re-arm the stalled-feed fixture's freeze (see stallPlaylist) — the smoke harness calls
+    // this at the start of its stall section so every run gets a fresh 20s freeze regardless of
+    // how long the provider process has been up.
+    if (url.pathname === '/__reset-stall') {
+      stallFirstServedAt = null
+      text('ok', 'text/plain')
+      return
+    }
+
     // Xtream stream paths — the app plays live TV as /live/<user>/<pass>/<id>.m3u8 through its own
     // proxy, so serving the same shape here lets real playback run against the fixture.
     if (url.pathname.startsWith('/live/')) {
@@ -192,6 +208,12 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
       void ensureMedia(variant)
         .then(() => {
           if (name.endsWith('.m3u8')) {
+            // The stall fixture's playlist is computed per request (its window freezes, then
+            // advances) — see stallPlaylist. Every other variant is a static file.
+            if (variant === 'stall') {
+              text(stallPlaylist(), 'application/vnd.apple.mpegurl')
+              return
+            }
             text(readFileSync(join(mediaDir, `${variant}.m3u8`), 'utf8'), 'application/vnd.apple.mpegurl')
             return
           }
@@ -417,7 +439,7 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
   const mediaDir = options.ffmpegPath ? mkdtempSync(join(tmpdir(), 'mock-hls-')) : null
   const mediaReady = new Map<string, Promise<void>>()
   let movieReady: Promise<void> | null = null
-  const ensureMedia = (variant: 'aac' | 'dolby'): Promise<void> => {
+  const ensureMedia = (variant: 'aac' | 'dolby' | 'stall'): Promise<void> => {
     if (!options.ffmpegPath || !mediaDir) return Promise.resolve()
     let pending = mediaReady.get(variant)
     if (!pending) {
@@ -428,7 +450,9 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
             '-hide_banner', '-loglevel', 'error',
             '-f', 'lavfi', '-i', 'testsrc=size=640x360:rate=25',
             '-f', 'lavfi', '-i', 'sine=frequency=440',
-            '-t', '6',
+            // The stalled-feed fixture needs enough media to keep advancing for the better part
+            // of a minute after its freeze; the others only ever need a few seconds.
+            '-t', variant === 'stall' ? '60' : '6',
             '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-g', '25',
             '-c:a', variant === 'dolby' ? 'eac3' : 'aac',
             ...(variant === 'dolby' ? ['-b:a', '192k'] : []),
@@ -513,8 +537,47 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
 
   /** Which variant a stream id plays — the unmatched-channel id carries the Dolby audio, so the
    * audio-fix fallback can be exercised without disturbing the channels the other checks use. */
-  const variantForStreamId = (streamId: string): 'aac' | 'dolby' =>
-    streamId === String(ids.channelUnmatchedByProviderGuide) ? 'dolby' : 'aac' 
+  const variantForStreamId = (streamId: string): 'aac' | 'dolby' | 'stall' =>
+    streamId === String(ids.channelUnmatchedByProviderGuide)
+      ? 'dolby'
+      : streamId === String(ids.channelStallFeed)
+        ? 'stall'
+        : 'aac'
+
+  // ---- the stalled-feed fixture (0.30.0) -------------------------------------------------------
+  // A live playlist whose window freezes for STALL_FREEZE_MS from its first request and then
+  // advances normally (one segment every 2s), served dynamically rather than from the static
+  // file the other variants use. During the freeze every reload answers the same window — a
+  // perfectly valid playlist, nothing errors, the playhead just runs out of buffered data, which
+  // is exactly the stall the app's watchdog ladder exists to recover from once the window moves
+  // again. The freeze sits below the not-broadcasting detector's 30s span on purpose: this
+  // fixture is the LADDER's test, not the off-air verdict's (that one keeps needing a human
+  // until 0.31.0's auto-resume).
+  // The advancing window is UNBOUNDED: fragment n is served from generated segment n modulo
+  // STALL_SEGMENTS, so the feed never runs out of media and never re-freezes at a tail (the
+  // first version clamped at the last segment and looked off-air again after a minute — the
+  // repro caught it). A GET to /__reset-stall re-arms the freeze for the next run, since a
+  // smoke harness may keep one provider process across many runs.
+  const STALL_FREEZE_MS = 20_000
+  const STALL_SEGMENTS = 30 // 60s of 2s media, generated once, reused modulo
+  const STALL_WINDOW = 6 // segments visible at once
+  let stallFirstServedAt: number | null = null
+  const stallPlaylist = (): string => {
+    if (stallFirstServedAt === null) stallFirstServedAt = Date.now()
+    const elapsed = Date.now() - stallFirstServedAt
+    const advancing = Math.max(0, Math.floor((elapsed - STALL_FREEZE_MS) / 2000))
+    const lines = [
+      '#EXTM3U',
+      '#EXT-X-VERSION:3',
+      '#EXT-X-TARGETDURATION:2',
+      `#EXT-X-MEDIA-SEQUENCE:${advancing}`,
+      // No #EXT-X-ENDLIST: this is a live window, even while frozen.
+    ]
+    for (let i = 0; i < STALL_WINDOW; i++) {
+      lines.push('#EXTINF:2.0,', `stall${(advancing + i) % STALL_SEGMENTS}.ts`)
+    }
+    return lines.join('\n') + '\n'
+  }
 
   await new Promise<void>((resolve) => server.listen(options.port ?? 0, '127.0.0.1', resolve))
   const { port } = server.address() as AddressInfo

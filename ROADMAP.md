@@ -231,6 +231,55 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.30.0** the stall ladder, upgraded — four changes aimed at one thing: a stream that stalls
+  should recover itself, cheaply and in the right order.
+  **Live-edge rejoin, the new cheapest-first rung.** A live channel that stops progressing is
+  most often just parked behind the live edge — a DVR window that slid, a brief feed gap the
+  player never chased — so the ladder's first action for live content is now a jump back to the
+  edge (seek half a second shy of `seekable.end()`, re-arm the loader, play), which costs no
+  reload and no provider connection. Only if the playhead still refuses to move does it climb
+  the old nudge → reload → remux → give-up sequence, which stays byte-identical for VOD (no
+  live edge to rejoin there). The seek itself moves the playhead, so exactly one signature
+  change is swallowed like the nudge's — the rung must not declare victory off its own seek.
+  **Faster triage.** The playback signature now carries a quantised buffer-ahead component (a
+  frozen picture WITH data buffered — a render-side wedge — is a different problem from a frozen
+  picture with the buffer drained), a `stalled` listener was added beside `waiting`, and either
+  signal halves the watchdog's patience from 10s to 5s: when the engine itself says it is
+  stalled, waiting buys nothing. Buffer growth also counts as movement now — data arriving is
+  not a stall.
+  **Reconnect backoff and budget.** Coming back online used to bump an immediate full re-attach,
+  once — if the provider was still down, the player died until the next manual channel pick.
+  The reconnect now spaces attempts 2s→4s→8s (capped), at most five per offline period, then
+  stops and says so, with an in-player **Reconnect now** button; 30 seconds of unbroken
+  playback retires the budget so the next outage starts fresh.
+  **VOD position survives internal reloads.** The watchdog's ticks continuously stash the
+  title's `currentTime`; any internal reload (ladder, reconnect) arms a restore that seeks the
+  new instance there on CANPLAY, clamped into the new seekable range — continuity, not a resume
+  decision, so the resume chip stays out of it. Live reloads rejoin the live edge instead.
+  **The proof is a new fixture:** the mock provider gained a `Stall Test Feed` whose playlist
+  window freezes for 20s from its first request and then advances again (unbounded — segment n
+  is generated-media n mod 30, so the feed never runs out and never re-freezes at a tail; a
+  `/__reset-stall` route re-arms the freeze per run). The smoke plays it, sits through the
+  freeze, and asserts the picture starts moving again on its own — 2.4s → 26.5s across the
+  freeze, zero user action, zero surfaced errors. The freeze sits BELOW the not-broadcasting
+  detector's 30s span on purpose: this fixture is the ladder's test; the off-air verdict's
+  auto-resume is the next release's job.
+  **One harness bug found along the way, worth the record:** the stall section's trailing
+  Escape plus the next section's own Escape closed the channel *preview* — and the Live TV
+  grid's rows live inside that preview panel, so every later row click silently no-opped
+  against "Loading channels…" (zero rows). The section now leaves its player for the next
+  section's single Escape to stop, with a comment pinning the reason. Also fixed en route: the
+  fixture's first version clamped its window at the last generated segment, which re-froze the
+  feed after a minute and falsely tripped the off-air detector in a standalone repro.
+  866 tests (+13: the live-edge rung's order live vs VOD, the halved patience, the
+  buffer-aware signature, the restore clamp, the backoff schedule/budget/reset; the
+  integration test's catalogue counts grew by the new fixture channel). Typecheck and lint
+  clean. **GUI smoke 119/119** on a locally-built bundle (3 new checks: the stalled feed starts
+  playing, recovers by itself once the window resumes, and surfaces no playback error).
+  **Not verified interactively:** the reconnect budget and the VOD reload-restore against a
+  real provider outage — both are unit-covered and the fixture exercises the ladder itself, but
+  no real offline period was driven.
+
 - **0.29.0** record live TV to disk. One ffmpeg per recording reads the channel's own stream URL
   and writes an HLS **event** playlist (`-c:v copy` video, audio remuxed to AAC like the transcode
   fallback, `-re` input pacing for the same firehose reasoning, 6s segments, nothing ever evicted)
