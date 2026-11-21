@@ -49,6 +49,11 @@ export function MultiViewChannelPicker(): JSX.Element | null {
   const clockFormat = useAppStore((s) => s.settings.clockFormat)
   const assignMultiViewChannel = useAppStore((s) => s.assignMultiViewChannel)
   const cancelPickingMultiViewSlot = useAppStore((s) => s.cancelPickingMultiViewSlot)
+  // Whether the slot being picked for already has a channel (the ⇄ path, 0.32.0): assigning
+  // over a filled slot replaces it in place, and the title should say that's what's happening.
+  const existingChannel = useAppStore((s) =>
+    s.multiViewPickingSlot === null ? null : s.multiViewSlots[s.multiViewPickingSlot]
+  )
   const isChannelHidden = useAppStore((s) => s.isChannelHidden)
   const hiddenChannelKeysForCount = useAppStore((s) => s.settings.hiddenChannelKeys)
   const showHiddenLiveChannels = useAppStore((s) => s.showHiddenLiveChannels)
@@ -114,7 +119,11 @@ export function MultiViewChannelPicker(): JSX.Element | null {
     <div className="modal-overlay" onClick={cancelPickingMultiViewSlot}>
       <div className="modal-card multiview-picker-card" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h2>Choose a channel for Screen {pickingSlot + 1}</h2>
+          <h2>
+            {existingChannel
+              ? `Replace Screen ${pickingSlot + 1}'s channel`
+              : `Choose a channel for Screen ${pickingSlot + 1}`}
+          </h2>
           <button className="modal-close" onClick={cancelPickingMultiViewSlot} title="Cancel">
             ✕
           </button>

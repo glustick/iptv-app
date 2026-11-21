@@ -998,6 +998,117 @@ async function main() {
   await sleep(600)
   await check('the picker closes', '!document.querySelector(".multiview-picker-card")', 8000)
 
+  // --- Multi-View: swap-in-place, and auto-release with Undo at the single-connection ceiling
+  // (0.32.0). The fixture's user_info is the single-connection shape, so after one tile is
+  // filled the empty tile's "+ Add Channel" is genuinely gated. The ⇄ path is checked first
+  // (fill tile 1, swap its channel in place, tile count unchanged), then the gated path: "Play
+  // here instead" stops the silent tile, opens the picker on the empty slot, and the toolbar
+  // note's Undo puts the stopped channel back once the picker is cancelled.
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('button')].find((b) => /Add Channel/.test(b.textContent))?.click() || true`
+  )
+  await sleep(1200)
+  await evaluate(
+    cdp,
+    `(() => { const s = document.querySelector('.multiview-picker-card select'); if (s) { s.value = ''; s.dispatchEvent(new Event('change', { bubbles: true })) } })()`
+  )
+  await check(
+    'a category row is pickable in the picker',
+    `document.querySelectorAll('.multiview-picker-card button.epg-row-channel').length > 0`,
+    30000
+  )
+  const firstTileName = String(
+    await evaluate(
+      cdp,
+      `document.querySelector('.multiview-picker-card .epg-row-channel-name')?.innerText || ''`
+    )
+  ).trim()
+  await evaluate(
+    cdp,
+    `document.querySelector('.multiview-picker-card button.epg-row-channel')?.click() || true`
+  )
+  await sleep(1200)
+  await check(
+    'picking a channel fills one tile with that channel',
+    `document.querySelectorAll('.multiview-tile-name').length === 1 && document.querySelector('.multiview-tile-name')?.textContent === ${JSON.stringify(firstTileName)}`,
+    10000
+  )
+  // ⇄ on the filled tile reopens the picker for THAT slot, and the title says it replaces. The
+  // picker deliberately reopens on favourites every time, so point it at All categories again
+  // before looking for a second row to pick.
+  await click('.multiview-tile-change')
+  await sleep(1200)
+  await check('the swap button reopens the picker', '!!document.querySelector(".multiview-picker-card")')
+  await check(
+    "the picker title says it is replacing the tile's channel",
+    `/Replace Screen 1/.test(document.querySelector('.multiview-picker-card h2')?.innerText || '')`
+  )
+  await evaluate(
+    cdp,
+    `(() => { const s = document.querySelector('.multiview-picker-card select'); if (s) { s.value = ''; s.dispatchEvent(new Event('change', { bubbles: true })) } })()`
+  )
+  await check(
+    'a second row is pickable for the swap',
+    `document.querySelectorAll('.multiview-picker-card button.epg-row-channel').length > 1`,
+    30000
+  )
+  const secondTileName = String(
+    await evaluate(
+      cdp,
+      `[...document.querySelectorAll('.multiview-picker-card .epg-row-channel-name')][1]?.innerText || ''`
+    )
+  ).trim()
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('.multiview-picker-card button.epg-row-channel')][1]?.click() || true`
+  )
+  await sleep(1200)
+  await check(
+    'picking a different channel replaces the tile in place (count unchanged, new name shown)',
+    `document.querySelectorAll('.multiview-tile-name').length === 1 && document.querySelector('.multiview-tile-name')?.textContent === ${JSON.stringify(secondTileName)}`,
+    10000
+  )
+  // The gated path: the empty tile offers "Play here instead" instead of a dead-end refusal.
+  await check(
+    'the empty tile explains the single-connection ceiling',
+    `!!document.querySelector('.multiview-tile-blocked')`
+  )
+  await check(
+    'the empty tile offers to play here instead',
+    `[...document.querySelectorAll('.multiview-tile-blocked button')].some((b) => /Play here instead/.test(b.textContent))`
+  )
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('.multiview-tile-blocked button')].find((b) => /Play here instead/.test(b.textContent))?.click() || true`
+  )
+  await sleep(1200)
+  await check(
+    'the toolbar names the stopped channel',
+    `!!document.querySelector('.multiview-release-note') && (document.querySelector('.multiview-release-note')?.innerText || '').includes(${JSON.stringify(secondTileName)})`
+  )
+  await check('the toolbar offers Undo while the freed slot is empty', '!!document.querySelector(".multiview-release-undo")')
+  await check(
+    'the picker opens on the empty slot to choose the replacement',
+    `/Choose a channel for Screen 2/.test(document.querySelector('.multiview-picker-card h2')?.innerText || '')`
+  )
+  // The modal overlay covers the toolbar, so Undo is only reachable once the picker is closed —
+  // cancelling is exactly the "changed my mind" path Undo exists for.
+  await click('.multiview-picker-card .modal-close')
+  await sleep(800)
+  await check('cancelling the picker leaves the freed slot empty', '!document.querySelector(".multiview-picker-card") && document.querySelectorAll(".multiview-tile-name").length === 0', 8000)
+  await click('.multiview-release-undo')
+  await sleep(800)
+  await check(
+    'Undo puts the stopped channel back in its own tile',
+    `document.querySelectorAll('.multiview-tile-name').length === 1 && document.querySelector('.multiview-tile-name')?.textContent === ${JSON.stringify(secondTileName)} && !document.querySelector('.multiview-release-note')`,
+    8000
+  )
+  // Leave the grid empty for the sections that follow.
+  await click('.multiview-tile-remove')
+  await sleep(600)
+  await check('the grid is empty again', 'document.querySelectorAll(".multiview-tile-name").length === 0', 8000)
+
   // The My Categories manager, and — since both were real bugs once — that Escape closes it and
   // that it opens on the tab for the section it was launched from.
   await click('.my-categories-manage')

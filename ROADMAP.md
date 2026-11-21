@@ -231,6 +231,39 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.32.0** the multi-view round — two changes that make a single-connection account's grid
+  usable without a clear-first ritual.
+  **Swap in place (⇄).** Every filled tile gains a ⇄ button that reopens the channel picker for
+  THAT slot; picking replaces the channel in place — tile position, which tile is audible, and
+  layout all stay untouched (the store's assign action always could overwrite a filled slot;
+  there was just no button that tried). The picker's title says "Replace Screen N's channel"
+  when the slot is already filled, so the overwrite is announced, not silent. Changing a tile's
+  channel is no longer remove → re-pick → re-find your place. **Auto-release at the ceiling,
+  with Undo.** The empty tile's answer to "this account only allows 1 connection" was a dead-end
+  paragraph; it now says which tile is using the connection and offers **Play here instead**:
+  that stops the grid's idlest SILENT tile (never the audible one — sound is the clearest sign
+  someone is watching that tile; the desktop tracks no per-tile idle time like the web sibling's
+  connection ledger, so audio is the honest proxy, with lowest slot index as the tie-break —
+  see `lib/connectionRelease.ts`), opens the picker on the empty slot, and shows a dismissible
+  toolbar note naming the stopped channel with an **Undo** that puts it back — live only while
+  the freed slot is still empty, because assigning something else there first is the viewer's
+  own statement. When the only filled tile is the audible one there is nothing honest to stop,
+  and the tile falls back to the sentence alone. Ported in design from the web repo's
+  v0.107/v0.113 connectionRelease, adapted to the desktop's state (no ledger, undo state local
+  to the MultiView component since slots deliberately outlive the tab but an undo offer should
+  not). The mock provider's user_info is now the single-connection shape (`max_connections: '1'`)
+  so the smoke exercises the real gated path; the provider enforces nothing itself, so no other
+  harness behaviour changes. 875 tests (9 new: the release planner's never-audible/tie-break/
+  zero-filled/ceiling rules, the candidate builder, and assign-over-filled in the store).
+  Typecheck and lint clean. **GUI smoke 136/136** on a locally-built bundle (14 new checks: the
+  ⇄ path — picker reopens for the slot, title says replacing, tile count unchanged with the new
+  name — and the gated path — Play here instead → toolbar note naming the stopped channel →
+  Undo restores it after the picker is cancelled). **Not verified interactively:** real
+  single-connection provider behaviour (the
+  standing caveat — the release path is proven against the fixture, never a provider that
+  actually refuses a second connection), and the undo window's real-world feel (the offer dies
+  as soon as the freed slot refills, by design).
+
 - **0.31.0** the dead feed, handled honestly — the off-air verdict stops being a dead end.
   **Auto-resume from off air.** A not-broadcasting verdict used to pause everything and wait for
   a human. The message now says what actually happens: *checking every 30 seconds and resuming

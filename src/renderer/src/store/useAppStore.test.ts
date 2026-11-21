@@ -244,6 +244,18 @@ describe('Multi-View', () => {
     expect(useAppStore.getState().multiViewPickingSlot).toBeNull()
   })
 
+  it('assigning over a filled slot replaces it in place, leaving other slots untouched', () => {
+    useAppStore.setState({ multiViewSlots: [channelA, channelB] })
+
+    useAppStore.getState().startPickingMultiViewSlot(0)
+    const channelC = { stream_id: 3, name: 'Channel C' } as unknown as LiveStream
+    useAppStore.getState().assignMultiViewChannel(0, channelC)
+
+    // Position 0 swapped, position 1 retained, picker closed.
+    expect(useAppStore.getState().multiViewSlots).toEqual([channelC, channelB])
+    expect(useAppStore.getState().multiViewPickingSlot).toBeNull()
+  })
+
   it('cancelling the picker leaves every slot untouched', () => {
     useAppStore.getState().startPickingMultiViewSlot(0)
     useAppStore.getState().cancelPickingMultiViewSlot()

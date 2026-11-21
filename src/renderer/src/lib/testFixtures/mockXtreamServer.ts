@@ -336,7 +336,10 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
           is_trial: '0',
           active_cons: '1',
           created_at: '0',
-          max_connections: '2'
+          // Single-connection shape (0.32.0): the smoke run needs the Multi-View ceiling —
+          // "Play here instead" and its Undo — exercised against the real gated path, and the
+          // provider itself enforces nothing, so nothing else in the harness changes with it.
+          max_connections: '1'
         },
         server_info: {
           url: '127.0.0.1',

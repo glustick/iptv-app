@@ -662,6 +662,8 @@ interface AppState {
   // needs to explain *why* a slot can't be filled right now.
   startPickingMultiViewSlot: (slotIndex: number) => void
   cancelPickingMultiViewSlot: () => void
+  // Assigns (or replaces — 0.32.0's ⇄ path) the channel in one slot. Assigning over a filled
+  // slot overwrites it in place: position, layout, and which tile is audible are untouched.
   assignMultiViewChannel: (slotIndex: number, channel: LiveStream) => void
   clearMultiViewSlot: (slotIndex: number) => void
   toggleHiddenLiveChannel: (streamId: number, playlistId?: string | null) => void

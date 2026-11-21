@@ -42,7 +42,7 @@ describe('Xtream client + EPG pipeline against a synthetic provider', () => {
   it('authenticates and reports the account', async () => {
     const auth = await client.authenticate()
     expect(auth.user_info.auth).toBe(1)
-    expect(auth.user_info.max_connections).toBe('2')
+    expect(auth.user_info.max_connections).toBe('1')
     expect(auth.server_info.timezone).toBe('UTC')
   })
 

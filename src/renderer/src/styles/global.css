@@ -3309,6 +3309,48 @@ body.resizing-col {
   text-align: center;
   max-width: 80%;
   margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.multiview-tile-blocked p {
+  margin: 0;
+}
+
+.multiview-release-note {
+  color: var(--text-dim);
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.multiview-release-undo {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 2px 8px;
+}
+
+.multiview-release-undo:hover {
+  border-color: var(--accent);
+}
+
+.multiview-release-dismiss {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: 2px 4px;
+}
+
+.multiview-release-dismiss:hover {
+  color: var(--text);
 }
 
 .multiview-tile-video {
@@ -3341,6 +3383,18 @@ body.resizing-col {
 
 .multiview-tile-mute-badge {
   font-size: 13px;
+}
+
+.multiview-tile-change {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 14px;
+  padding: 2px 4px;
+}
+
+.multiview-tile-change:hover {
+  color: var(--accent);
 }
 
 .multiview-tile-remove {
