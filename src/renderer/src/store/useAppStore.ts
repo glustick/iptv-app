@@ -71,6 +71,7 @@ import { addStreamIds, kindOf, moveItem, removeStreamId } from '../lib/customCat
 import { shouldWarnOnVpnDisconnect } from '../lib/vpnStatus'
 import { createReminder, reminderId, splitDueReminders, type EpgReminder } from '../lib/reminders'
 import { rememberLiveChannel, type PreviousLiveChannel } from '../lib/previousChannel'
+import { findScheduleConflict } from '../lib/recordingConflicts'
 import { loadLastViewMode, saveLastViewMode } from '../lib/lastView'
 
 /** One connected playlist: the saved profile it came from, its own client, and its own status. */
@@ -2520,6 +2521,23 @@ export const useAppStore = create<AppState>((set, get) => ({
       ? playlists.find((playlist) => playlist.profileId === channel.playlistId)?.client ?? client
       : client
     if (!source) return
+    // 0.34.0: if another SCHEDULED recording's air window overlaps this one, say so before
+    // scheduling — the account is single-connection, so both firing means one of them loses the
+    // connection. Advisory only (window.confirm, like the tab's own confirms): the app never
+    // silently refuses a recording, so OK still schedules both and the loser is whatever the
+    // single-connection arbitration at fire time decides.
+    const conflict = findScheduleConflict(
+      get().recordings,
+      Number(program.start_timestamp) * 1000,
+      Number(program.stop_timestamp) * 1000
+    )
+    if (conflict) {
+      const ok = window.confirm(
+        `This overlaps the scheduled recording of "${conflict.programmeTitle ?? conflict.channelName}". ` +
+          'Both will still be attempted, but they share a single connection — the later one may win it and cut the other short.\n\nSchedule anyway?'
+      )
+      if (!ok) return
+    }
     try {
       await window.api?.recordings?.schedule({
         programmeTitle: program.title,

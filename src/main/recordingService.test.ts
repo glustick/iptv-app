@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import type { ServerResponse } from 'http'
@@ -206,6 +206,50 @@ describe('index persistence', () => {
     expect(parsed.version).toBe(1)
     expect(parsed.entries[0].id).toBe(entry.id)
     expect((await service.list()).map((e) => e.id)).toEqual([entry.id])
+  })
+
+  it('schedule() writes the guide air window (startAt/endAt) into the index entry', async () => {
+    // Injected timer queue so schedule() arms nothing real (stopAll in afterEach clears it).
+    const service = makeService({
+      setTimeoutFn: (() => 1 as unknown as ReturnType<typeof setTimeout>) as unknown as typeof setTimeout
+    })
+    const startAt = 4102444800000
+    const endAt = startAt + 30 * 60 * 1000
+    const entry = await service.schedule({
+      programmeTitle: 'The Programme',
+      channelKey: '42',
+      channelName: 'Test TV',
+      sourceUrl: 'irrelevant',
+      startAt,
+      endAt
+    })
+    expect(entry.startAt).toBe(startAt)
+    expect(entry.endAt).toBe(endAt)
+    const listed = (await service.list()).find((e) => e.id === entry.id)!
+    expect(listed.startAt).toBe(startAt)
+    expect(listed.endAt).toBe(endAt)
+    const parsed = JSON.parse(readFileSync(join(entry.dir, '..', 'recordings.json'), 'utf8'))
+    expect(parsed.entries[0].startAt).toBe(startAt)
+    expect(parsed.entries[0].endAt).toBe(endAt)
+  })
+
+  it('loads a pre-0.34 index whose scheduled entries carry no startAt/endAt (no air time, no failure)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'allisoniptv-recordings-'))
+    const legacyScheduled = {
+      id: 'old-sch',
+      channelKey: '42',
+      channelName: 'Test TV',
+      programmeTitle: 'Old Fixture',
+      startedAt: 4102444800000,
+      status: 'scheduled',
+      dir: join(dir, 'old-sch')
+    }
+    writeFileSync(join(dir, 'recordings.json'), JSON.stringify({ version: 1, entries: [legacyScheduled] }), 'utf8')
+    const service = makeService({ recordingsDir: dir })
+    const entries = await service.list()
+    expect(entries.map((e) => e.id)).toEqual(['old-sch'])
+    expect(entries[0].startAt).toBeUndefined()
+    expect(entries[0].endAt).toBeUndefined()
   })
 })
 

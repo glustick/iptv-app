@@ -13,6 +13,10 @@ export interface RecordingEntryPreload {
   status: 'scheduled' | 'recording' | 'done' | 'partial' | 'failed'
   bytes?: number
   dir: string
+  // Scheduled entries only (0.34.0): the guide's listed air window, epoch ms. Optional — a
+  // pre-0.34 recordings.json index on disk loads fine without them (no air time shown).
+  startAt?: number
+  endAt?: number
 }
 
 const api = {

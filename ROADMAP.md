@@ -231,6 +231,42 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.34.0** the recordings-honesty round — the Recordings tab stops hiding when a scheduled
+  programme actually airs, and the guide stops scheduling blind over itself.
+  **Air time on scheduled entries.** A scheduled entry in the main process's recordings.json
+  index now carries the guide's listed air window (`startAt`/`endAt`, epoch ms — threaded
+  through recordingService.schedule, the preload DTO and the renderer type). The fields are
+  optional by design: a pre-0.34 index on disk loads unchanged and its scheduled rows simply
+  show no air time (migration-tolerant read, unit-tested against a hand-written legacy index).
+  The Recordings tab's scheduled rows now read "airs 18:30 · in 2h 15m" (`formatAirsIn` in
+  `lib/recordingConflicts.ts`: "any minute now" inside five minutes — the 60s preroll means it
+  genuinely may be starting; bare minutes under an hour; hours-and-minutes under a day; whole
+  days beyond), and the list is upcoming-first — scheduled by air time, then anything
+  recording, then done/partial/failed by recency — so what is ABOUT to happen outranks what
+  already happened.
+  **Overlap warning at schedule time.** Scheduling a programme whose air window overlaps
+  another SCHEDULED entry's now asks first (`findScheduleConflict`, half-open [start,end)
+  intervals, non-scheduled entries ignored — a past recording cannot be un-scheduled): the
+  window.confirm names the conflicting programme and says both will still be attempted and the
+  later one may win the account's single connection. Advisory only, by standing decision: the
+  app never silently refuses a recording, OK schedules both, and the single-connection
+  arbitration at fire time (whichever ffmpeg grabs the connection first) is unchanged.
+  **⏺ tooltip gains the day.** The grid's record-button tooltip already carried the start
+  time; a programme airing beyond today now says which day — "tomorrow 18:30", "Sat 18:30",
+  or the calendar date past a week — because a bare time on a multi-day grid is how the wrong
+  thing gets scheduled. 910 tests (20 new: overlap boundaries and phrasing rounding, the list
+  sort, schedule-writes-air-window plus legacy-index tolerance, the tab's airs line and
+  upcoming-first rendering, and the store's warn-and-still-schedule / refuse paths). Typecheck
+  and lint clean. **GUI smoke 143/143 + 5 new** on a locally-built bundle (the ⏺ tooltip
+  carries the start time; the scheduled fixture programme lists with its "airs · in" line; it
+  sorts first; Cancel removes it, leaving no scheduled residue — the smoke now also clears the
+  persisted recordings index between runs so a crashed run's schedule cannot leak into the
+  next). **Not verified interactively:** the overlap warning's confirm dialog against the real
+  GUI (the fixture guide has one future programme per channel, so no two upcoming programmes
+  overlap; the wording and both paths are unit-covered at the store), and real-provider
+  scheduled recordings remain unverified as they have been since 0.29.0 — the fixture's
+  synthetic guide is still the only guide this has fired against.
+
 - **0.33.0** the programme-search round — the palette's guide search stops being a one-day
   window with indistinguishable results.
   **Range select (Now / 24h / 3d / 7d).** The guide index (0.27.0) indexed the first 48

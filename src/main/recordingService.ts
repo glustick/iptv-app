@@ -34,6 +34,11 @@ export interface RecordingEntry {
   status: RecordingStatus
   bytes?: number
   dir: string
+  // Scheduled entries only (0.34.0): the guide's listed air window, epoch ms. Optional because
+  // pre-0.34 indexes on disk carry scheduled entries without them — they load fine and simply
+  // show no air time. Once the recording fires, startedAt becomes the real start.
+  startAt?: number
+  endAt?: number
 }
 
 export interface RecordingsIndex {
@@ -386,7 +391,9 @@ export function createRecordingService(deps: RecordingServiceDeps): RecordingSer
       programmeTitle: options.programmeTitle,
       startedAt: options.startAt,
       status: 'scheduled',
-      dir: join(recordingsRoot, id)
+      dir: join(recordingsRoot, id),
+      startAt: options.startAt,
+      endAt: options.endAt
     }
     const index = await loadIndex()
     index.entries.unshift(entry)

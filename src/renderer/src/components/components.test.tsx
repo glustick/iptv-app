@@ -687,4 +687,54 @@ describe('RecordingsView', () => {
     expect(removeRecording).toHaveBeenCalledWith('rec-1')
     confirmSpy.mockRestore()
   })
+
+  // 0.34.0: scheduled rows say when they air and how far off that is; the list is upcoming-first.
+  it('shows "airs <time> · in <duration>" on a scheduled entry with an air window', () => {
+    const soon = Date.now() + 2 * 3_600_000 + 15 * 60_000
+    useAppStore.setState({
+      recordings: [recordingEntry({ status: 'scheduled', startedAt: soon, startAt: soon, endAt: soon + 3_600_000 })]
+    })
+    render(<RecordingsView />)
+    expect(screen.getByText(/airs .* · in 2h 15m/)).toBeTruthy()
+  })
+
+  it('falls back to the plain started line for a pre-0.34 scheduled entry with no air window', () => {
+    const when = new Date('2026-11-01T20:00:00').getTime()
+    useAppStore.setState({ recordings: [recordingEntry({ status: 'scheduled', startedAt: when })] })
+    render(<RecordingsView />)
+    expect(screen.queryByText(/airs /)).toBeNull()
+    expect(screen.getByText(/Nov 1/)).toBeTruthy()
+  })
+
+  it('sorts upcoming-first: scheduled by air time, then recording, then finished by recency', () => {
+    const base = Date.now()
+    const idsInDom = (): string[] =>
+      [...document.querySelectorAll('.recordings-row-name')].map((n) => (n.textContent ?? '').split(' · ')[0])
+    useAppStore.setState({
+      recordings: [
+        recordingEntry({ id: 'done-old', startedAt: base - 3 * 86_400_000, endedAt: base - 3 * 86_400_000 }),
+        recordingEntry({ id: 'rec', status: 'recording', startedAt: base - 3_600_000 }),
+        recordingEntry({
+          id: 'sch-later',
+          status: 'scheduled',
+          programmeTitle: 'Later One',
+          startedAt: base + 5 * 3_600_000,
+          startAt: base + 5 * 3_600_000
+        }),
+        recordingEntry({ id: 'done-new', startedAt: base - 86_400_000, endedAt: base - 86_400_000 }),
+        recordingEntry({
+          id: 'sch-soon',
+          status: 'scheduled',
+          programmeTitle: 'Soon One',
+          startedAt: base + 3_600_000,
+          startAt: base + 3_600_000
+        })
+      ]
+    })
+    render(<RecordingsView />)
+    expect(idsInDom().join('|')).toBe('Soon One|Later One|The Programme|The Programme|The Programme')
+    // And the scheduled rows precede the recording row in the DOM.
+    const rowTexts = [...document.querySelectorAll('.recordings-row')].map((r) => r.textContent ?? '')
+    expect(rowTexts.findIndex((t) => t.includes('Soon One'))).toBeLessThan(rowTexts.findIndex((t) => t.includes('recording')))
+  })
 })

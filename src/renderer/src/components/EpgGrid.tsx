@@ -36,6 +36,21 @@ function formatTime(epochSeconds: string, clockFormat: ClockFormat): string {
   })
 }
 
+// 0.34.0: the ⏺ tooltip's start time, qualified by day — the grid reaches days ahead, and a bare
+// "18:30" on something airing Thursday is the kind of half-truth that schedules the wrong thing.
+// Today keeps the bare time (what "Record … (18:30)" always meant); tomorrow and this week name
+// the day; anything further gets the date.
+function formatStartLabel(epochSeconds: string, clockFormat: ClockFormat): string {
+  const date = new Date(Number(epochSeconds) * 1000)
+  const time = date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: clockFormat === '12h' })
+  const startOfDay = (d: Date): number => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+  const daysAhead = Math.round((startOfDay(date) - startOfDay(new Date())) / 86_400_000)
+  if (daysAhead === 0) return time
+  if (daysAhead === 1) return `tomorrow ${time}`
+  if (daysAhead <= 7) return `${date.toLocaleDateString([], { weekday: 'short' })} ${time}`
+  return `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`
+}
+
 // How many "Also on …" entries the context menu offers before it stops. More playlists than
 // this carrying the same channel is a catalogue oddity, not a menu.
 const MAX_ALSO_ON_ITEMS = 4
@@ -241,7 +256,7 @@ function EpgRow({
                   title={
                     scheduledRecordingOf(channelId, p, recordings)
                       ? `Cancel scheduled recording of ${p.title}`
-                      : `Record ${p.title} (${formatTime(p.start_timestamp, clockFormat)})`
+                      : `Record ${p.title} (starts ${formatStartLabel(p.start_timestamp, clockFormat)})`
                   }
                   aria-label={
                     scheduledRecordingOf(channelId, p, recordings)

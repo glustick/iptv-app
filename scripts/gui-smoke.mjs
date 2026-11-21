@@ -238,6 +238,22 @@ function resetGuideCache() {
 }
 
 /**
+ * Empties the recordings index the app persists between runs (0.34.0 smoke support). The 0.29.0
+ * section records fresh each run anyway, but the scheduled-from-grid section below needs a clean
+ * slate: a previous run's cancelled schedule lingers as a 'failed' row (harmless) and a crashed
+ * run's schedule would linger as 'scheduled' with a stale air time (not harmless — the section
+ * asserts on exactly those rows). The entry directories are left alone; the index is the only
+ * thing the UI reads.
+ */
+function resetRecordingsIndex() {
+  const index = join(dirname(CFG_PATH), 'recordings', 'recordings.json')
+  if (existsSync(index)) {
+    rmSync(index)
+    console.log('cleared the persisted recordings index')
+  }
+}
+
+/**
  * Spawns the app with CDP over `--remote-debugging-pipe` — JSON messages over inherited fds 3/4,
  * no TCP listener — and attaches to the renderer's page, returning the usual { ready, send, close }
  * shape with send() pre-bound to the page session.
@@ -332,7 +348,11 @@ async function spawnAndConnect(appLog) {
 
 async function evaluate(cdp, expression) {
   const res = await cdp.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
-  if (res.result?.exceptionDetails) throw new Error(res.result.exceptionDetails.text)
+  const details = res.result?.exceptionDetails
+  if (details) {
+    const desc = details.exception?.description ?? details.text
+    throw new Error(`page exception in evaluate: ${String(desc).split('\n').slice(0, 3).join(' | ')} — expression: ${expression.slice(0, 160)}`)
+  }
   return res.result?.result?.value
 }
 
@@ -349,6 +369,7 @@ async function main() {
   quitApp()
   resetTestMappings()
   resetGuideCache()
+  resetRecordingsIndex()
   pinSyntheticProfile()
   if (process.argv.includes('--also-on')) enableSecondSyntheticProfile()
   process.on('exit', () => {
@@ -765,6 +786,7 @@ async function main() {
   }
 
   await check('the window renders content', 'document.body.innerText.trim().length > 20')
+
   await check('the provider category is listed in the sidebar', has('Live News'))
   await check('channel matched by EPG id is listed', has('One HD'))
   await check('channel matched through the relaxed tier is listed', has('101 Two HD'))
@@ -1762,6 +1784,53 @@ async function main() {
   )
   await pressEscape()
   await sleep(1200)
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('.tabs .tab')].find((b) => b.textContent.trim() === 'Live TV')?.click() || true`
+  )
+  await sleep(800)
+
+  // --- scheduled recordings (0.34.0) -------------------------------------------------------------
+  // The grid's ⏺ schedules a FUTURE programme (the fixture guide's 'Two's Next' on the pooled
+  // matched Two row starts half an hour out and runs 45 minutes — computed per request by the
+  // mock, so the phrasing below stays inside the 'in <minutes>' band). Unit tests hold the conflict math and the sort; this
+  // holds the parts only the real app has: the guide-to-index threading of the air window, the
+  // Recordings row's 'airs <time> · in <duration>' line, and the cancel that returns the list to
+  // its finished-only state (leaving no scheduled residue for the next run).
+  await check(
+    "the grid's record button for the next programme carries the start time in its tooltip",
+    `[...document.querySelectorAll('.epg-reminder-button')].some((b) => (b.title || '').startsWith("Record Two's Next (starts ") && (b.title || '').length > "Record Two's Next (starts ".length)`,
+    30000
+  )
+  await evaluate(
+    cdp,
+    `(() => { const b = [...document.querySelectorAll('.epg-reminder-button')].find((x) => (x.title || '').startsWith("Record Two's Next")); if (!b) return false; b.click(); return true })()`
+  )
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('.tabs .tab')].find((b) => b.textContent.trim() === 'Recordings')?.click() || true`
+  )
+  await check(
+    "the scheduled entry lists with its air time ('airs <time> · in <duration>')",
+    `[...document.querySelectorAll('.recordings-row')].some((r) => r.textContent.includes("Two's Next") && r.textContent.includes('scheduled') && r.textContent.includes('airs ') && r.textContent.includes(' · in '))`,
+    20000
+  )
+  await check(
+    'the scheduled entry sorts ahead of finished ones',
+    `(() => { const rows = [...document.querySelectorAll('.recordings-row')]; const sch = rows.findIndex((r) => r.textContent.includes('scheduled')); return rows.length >= 2 && sch === 0 })()`
+  )
+  // Cancel, and wait for the index push so the list is left without a scheduled row.
+  await evaluate(
+    cdp,
+    `(() => { const b = [...document.querySelectorAll('.recordings-row button')].find((x) => x.textContent.trim() === 'Cancel'); b?.click(); return !!b })()`
+  )
+  await check(
+    'cancelling removes the scheduled row from the list',
+    `![...document.querySelectorAll('.recordings-row')].some((r) => r.textContent.includes('scheduled'))`,
+    15000
+  )
+  // Back to Live TV for the sections below (no trailing Escape — the cheat-sheet section opens
+  // with its own, and a double-Escape would close the channel preview the grid lives in).
   await evaluate(
     cdp,
     `[...document.querySelectorAll('.tabs .tab')].find((b) => b.textContent.trim() === 'Live TV')?.click() || true`

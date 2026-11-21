@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import type { RecordingEntry } from '../lib/types'
+import { formatAirsIn, sortRecordingsForList } from '../lib/recordingConflicts'
 
 function formatBytes(bytes: number | undefined): string {
   if (bytes === undefined) return '—'
@@ -57,7 +58,7 @@ export function RecordingsView(): JSX.Element {
         <h3 className="section-heading">Recordings</h3>
       </div>
       <div className="recordings-list">
-        {recordings.map((entry) => (
+        {sortRecordingsForList(recordings).map((entry) => (
           <div key={entry.id} className="recordings-row">
             <div className="recordings-row-info">
               <span className="recordings-row-name">
@@ -66,7 +67,14 @@ export function RecordingsView(): JSX.Element {
               </span>
               <span className="recordings-row-meta">
                 <span className={statusChipClass(entry.status)}>{entry.status}</span>
-                <span>{formatStartedAt(entry.startedAt)}</span>
+                {entry.status === 'scheduled' && typeof entry.startAt === 'number' ? (
+                  // 0.34.0: a scheduled entry knows its listed air window, so say when it airs
+                  // and how far away that is (entries from a pre-0.34 index have no startAt and
+                  // fall back to the plain startedAt line below).
+                  <span>airs {formatStartedAt(entry.startAt)} · {formatAirsIn(entry.startAt, Date.now())}</span>
+                ) : (
+                  <span>{formatStartedAt(entry.startedAt)}</span>
+                )}
                 <span>{formatBytes(entry.bytes)}</span>
               </span>
             </div>

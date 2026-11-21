@@ -74,6 +74,8 @@ function providerGuideXml(): string {
   <programme start="${xmltvTime(nextStart)}" stop="${xmltvTime(nextEnd)}" channel="one.hd"><title>One's Next</title><desc>The fixture guide's upcoming programme, described so the search palette's snippet line has something honest to show.</desc></programme>
   <programme start="${xmltvTime(nextEnd)}" stop="${xmltvTime(nextEnd + 3600)}" channel="one.hd"><title>One's Weekend Special</title><desc>A programme two slots ahead on the same channel, for the palette's wider ranges.</desc></programme>
   <programme start="${xmltvTime(start)}" stop="${xmltvTime(end)}" channel="two.uk"><title>Two's Show</title></programme>
+  ${'' /* 0.34.0: an upcoming programme on a POOL-matched channel — the id-matched channel's guide slot is overridden by its own short EPG (current-window only), so without this the grid renders no future block anywhere and the ⏺ schedule path has nothing honest to target in the smoke run. Half an hour out like One's Next, so "airs · in <minutes>" phrasing is stable. */}
+  <programme start="${xmltvTime(nextStart)}" stop="${xmltvTime(nextStart + 2700)}" channel="two.uk"><title>Two's Next</title><desc>The fixture guide's upcoming programme on a pool-matched channel, described so it indexes like the others.</desc></programme>
   <programme start="${xmltvTime(start)}" stop="${xmltvTime(end)}" channel="one.news"><title>News at One</title></programme>
 </tv>`
 }

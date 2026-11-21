@@ -2953,4 +2953,75 @@ describe('recordings', () => {
     expect(useAppStore.getState().nowPlaying).toBeNull()
     restoreWindow()
   })
+
+  // 0.34.0: scheduling over an existing SCHEDULED recording's air window is advisory — it names
+  // the conflict (and the single-connection risk) and still schedules when the operator says OK.
+  it('scheduleRecording() warns about an overlapping schedule, and still schedules on OK', async () => {
+    const confirm = vi.fn((_message?: string) => true)
+    const schedule = vi.fn(async () => recordingEntry({ status: 'scheduled' }))
+    ;(globalThis as unknown as { window: { confirm: typeof confirm; api?: unknown } }).window = {
+      confirm,
+      api: { recordings: { schedule, list: async () => [] } }
+    }
+    const now = Date.now()
+    useAppStore.setState({
+      client: recordingClient(),
+      recordings: [
+        recordingEntry({
+          id: 'sch-1',
+          status: 'scheduled',
+          programmeTitle: 'The Earlier One',
+          startedAt: now + 3_600_000,
+          startAt: now + 3_600_000,
+          endAt: now + 2 * 3_600_000
+        })
+      ],
+      primaryPlaylistId: null
+    })
+    const program = {
+      id: 'p1',
+      title: 'The Overlapping One',
+      start_timestamp: String(Math.floor((now + 90 * 60_000) / 1000)),
+      stop_timestamp: String(Math.floor((now + 3 * 3_600_000) / 1000))
+    } as Parameters<ReturnType<typeof useAppStore.getState>['scheduleRecording']>[1]
+    await useAppStore.getState().scheduleRecording(
+      { stream_id: 42, name: 'Test TV' } as Parameters<ReturnType<typeof useAppStore.getState>['scheduleRecording']>[0],
+      program
+    )
+    expect(confirm).toHaveBeenCalledOnce()
+    expect(confirm.mock.calls[0][0]).toContain('The Earlier One')
+    expect(confirm.mock.calls[0][0]).toContain('single connection')
+    expect(schedule).toHaveBeenCalledOnce()
+    delete (globalThis as unknown as { window?: unknown }).window
+  })
+
+  it('scheduleRecording() declines to schedule when the overlap warning is refused', async () => {
+    const confirm = vi.fn((_message?: string) => false)
+    const schedule = vi.fn(async () => recordingEntry({ status: 'scheduled' }))
+    ;(globalThis as unknown as { window: { confirm: typeof confirm; api?: unknown } }).window = {
+      confirm,
+      api: { recordings: { schedule, list: async () => [] } }
+    }
+    const now = Date.now()
+    useAppStore.setState({
+      client: recordingClient(),
+      recordings: [
+        recordingEntry({ status: 'scheduled', startAt: now + 3_600_000, endAt: now + 2 * 3_600_000 })
+      ],
+      primaryPlaylistId: null
+    })
+    const program = {
+      id: 'p1',
+      title: 'The Overlapping One',
+      start_timestamp: String(Math.floor((now + 90 * 60_000) / 1000)),
+      stop_timestamp: String(Math.floor((now + 3 * 3_600_000) / 1000))
+    } as Parameters<ReturnType<typeof useAppStore.getState>['scheduleRecording']>[1]
+    await useAppStore.getState().scheduleRecording(
+      { stream_id: 42, name: 'Test TV' } as Parameters<ReturnType<typeof useAppStore.getState>['scheduleRecording']>[0],
+      program
+    )
+    expect(confirm).toHaveBeenCalledOnce()
+    expect(schedule).not.toHaveBeenCalled()
+    delete (globalThis as unknown as { window?: unknown }).window
+  })
 })
