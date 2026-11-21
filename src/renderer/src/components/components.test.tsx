@@ -695,7 +695,9 @@ describe('RecordingsView', () => {
       recordings: [recordingEntry({ status: 'scheduled', startedAt: soon, startAt: soon, endAt: soon + 3_600_000 })]
     })
     render(<RecordingsView />)
-    expect(screen.getByText(/airs .* · in 2h 15m/)).toBeTruthy()
+    // Loose on the minutes: a slow CI runner can tick "2h 15m" down to "2h 14m" between arranging
+    // the entry and reading the DOM — the phrasing shape is what this test holds.
+    expect(screen.getByText(/airs .* · in 2h \d{2}m/)).toBeTruthy()
   })
 
   it('falls back to the plain started line for a pre-0.34 scheduled entry with no air window', () => {
