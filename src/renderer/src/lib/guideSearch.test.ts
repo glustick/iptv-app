@@ -205,3 +205,113 @@ describe('buildGuideSearchIndex + searchGuideProgrammes', () => {
     expect(searchGuideProgrammes(index, 'cap show', NOW, 5)).toHaveLength(5)
   })
 })
+
+describe('ranges (0.33.0)', () => {
+  // One programme per horizon band: within the day, and two days out.
+  const bandedGuide = (): EpgData =>
+    guide([['one.hd', 'One HD']], {
+      'one.hd': [
+        programme('one.hd', 'Soon Show', NOW.getTime() + HOUR, NOW.getTime() + 2 * HOUR),
+        programme(
+          'one.hd',
+          'Weekend Show',
+          NOW.getTime() + 48 * HOUR,
+          NOW.getTime() + 49 * HOUR
+        )
+      ]
+    })
+
+  function indexFor(range: 'now' | '24h' | '3d' | '7d') {
+    return buildGuideSearchIndex(
+      {
+        liveStreams: [stream(1, 'One HD', 'one.hd')],
+        epgSources: [bandedGuide()],
+        epgSourceLabels: ['provider'],
+        hiddenSourceUrls: [],
+        manualMappings: [],
+        primaryPlaylistId: null,
+        now: NOW
+      },
+      range
+    )
+  }
+
+  it('the 24h range cuts the horizon: a programme two days out is not indexed', () => {
+    expect(searchGuideProgrammes(indexFor('24h'), 'show', NOW).map((h) => h.program.title)).toEqual(['Soon Show'])
+  })
+
+  it('the 3d and 7d ranges reach the weekend', () => {
+    expect(searchGuideProgrammes(indexFor('3d'), 'weekend', NOW).map((h) => h.program.title)).toEqual([
+      'Weekend Show'
+    ])
+    expect(searchGuideProgrammes(indexFor('7d'), 'weekend', NOW).map((h) => h.program.title)).toEqual([
+      'Weekend Show'
+    ])
+  })
+
+  it("'now' keeps 0.27.0's behaviour: no horizon cut, just the 48-entry cap", () => {
+    // The weekend programme is within the first 48 entries, so the default range still finds it —
+    // exactly the pre-0.33.0 behaviour the default preserves.
+    expect(searchGuideProgrammes(indexFor('now'), 'weekend', NOW)).toHaveLength(1)
+  })
+
+  it('the 24h range caps at 48 programmes per channel even when the day holds more', () => {
+    // Fifty 20-minute programmes all start inside the day — the horizon keeps none of them out,
+    // so only the cap can bound the index.
+    const programmes = Array.from({ length: 50 }, (_, i) =>
+      programme('one.hd', `Dense Show ${i}`, NOW.getTime() + (i + 1) * 20 * 60_000, NOW.getTime() + (i + 2) * 20 * 60_000)
+    )
+    const index = buildGuideSearchIndex(
+      {
+        liveStreams: [stream(1, 'One HD', 'one.hd')],
+        epgSources: [guide([['one.hd', 'One HD']], { 'one.hd': programmes })],
+        epgSourceLabels: ['provider'],
+        hiddenSourceUrls: [],
+        manualMappings: [],
+        primaryPlaylistId: null,
+        now: NOW
+      },
+      '24h'
+    )
+    expect(index.entries).toHaveLength(48)
+  })
+})
+
+describe('description snippets (0.33.0)', () => {
+  function hitWithDescription(description?: string) {
+    const index = buildGuideSearchIndex({
+      liveStreams: [stream(1, 'One HD', 'one.hd')],
+      epgSources: [
+        guide([['one.hd', 'One HD']], {
+          'one.hd': [
+            { channelId: 'one.hd', title: 'Described Show', start: new Date(NOW.getTime() + HOUR), stop: new Date(NOW.getTime() + 2 * HOUR), description }
+          ]
+        })
+      ],
+      epgSourceLabels: ['provider'],
+      hiddenSourceUrls: [],
+      manualMappings: [],
+      primaryPlaylistId: null,
+      now: NOW
+    })
+    return searchGuideProgrammes(index, 'described', NOW)[0]
+  }
+
+  it('carries the first line of the description through the index to the hit', () => {
+    expect(hitWithDescription('First line of the write-up.\nSecond line, ignored.')?.descriptionSnippet).toBe(
+      'First line of the write-up.'
+    )
+  })
+
+  it('truncates a long first line at 80 characters', () => {
+    const snippet = hitWithDescription('x'.repeat(120))?.descriptionSnippet
+    expect(snippet).toHaveLength(81) // 80 characters + the ellipsis
+    expect(snippet?.endsWith('…')).toBe(true)
+  })
+
+  it('has no snippet when the description is empty or whitespace', () => {
+    expect(hitWithDescription('')?.descriptionSnippet).toBe('')
+    expect(hitWithDescription('  \n  ')?.descriptionSnippet).toBe('')
+    expect(hitWithDescription(undefined)?.descriptionSnippet).toBe('')
+  })
+})

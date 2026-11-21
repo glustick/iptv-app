@@ -71,7 +71,8 @@ function providerGuideXml(): string {
   <channel id="two.uk"><display-name>Two</display-name></channel>
   <channel id="one.news"><display-name>Channel One News</display-name></channel>
   <programme start="${xmltvTime(start)}" stop="${xmltvTime(end)}" channel="one.hd"><title>One's Show</title></programme>
-  <programme start="${xmltvTime(nextStart)}" stop="${xmltvTime(nextEnd)}" channel="one.hd"><title>One's Next</title></programme>
+  <programme start="${xmltvTime(nextStart)}" stop="${xmltvTime(nextEnd)}" channel="one.hd"><title>One's Next</title><desc>The fixture guide's upcoming programme, described so the search palette's snippet line has something honest to show.</desc></programme>
+  <programme start="${xmltvTime(nextEnd)}" stop="${xmltvTime(nextEnd + 3600)}" channel="one.hd"><title>One's Weekend Special</title><desc>A programme two slots ahead on the same channel, for the palette's wider ranges.</desc></programme>
   <programme start="${xmltvTime(start)}" stop="${xmltvTime(end)}" channel="two.uk"><title>Two's Show</title></programme>
   <programme start="${xmltvTime(start)}" stop="${xmltvTime(end)}" channel="one.news"><title>News at One</title></programme>
 </tv>`

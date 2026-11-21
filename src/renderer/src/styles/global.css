@@ -4326,6 +4326,98 @@ body.resizing-col {
   white-space: nowrap;
 }
 
+/* Programme hits are two lines (0.33.0): title above, description snippet below — the only
+   thing distinguishing two same-titled episodes in a flat list. */
+.search-palette-name-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.search-palette-name-wrap .search-palette-name {
+  flex: 0 0 auto;
+}
+
+.search-palette-desc {
+  font-size: 11px;
+  color: var(--text-dim, #9aa1ad);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The range select (0.33.0) — a segmented row above the programme results it governs. */
+.search-palette-ranges {
+  display: flex;
+  gap: 6px;
+  padding: 6px 18px;
+  border-bottom: 1px solid var(--border, #2a2f3a);
+}
+
+.search-palette-range {
+  padding: 2px 10px;
+  font-size: 11px;
+  border-radius: 10px;
+  border: 1px solid var(--border, #2a2f3a);
+  background: none;
+  color: var(--text-dim, #9aa1ad);
+  cursor: pointer;
+}
+
+.search-palette-range--active {
+  color: #ffa657;
+  border-color: color-mix(in srgb, #ffa657 40%, transparent);
+}
+
+/* Recent programme searches (0.33.0) — chips, one line, empty input only. */
+.search-palette-recents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 18px;
+  border-bottom: 1px solid var(--border, #2a2f3a);
+}
+
+.search-palette-recents-chip {
+  padding: 2px 10px;
+  font-size: 11px;
+  border-radius: 10px;
+  border: 1px solid var(--border, #2a2f3a);
+  background: none;
+  color: var(--text, #e7e9ee);
+  cursor: pointer;
+}
+
+/* The upcoming hit's own reminder bell (0.33.0) — a sibling button inside the option, sitting at
+   the row's right edge beside the note. Mirrors the grid's epg-reminder-button states. */
+.search-palette-results li {
+  position: relative;
+}
+
+.search-palette-bell {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 2px 6px;
+  font-size: 12px;
+  background: none;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.search-palette-bell--set {
+  border-color: color-mix(in srgb, #ffa657 40%, transparent);
+}
+
+/* An upcoming hit's time note yields the right edge to its bell. */
+.search-palette-results li:has(.search-palette-bell) .search-palette-note {
+  padding-right: 36px;
+}
+
 .search-palette-note {
   flex: 0 0 auto;
   font-size: 11px;

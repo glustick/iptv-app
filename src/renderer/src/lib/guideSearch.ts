@@ -16,12 +16,54 @@ import { foldForSearch } from './globalSearch'
 import { channelKey } from './channelIdentity'
 import type { EpgChannelMapping, LiveStream, ShortEpgProgram } from './types'
 
-// How many now-or-future programmes to index per channel. A real guide carries days of listings
-// per channel; the palette answers "what's on / what's coming up", not "what airs Thursday", so
-// the first few dozen entries per channel (roughly the next day or two at a half-hour cadence)
-// cover the question while bounding the index against a 178MB guide. The cap is honest and stated
-// in the roadmap entry rather than hidden.
-const MAX_PROGRAMMES_PER_CHANNEL = 48
+// How many now-or-future programmes to index per channel, and how far ahead to look — both are
+// properties of the RANGE the search is answering, not constants (0.33.0). A real guide carries
+// days of listings per channel (~178MB across ~11,000 channels); "Now" keeps 0.27.0's exact
+// behaviour (the first 48 now-or-future entries per channel, roughly the next day or two at a
+// half-hour cadence, no horizon cut), while the wider ranges raise the horizon AND the cap
+// together so the bounds stay honest at both ends:
+//   - 24h: horizon 24h, cap 48 — a half-hour cadence day is exactly 48 programmes; an hour
+//     cadence channel needs only 24, so 48 covers every real cadence inside one day.
+//   - 3d: horizon 3 days, cap 144 — three of the 24h bounds.
+//   - 7d: horizon 7 days, cap 336 — seven of them. Worst case that is ~3.7M entries across
+//     11,000 channels, which is exactly why the index is built per range (the caller memoizes
+//     on the range; "Now" never pays for the weekend) and why the cap exists at all: most real
+//     guides only carry a few days per channel, and the ones that carry more are trimmed here
+//     rather than allowed to pour a whole week of a whole provider into memory.
+export type GuideSearchRange = 'now' | '24h' | '3d' | '7d'
+
+interface RangeBound {
+  /** Milliseconds ahead of `now` a programme may start; null keeps the original no-cut behaviour. */
+  horizonMs: number | null
+  maxPerChannel: number
+}
+
+const RANGE_BOUNDS: Record<GuideSearchRange, RangeBound> = {
+  now: { horizonMs: null, maxPerChannel: 48 },
+  '24h': { horizonMs: 24 * 3_600_000, maxPerChannel: 48 },
+  '3d': { horizonMs: 3 * 24 * 3_600_000, maxPerChannel: 144 },
+  '7d': { horizonMs: 7 * 24 * 3_600_000, maxPerChannel: 336 }
+}
+
+/** The segmented control's own options, in display order — labels are the palette's wording. */
+export const GUIDE_SEARCH_RANGE_OPTIONS: { id: GuideSearchRange; label: string }[] = [
+  { id: 'now', label: 'Now' },
+  { id: '24h', label: '24h' },
+  { id: '3d', label: '3d' },
+  { id: '7d', label: '7d' }
+]
+
+// The first line of a description, truncated at 80 characters — same-titled episodes are often
+// otherwise indistinguishable in a flat result list. 80 keeps a hit to one readable line even at
+// the palette's width, and the first line alone (not the first 80 chars of the whole paragraph)
+// is what a human scanning results actually compares between two episodes.
+const SNIPPET_MAX = 80
+
+export function descriptionSnippet(description: string | undefined): string {
+  const firstLine = (description ?? '').split('\n').map((line) => line.trim()).find((line) => line.length > 0) ?? ''
+  if (firstLine.length <= SNIPPET_MAX) return firstLine
+  return `${firstLine.slice(0, SNIPPET_MAX).trimEnd()}…`
+}
 
 /** One searchable programme, pre-folded — the index's flat row. */
 export interface GuideSearchEntry {
@@ -51,9 +93,14 @@ export interface GuideSearchIndex {
   entries: GuideSearchEntry[]
 }
 
-export function buildGuideSearchIndex(input: GuideSearchIndexInput): GuideSearchIndex {
+export function buildGuideSearchIndex(
+  input: GuideSearchIndexInput,
+  range: GuideSearchRange = 'now'
+): GuideSearchIndex {
   const { liveStreams, epgSources, epgSourceLabels, hiddenSourceUrls, manualMappings, primaryPlaylistId } = input
   const now = input.now ?? new Date()
+  const { horizonMs, maxPerChannel } = RANGE_BOUNDS[range]
+  const horizonStartMs = horizonMs === null ? Infinity : now.getTime() + horizonMs
   const entries: GuideSearchEntry[] = []
   if (liveStreams.length === 0 || epgSources.length === 0) return { entries }
   // Manual mappings are playlist-scoped exactly the way applyEpgPool scopes them: a mapping only
@@ -85,11 +132,12 @@ export function buildGuideSearchIndex(input: GuideSearchIndexInput): GuideSearch
       if (!programmes?.length) continue
       claimedStreamIds.add(stream.stream_id)
       // xmltvProgrammesToShort already drops everything that has ended — "on now or upcoming" is
-      // its own contract, shared with the grid.
-      for (const program of xmltvProgrammesToShort(programmes, match.channelId, now).slice(
-        0,
-        MAX_PROGRAMMES_PER_CHANNEL
-      )) {
+      // its own contract, shared with the grid. The range's horizon then trims the far end (a
+      // start beyond it can never answer this range's question) before the per-channel cap is
+      // taken from the FRONT, so near programmes are always preferred over distant ones.
+      for (const program of xmltvProgrammesToShort(programmes, match.channelId, now)
+        .filter((program) => Number(program.start_timestamp) * 1000 < horizonStartMs)
+        .slice(0, maxPerChannel)) {
         entries.push({
           foldedTitle: foldForSearch(program.title),
           startMs: Number(program.start_timestamp) * 1000,
@@ -110,6 +158,8 @@ export interface GuideProgrammeHit {
   stopMs: number
   /** On air right now (start <= now < stop) — what a hit does on Enter depends on this. */
   onAir: boolean
+  /** First line of the description, truncated — the only thing distinguishing same-titled episodes. */
+  descriptionSnippet: string
 }
 
 /**
@@ -135,7 +185,8 @@ export function searchGuideProgrammes(
       program: entry.program,
       startMs: entry.startMs,
       stopMs: entry.stopMs,
-      onAir: entry.startMs <= nowMs && nowMs < entry.stopMs
+      onAir: entry.startMs <= nowMs && nowMs < entry.stopMs,
+      descriptionSnippet: descriptionSnippet(entry.program.description)
     })
   }
   hits.sort((a, b) => Number(b.onAir) - Number(a.onAir) || a.startMs - b.startMs)

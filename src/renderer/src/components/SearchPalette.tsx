@@ -4,8 +4,11 @@ import { countByKind, searchAll, type SearchEntry, type SearchHit } from '../lib
 import {
   buildGuideSearchIndex,
   searchGuideProgrammes,
-  type GuideProgrammeHit
+  GUIDE_SEARCH_RANGE_OPTIONS,
+  type GuideProgrammeHit,
+  type GuideSearchRange
 } from '../lib/guideSearch'
+import { loadRecentSearches, recordRecentSearch } from '../lib/recentSearches'
 import type { ClockFormat } from '../lib/types'
 
 /**
@@ -22,6 +25,10 @@ import type { ClockFormat } from '../lib/types'
  * unchanged, and a channel named "News" should not be buried under thirty programmes with "News"
  * in the title. Enter on an on-air programme plays its channel; on an upcoming one it toggles the
  * same reminder the grid's bell sets.
+ *
+ * Since 0.33.0 programme results carry a range (Now / 24h / 3d / 7d — how far ahead the guide
+ * index reaches), a one-line description snippet (same-titled episodes are otherwise identical),
+ * a 🔔 on upcoming hits, and acted-on searches come back as chips on an empty input.
  */
 
 /** What the results list renders and navigates: a catalogue hit or a guide-programme hit. */
@@ -52,10 +59,19 @@ export function SearchPalette(): JSX.Element | null {
   const clockFormat = useAppStore((s) => s.settings.clockFormat)
   const primaryPlaylistId = useAppStore((s) => s.primaryPlaylistId)
   const toggleEpgReminder = useAppStore((s) => s.toggleEpgReminder)
+  const isEpgReminderSet = useAppStore((s) => s.isEpgReminderSet)
+  // Subscribed to for one reason: the bell on a hit reads reminder state at render time, so a
+  // toggle (bell or Enter) must re-render this component — the reminders slice changing is what
+  // does it. Not passed anywhere; reading it is the point.
+  useAppStore((s) => s.epgReminders)
 
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [highlight, setHighlight] = useState(0)
+  // "Now" is the default and every open starts there — the wider ranges are a deliberate ask,
+  // not a sticky habit (and the index a range builds is the range's own cost; see guideSearch).
+  const [range, setRange] = useState<GuideSearchRange>('now')
+  const [recentSearches, setRecentSearches] = useState<string[]>([])
   const inputRef = useRef<HTMLInputElement>(null)
 
   // Commands are part of the same list, so one keystroke reaches both "where is that channel" and
@@ -97,19 +113,23 @@ export function SearchPalette(): JSX.Element | null {
     return [...commands, ...live, ...movies, ...shows]
   }, [commands, liveStreams, vodStreams, series])
 
-  // Built once per guide/catalogue change, never per keystroke — see lib/guideSearch for why that
-  // bound matters against a real 178MB guide. The query below only scans this flat list.
+  // Built once per guide/catalogue/RANGE change, never per keystroke — see lib/guideSearch for
+  // why that bound matters against a real 178MB guide, and why the wider ranges each build their
+  // own index rather than one maximal one. The query below only scans this flat list.
   const guideIndex = useMemo(
     () =>
-      buildGuideSearchIndex({
-        liveStreams,
-        epgSources,
-        epgSourceLabels,
-        hiddenSourceUrls: hiddenEpgSourceUrls,
-        manualMappings: epgChannelMappings,
-        primaryPlaylistId
-      }),
-    [liveStreams, epgSources, epgSourceLabels, hiddenEpgSourceUrls, epgChannelMappings, primaryPlaylistId]
+      buildGuideSearchIndex(
+        {
+          liveStreams,
+          epgSources,
+          epgSourceLabels,
+          hiddenSourceUrls: hiddenEpgSourceUrls,
+          manualMappings: epgChannelMappings,
+          primaryPlaylistId
+        },
+        range
+      ),
+    [liveStreams, epgSources, epgSourceLabels, hiddenEpgSourceUrls, epgChannelMappings, primaryPlaylistId, range]
   )
 
   const hits = useMemo(() => searchAll(entries, query), [entries, query])
@@ -148,8 +168,16 @@ export function SearchPalette(): JSX.Element | null {
     if (!open) return
     setQuery('')
     setHighlight(0)
+    setRange('now')
+    setRecentSearches(loadRecentSearches(window.localStorage))
     inputRef.current?.focus()
   }, [open])
+
+  // An acted-on programme search becomes a recent (lib/recentSearches records only intent —
+  // played or reminded, never typed). Refreshed in place so the chips never go stale mid-session.
+  const recordProgrammeSearch = (searched: string): void => {
+    setRecentSearches(recordRecentSearch(searched, window.localStorage))
+  }
 
   useEffect(() => {
     setHighlight(0)
@@ -172,6 +200,7 @@ export function SearchPalette(): JSX.Element | null {
       } else {
         toggleEpgReminder(hit.stream.stream_id, hit.stream.name, hit.program, hit.stream.playlistId)
       }
+      recordProgrammeSearch(query)
     } else {
       void setViewMode('series')
       setSearchTerm(hit.name)
@@ -210,6 +239,41 @@ export function SearchPalette(): JSX.Element | null {
             ? 'Type at least two characters'
             : `${counts.live} live · ${counts.movie} films · ${counts.series} series · ${programmeHits.length} programmes`}
         </div>
+        {/* Recent programme searches — only when the input is empty, and only those acted on
+            (lib/recentSearches' own discipline). A chip is one click from the search again. */}
+        {query.trim().length === 0 && recentSearches.length > 0 && (
+          <div className="search-palette-recents">
+            {recentSearches.map((searched) => (
+              <button
+                key={searched}
+                type="button"
+                className="search-palette-recents-chip"
+                onClick={() => setQuery(searched)}
+              >
+                {searched}
+              </button>
+            ))}
+          </div>
+        )}
+        {/* The range select (0.33.0), above the programme results it governs. Shown only once
+            programme hits exist — a range control over zero programme results answers nothing. */}
+        {programmeHits.length > 0 && (
+          <div className="search-palette-ranges" role="group" aria-label="Programme search range">
+            {GUIDE_SEARCH_RANGE_OPTIONS.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                className={
+                  range === option.id ? 'search-palette-range search-palette-range--active' : 'search-palette-range'
+                }
+                aria-pressed={range === option.id}
+                onClick={() => setRange(option.id)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        )}
         <ul className="search-palette-results" role="listbox" aria-label="Search results">
           {query.trim().length >= 2 && results.length === 0 && <li className="search-palette-empty">No matches</li>}
           {results.map((hit, index) => (
@@ -223,13 +287,45 @@ export function SearchPalette(): JSX.Element | null {
                 <span className={`search-palette-kind search-palette-kind--${hit.kind}`}>
                   {hit.kind === 'live' ? 'LIVE' : hit.kind === 'movie' ? 'FILM' : hit.kind === 'series' ? 'SERIES' : hit.kind === 'programme' ? 'GUIDE' : 'GO'}
                 </span>
-                <span className="search-palette-name">{hit.kind === 'programme' ? hit.program.title : hit.name}</span>
+                <span className="search-palette-name-wrap">
+                  <span className="search-palette-name">{hit.kind === 'programme' ? hit.program.title : hit.name}</span>
+                  {hit.kind === 'programme' && hit.descriptionSnippet && (
+                    <span className="search-palette-desc">{hit.descriptionSnippet}</span>
+                  )}
+                </span>
                 {hit.kind === 'programme' ? (
                   <span className="search-palette-note">{programmeNote(hit, clockFormat)}</span>
                 ) : (
                   hit.note && <span className="search-palette-note">{hit.note}</span>
                 )}
               </button>
+              {/* The grid's own 🔔, on the hit itself (0.33.0): upcoming programmes get a mouse
+                  path to the reminder without giving up Enter's behaviour. A SIBLING of the hit
+                  button (nested buttons are invalid), so stopPropagation is belt-and-braces —
+                  the click must never reach the hit's own play/toggle action. */}
+              {hit.kind === 'programme' && !hit.onAir && (
+                <button
+                  type="button"
+                  className={
+                    isEpgReminderSet(hit.stream.stream_id, hit.program.id, hit.stream.playlistId)
+                      ? 'search-palette-bell search-palette-bell--set'
+                      : 'search-palette-bell'
+                  }
+                  title={
+                    isEpgReminderSet(hit.stream.stream_id, hit.program.id, hit.stream.playlistId)
+                      ? 'Remove programme reminder'
+                      : 'Set programme reminder'
+                  }
+                  aria-label={`${isEpgReminderSet(hit.stream.stream_id, hit.program.id, hit.stream.playlistId) ? 'Remove reminder for' : 'Set reminder for'} ${hit.program.title}`}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    toggleEpgReminder(hit.stream.stream_id, hit.stream.name, hit.program, hit.stream.playlistId)
+                    recordProgrammeSearch(query)
+                  }}
+                >
+                  {isEpgReminderSet(hit.stream.stream_id, hit.program.id, hit.stream.playlistId) ? '🔔' : '🔕'}
+                </button>
+              )}
             </li>
           ))}
         </ul>

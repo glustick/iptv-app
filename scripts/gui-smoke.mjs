@@ -1823,6 +1823,59 @@ async function main() {
     `[...document.querySelectorAll('.search-palette-hit')].some((h) => !!h.querySelector('.search-palette-kind--programme') && (h.querySelector('.search-palette-name')?.textContent || '').includes("Two's Show") && (h.textContent || '').includes('101 Two HD'))`,
     8000
   )
+  // 0.33.0 — the programme-search round: description snippets, the range select, the bell on
+  // upcoming hits, and recent chips. The fixture's "One's Next" (upcoming, described) drives all
+  // of it; acting on it via the bell is also what records the recent chip checked at the end.
+  await typeIntoPalette("One's Next")
+  await check(
+    "a programme hit shows its description's first line",
+    `[...document.querySelectorAll('.search-palette-hit')].some((h) => !!h.querySelector('.search-palette-kind--programme') && (h.querySelector('.search-palette-desc')?.textContent || '').includes('upcoming programme, described'))`,
+    8000
+  )
+  await check('the range select appears with the programme results', `!!document.querySelector('.search-palette-ranges')`, 8000)
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('.search-palette-range')].find((b) => b.textContent.trim() === '7d')?.click() || true`
+  )
+  await sleep(500)
+  await check(
+    'switching to the 7-day range keeps the hits',
+    `[...document.querySelectorAll('.search-palette-hit')].some((h) => (h.querySelector('.search-palette-name')?.textContent || '').includes("One's Next")) && [...document.querySelectorAll('.search-palette-range')].some((b) => b.textContent.trim() === '7d' && b.classList.contains('search-palette-range--active'))`,
+    8000
+  )
+  await check('an upcoming hit carries the reminder bell', `!!document.querySelector('.search-palette-bell')`, 8000)
+  await evaluate(cdp, `document.querySelector('.search-palette-bell')?.click() || true`)
+  await sleep(500)
+  await check(
+    'clicking the bell sets the reminder on the hit',
+    `!!document.querySelector('.search-palette-bell.search-palette-bell--set')`,
+    8000
+  )
+  // Close, reopen empty: the acted-on search must be offered as a recent chip, and the chip must
+  // run the search again. The palette is then left open for the 'go to movies' flow below.
+  await pressEscape()
+  await sleep(500)
+  await pressKey('k', 'KeyK', 75, 4)
+  await sleep(500)
+  await check(
+    'the empty palette offers the acted-on search as a recent chip',
+    `[...document.querySelectorAll('.search-palette-recents-chip')].some((c) => (c.textContent || '').includes("One's Next"))`,
+    8000
+  )
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('.search-palette-recents-chip')].find((c) => (c.textContent || '').includes("One's Next"))?.click() || true`
+  )
+  await sleep(500)
+  await check(
+    'clicking the recent chip runs the search again',
+    `[...document.querySelectorAll('.search-palette-hit')].some((h) => (h.querySelector('.search-palette-name')?.textContent || '').includes("One's Next"))`,
+    8000
+  )
+  await pressEscape()
+  await sleep(500)
+  await pressKey('k', 'KeyK', 75, 4)
+  await sleep(500)
   await typeIntoPalette('go to movies')
   await check(
     'the Go to command ranks first for its own words',

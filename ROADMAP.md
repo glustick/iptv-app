@@ -231,6 +231,42 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.33.0** the programme-search round — the palette's guide search stops being a one-day
+  window with indistinguishable results.
+  **Range select (Now / 24h / 3d / 7d).** The guide index (0.27.0) indexed the first 48
+  now-or-future programmes per channel — "what's on", never "what airs Thursday". A segmented
+  select above the programme results now widens that horizon: Now keeps 0.27.0's exact behaviour
+  (48 entries per channel, no horizon cut — the default is unchanged), 24h cuts at a day with
+  the same 48-entry cap (a half-hour cadence day is exactly 48 programmes), 3d reaches three
+  days at 144 per channel, and 7d a week at 336 — bounds stated in code comments because at
+  ~11,000 channels the 7-day worst case (~3.7M entries) is exactly why each range builds its
+  own memoized index and why the cap exists at all. Every open of the palette starts back at
+  Now: the wider range is a deliberate ask, not a sticky habit. The select appears only once a
+  query has programme hits — a range control over zero programme results answers nothing.
+  **Description snippets.** Every programme hit now carries its description's first line,
+  truncated at 80 characters — two same-titled episodes were otherwise indistinguishable in a
+  flat list. **🔔 on upcoming hits.** An upcoming programme hit carries the grid's own bell
+  (🔕/🔔 via isEpgReminderSet/toggleEpgReminder), a sibling button with stopPropagation so the
+  mouse click sets the reminder without triggering the hit's Enter action (Enter keeps its
+  play-if-on-air / remind-if-upcoming behaviour). **Recent searches.** The last five programme
+  queries this device acted on (Enter on a hit or the bell — never a bare keystroke) come back
+  as clickable chips on an empty palette input, in the same per-device localStorage idiom as the
+  0.19.0 list-order key (`allisoniptv-recent-programme-searches`; `lib/recentSearches.ts`,
+  corrupt or blocked storage degrades to no recents). Ported in design from the web sibling's
+  v0.108–v0.111 guide search, translated into the desktop's ⌘K palette idiom rather than copied
+  — the web's jump-to-grid has no palette counterpart, and the desktop's index is per-range
+  where the web's endpoint takes start/end per request. 890 tests (15 new: range horizons and
+  the per-range cap, snippet carriage and truncation, the recents helpers, and the palette's
+  bell/chips/range wirings). Typecheck and lint clean. **GUI smoke 136/136 + 7 new** on a
+  locally-built bundle (description line shown on a hit; the range select appears; switching to
+  7d keeps hits; the bell appears on an upcoming hit and clicking it sets the reminder; the
+  acted-on search returns as a chip on the empty palette; the chip re-runs the search).
+  **Not verified interactively:** the real 178MB guide's index cost at the 7-day range (the
+  fixture guide is a handful of programmes; the caps and the per-range build exist precisely so
+  that cost stays bounded, but no real guide was loaded against it), and reminder notifications
+  fired from a palette-set reminder (the reminder store path is the grid's own, already
+  covered).
+
 - **0.32.0** the multi-view round — two changes that make a single-connection account's grid
   usable without a clear-first ritual.
   **Swap in place (⇄).** Every filled tile gains a ⇄ button that reopens the channel picker for
