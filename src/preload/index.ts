@@ -173,6 +173,15 @@ const api = {
       ipcRenderer.on('vpn:status-changed', listener)
       return () => ipcRenderer.removeListener('vpn:status-changed', listener)
     },
+    // The full routing picture ({ status, tunneledHosts }) — see sendVpnRouteState in
+    // src/main/index.ts. The status dot only needs onStatusChange; the player's VPN-aware
+    // recovery needs to know which provider hosts the tunnel actually routes.
+    onRouteState: (callback: (payload: { status: string; tunneledHosts: string[] }) => void) => {
+      const listener = (_event: unknown, payload: { status: string; tunneledHosts: string[] }): void =>
+        callback(payload)
+      ipcRenderer.on('vpn:route-state', listener)
+      return () => ipcRenderer.removeListener('vpn:route-state', listener)
+    },
     onStreamRouteWarning: (callback: (payload: { message: string }) => void) => {
       const listener = (_event: unknown, payload: { message: string }): void => callback(payload)
       ipcRenderer.on('vpn:stream-route-warning', listener)

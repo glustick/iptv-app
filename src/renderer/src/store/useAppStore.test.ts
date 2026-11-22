@@ -1850,6 +1850,7 @@ describe('connect() and init() control flow', () => {
         vpn: {
           disconnect: async () => {},
           onStatusChange: () => () => {},
+          onRouteState: () => () => {},
           onStreamRouteWarning: () => () => {}
         },
         updater: {
@@ -1959,6 +1960,30 @@ describe('connect() and init() control flow', () => {
     expect(state.settings.customEpgUrls).toEqual(['http://guides.example.com/g.xml'])
     expect(state.profiles).toHaveLength(1)
     expect(state.multiViewSlots).toHaveLength(state.settings.multiViewLayout)
+  })
+
+  it('init() subscribes to vpn:route-state and stores the routing picture main pushes', async () => {
+    stubElectronApi()
+    // Capture the subscriber init() registers, then drive it the way the main process would
+    // (see sendVpnRouteState in src/main/index.ts) — the player's VPN-aware recovery reads
+    // this state, so the subscription must actually land it in the store.
+    // A holder object, not a bare let — TypeScript cannot see through the closure assignment
+    // to a local and would narrow it to `never` after the guard.
+    const captured: { cb: ((payload: { status: string; tunneledHosts: string[] }) => void) | null } = { cb: null }
+    const win = (globalThis as unknown as { window: { api: { vpn: Record<string, unknown> } } }).window
+    win.api.vpn.onRouteState = (cb: (payload: { status: string; tunneledHosts: string[] }) => void) => {
+      captured.cb = cb
+      return () => {}
+    }
+
+    await useAppStore.getState().init()
+
+    if (!captured.cb) throw new Error('init() did not subscribe to vpn:route-state')
+    captured.cb({ status: 'connected', tunneledHosts: ['Provider.Example.com'] })
+    expect(useAppStore.getState().vpnRouteState).toEqual({
+      status: 'connected',
+      tunneledHosts: ['Provider.Example.com']
+    })
   })
 
   it('removeProfile() disconnects when the removed profile is the active one', async () => {

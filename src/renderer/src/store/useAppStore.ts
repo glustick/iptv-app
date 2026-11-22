@@ -496,6 +496,11 @@ interface AppState {
 
   vpnStatus: VpnStatus
   vpnErrorMessage: string | null
+  // The full routing picture pushed by the main process (see sendVpnRouteState in
+  // src/main/index.ts): the tunnel's status AND the provider hosts it actually routes. The
+  // status dot needs only vpnStatus; the player's VPN-aware recovery (0.36.0) needs both,
+  // because whether a stream rides the tunnel is a question about hosts, not status alone.
+  vpnRouteState: { status: VpnStatus; tunneledHosts: string[] }
   // Set only while a connected tunnel drops unexpectedly (never for a deliberate Deactivate or
   // profile switch, which tear down the old tunnel on purpose) — surfaced as a dismissible
   // warning wherever the user is, including inside a fullscreen player. null when there's
@@ -906,6 +911,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   vpnStatus: 'disconnected',
   vpnErrorMessage: null,
+  // No tunnel at startup, and the main process republishes the real picture on every change.
+  vpnRouteState: { status: 'disconnected', tunneledHosts: [] },
   vpnDisconnectWarning: null,
   vpnDisconnectingIntentionally: false,
   vpnStreamRouteWarning: null,
@@ -968,6 +975,15 @@ export const useAppStore = create<AppState>((set, get) => ({
               "The VPN has disconnected — this app's connection is no longer tunneled. Reactivate it from Settings if you need it back."
           })
         })
+      })
+
+      // The routing picture behind the status (see sendVpnRouteState in src/main/index.ts) —
+      // the player's VPN-aware recovery (0.36.0) reads this instead of vpnStatus alone, since
+      // "will this stream survive the tunnel dropping?" depends on which hosts are routed, not
+      // just on the status byte. Kept as its own subscription (not folded into onStatusChange)
+      // because main also republishes it when the host list changes without a status change.
+      window.api?.vpn?.onRouteState((payload) => {
+        set({ vpnRouteState: { status: payload.status as VpnStatus, tunneledHosts: payload.tunneledHosts } })
       })
 
       // See vpn:stream-route-warning in src/main/index.ts — pushed the same way as vpn:status-

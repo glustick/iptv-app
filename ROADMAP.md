@@ -231,6 +231,54 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.36.0** VPN-aware playback — a tunnel drop finally reaches the player instead of only
+  repainting status dots. The gap this closes: `vpn:status-changed` has always fired on every
+  OpenVPN management-interface transition, but its only consumers were dots and banners — a
+  stream actually routed through the tunnel stalled or died with nothing in the player
+  explaining why, and nothing resumed it when the tunnel came back. **Main → renderer route
+  state:** setVpnStatus and startVpn now also push `vpn:route-state` (`{ status,
+  tunneledHosts }`) — the full routing picture, not just the status byte, because "will this
+  stream survive the tunnel dropping?" is a question about hosts — republished on every status
+  change (which is also where the host list is cleared) AND once more in startVpn when the
+  host list is first populated mid-'connecting', so a subscriber never holds a stale
+  (status, hosts) pair; the preload mirrors onStatusChange with `onRouteState`, and the store
+  keeps it as `vpnRouteState` beside the existing status subscription. **Is this stream
+  tunneled?** The player can't tell from its own URL — nowPlaying.url is the local proxy URL
+  and never names the provider — so the playing playlist's saved Xtream profile's server host
+  (`playbackPlaylistId ?? primaryPlaylistId` → profiles) is matched, case-insensitively,
+  against the hosts the tunnel routes: `lib/vpnPlayback.ts`, dependency-free like
+  reconnectBackoff. An M3U playlist returns no host on purpose — an M3U can reference a
+  different host per channel and activateVpnProfile routes Xtream servers only, so the honest
+  answer is "unknown", and no evidence of tunneling leaves the whole feature inert; only the
+  primary `server` counts, never `backupServer` (the tunnel routes exactly the list
+  activateVpnProfile sends, and a stream served from the failover host is genuinely not
+  tunneled). **The recovery arc:** on a drop (connected → connecting/disconnected/error, host
+  matched against the PREVIOUS route state — the drop payload has already lost the host list,
+  main clears it in the same breath as the status) the player is deliberately left running —
+  its stall ladder and error handlers keep the picture honest about what the feed is doing —
+  while the shared statusNotice line explains the stream is routed through the VPN and will
+  resume on reconnection; on the tunnel's return the stream is reloaded through setReloadTick
+  (the only sanctioned internal reload channel; never play()) after the same 2s→4s→8s backoff
+  the network reconnect uses, with a SEPARATE five-attempt budget (a tunnel bounce must not
+  spend an ISP blip's retries and vice versa) that retires on 30s of clean playback or a
+  channel change; the drop notice is cleared on the reload, and a spent budget swaps the
+  notice for the truth ("pick the channel again") instead of promising an automatic resume
+  that will never come. Notice authorship is tracked in a ref so the streamKey reset clears
+  only what this feature wrote — the remux/conversion machinery shares that line and must not
+  be clobbered; the stall ladder is deliberately NOT reset by these reloads (a reload is not
+  a recovery the ladder should forget about). The disconnected → connecting edge reads as a
+  tunnel coming up, not a drop, and warns nothing; the connecting → connected edge does
+  schedule a resume, because the routes just flipped under a stream that had been riding them
+  direct through the proxy's upstream. 927 tests (+12: host extraction/lowercasing,
+  multi-playlist matching, M3U/no-server/unknown-id emptiness, backupServer exclusion, both-
+  sides-empty inertia, and the store subscription landing a pushed route state — plus the
+  init-time api stub gained onRouteState). Typecheck and lint clean. GUI smoke unchanged and
+  green, 147/147 — the mock-provider rig has no VPN, so **the real drop arc is unverified:**
+  the notice wording, the host-matching rule against a live tunnel's host list, and the
+  backoff behaviour across an actual OpenVPN bounce are reasoned from the code, not
+  fixture-driven; the pure matching logic is unit-covered and the wiring is the same push
+  pattern vpn:status-changed has used since 0.28.0.
+
 - **0.35.0** the remux session watchdog — the main process finally watches its own ffmpeg
   output after startup. The gap, measured in failure reports: the readiness loop only answers
   "did ffmpeg ever produce a playlist" (it polls `existsSync` alone), and once `startTranscode`

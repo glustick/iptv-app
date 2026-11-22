@@ -25,8 +25,9 @@ import { useToolbarOverflow } from '../lib/useToolbarOverflow'
 import { useHoverAutoHide } from '../lib/useHoverAutoHide'
 import { clampRestorePosition, isBufferStallError, nextStallAction, playbackSignature, stallRecoveryDelayMs } from '../lib/playbackWatchdog'
 import { nextReconnectDelayMs, shouldResetReconnectAttempts } from '../lib/reconnectBackoff'
+import { isTunneledNowPlaying, playingProviderHosts } from '../lib/vpnPlayback'
 import { describeHlsLevel } from '../lib/hlsLevels'
-import type { VideoScaleMode } from '../lib/types'
+import type { VideoScaleMode, VpnStatus } from '../lib/types'
 import { channelKey } from '../lib/channelIdentity'
 import { analyzeMediaPlaylist } from '../lib/channelHealth'
 
@@ -209,6 +210,10 @@ export function Player(): JSX.Element | null {
   const setShowChannelBar = useAppStore((s) => s.setChannelBarOpen)
   const vpnHasProfiles = useAppStore((s) => s.settings.vpnProfiles.length > 0)
   const vpnStatus = useAppStore((s) => s.vpnStatus)
+  // The tunnel's status AND the provider hosts it routes (0.36.0) — the recovery effect below
+  // needs both, because whether this stream rides the tunnel is a question about hosts.
+  const vpnRouteState = useAppStore((s) => s.vpnRouteState)
+  const profiles = useAppStore((s) => s.profiles)
   const toggleVpnTunnel = useAppStore((s) => s.toggleVpnTunnel)
   const singleConnectionAccount = useAppStore((s) => s.singleConnectionAccount)
   const shortEpgByStream = useAppStore((s) => s.shortEpgByStream)
@@ -431,6 +436,19 @@ export function Player(): JSX.Element | null {
   // button renders off it.
   const reconnectAttemptsRef = useRef(0)
   const [reconnectExhausted, setReconnectExhausted] = useState(false)
+  // VPN-aware recovery (0.36.0) — a SEPARATE attempt budget from the network one above: a
+  // tunnel bounce and an ISP blip are different failures that can land on the same stream, and
+  // one must not spend the other's retries. vpnNoticeActiveRef tracks whether the shared
+  // statusNotice line currently holds THIS feature's message, so a channel change (or the
+  // tunnel's return) clears only what this feature wrote — never a remux/conversion notice.
+  // prevVpnStatusRef starts null so the very first observation (launch, mid-tunnel) is treated
+  // as "nothing dropped" rather than as a transition.
+  const vpnReconnectAttemptRef = useRef(0)
+  const vpnNoticeActiveRef = useRef(false)
+  // The routing state seen just before the current one — the drop payload arrives with the
+  // host list already cleared, so the drop edge can only ask "was this stream tunneled a
+  // moment ago?" from here (see the recovery effect below). null until the first push.
+  const prevVpnRouteRef = useRef<{ status: VpnStatus; tunneledHosts: string[] } | null>(null)
   // The viewer's "attempt this channel anyway" override past a known-unavailable health verdict
   // (0.31.0) — the health-informed attach below refuses once, this makes the retry honest.
   const [healthOverride, setHealthOverride] = useState(false)
@@ -504,6 +522,15 @@ export function Player(): JSX.Element | null {
     // The health verdict the attach check consults is per-channel; a refusal belongs to the
     // channel that earned it, not to whatever the viewer picks next.
     setHealthOverride(false)
+    // The VPN recovery state is per-channel too (0.36.0): a fresh channel starts from a full
+    // auto-resume budget. The drop notice is cleared ONLY if this feature authored it — the
+    // shared statusNotice line is also written by the remux/conversion machinery, and wiping
+    // one of their messages here would eat an active notice that still applies.
+    vpnReconnectAttemptRef.current = 0
+    if (vpnNoticeActiveRef.current) {
+      vpnNoticeActiveRef.current = false
+      setStatusNotice(null)
+    }
     resetTranscodeFallback()
   }, [nowPlaying, resetTranscodeFallback])
 
@@ -548,6 +575,80 @@ export function Player(): JSX.Element | null {
     }, delay)
     return () => clearTimeout(timer)
   }, [isOnline, nowPlaying])
+
+  // VPN-aware playback recovery (0.36.0): until now a tunnel drop only repainted the status
+  // dot — a stream routed through the VPN stalled or died silently, and nothing resumed it
+  // when the tunnel came back. This effect watches the tunnel's full routing picture
+  // (vpnRouteState) rather than vpnStatus alone, because "does this stream even ride the
+  // tunnel?" is a question about hosts: nowPlaying.url is the local proxy URL and never names
+  // the provider, so the playing playlist's own provider host is matched against the hosts the
+  // tunnel actually routes (see lib/vpnPlayback.ts for the matching rules).
+  //
+  // On a drop (connected -> connecting/disconnected/error) the player is deliberately left
+  // running: its stall ladder and error handlers keep the picture honest about what the feed
+  // is actually doing, while the notice explains WHY it is about to break — an immediate stop
+  // would just be a second way of saying nothing. On the tunnel's return, the stream is
+  // reloaded through setReloadTick (the only sanctioned internal reload channel; never
+  // play()) after the same backoff schedule the network reconnect uses, so a tunnel that
+  // flaps doesn't hammer a provider that is still settling its own routes. The attempt budget
+  // is this effect's own (vpnReconnectAttemptRef), not the network reconnect's, and retires
+  // the same way: 30s of clean playback or a channel change (see the streamKey reset effect).
+  // The stall ladder is deliberately NOT touched here: a reload is not a recovery the ladder
+  // should forget about, and only channel changes reset it.
+  //
+  // prevVpnRouteRef matters because the drop payload has ALREADY lost the host list — the
+  // main process clears tunneledHosts in the same breath as the status change (setVpnStatus)
+  // — so "was this stream tunneled?" at the moment of the drop can only be answered from the
+  // state seen just before. It also keeps a tunnel coming UP (disconnected -> connecting ->
+  // connected) from reading as a drop: only a genuine connected -> not-connected edge warns,
+  // and only a not-connected -> connected edge resumes.
+  useEffect(() => {
+    const prevRoute = prevVpnRouteRef.current
+    prevVpnRouteRef.current = vpnRouteState
+    if (!nowPlaying) return
+    // Only a stream whose provider actually rides this tunnel participates at all — for an
+    // M3U playlist, or a provider outside the tunnel, this whole feature is inert.
+    const providerHosts = playingProviderHosts(nowPlaying.playbackPlaylistId ?? primaryPlaylistId, profiles)
+    const wasConnected = prevRoute?.status === 'connected'
+    const isConnected = vpnRouteState.status === 'connected'
+    if (wasConnected && !isConnected) {
+      // The tunnel carrying this stream just dropped: explain what is about to happen rather
+      // than stopping silently — hls.js's own retries and the watchdog keep running either
+      // way. The host match is against the PREVIOUS route state (see note above).
+      if (!isTunneledNowPlaying(providerHosts, prevRoute.tunneledHosts)) return
+      vpnNoticeActiveRef.current = true
+      setStatusNotice('The VPN dropped — this stream is routed through it and will resume automatically when it reconnects.')
+      return
+    }
+    if (!isConnected || !prevRoute || wasConnected) return
+    // The tunnel is back after a drop: 30s of clean playback since the last resume retires
+    // the budget (same rule as the network reconnect), then schedule the auto-resume reload.
+    if (cleanPlaybackSinceRef.current !== null && shouldResetReconnectAttempts(Date.now() - cleanPlaybackSinceRef.current)) {
+      vpnReconnectAttemptRef.current = 0
+    }
+    if (!isTunneledNowPlaying(providerHosts, vpnRouteState.tunneledHosts)) return
+    const attempt = vpnReconnectAttemptRef.current + 1
+    const delay = nextReconnectDelayMs(attempt)
+    if (delay === null) {
+      // Budget spent: five resumes in one stretch is a tunnel that keeps flapping. Saying
+      // "will resume automatically" again would be a lie — say what actually happens now.
+      vpnNoticeActiveRef.current = true
+      setStatusNotice('The VPN is back, but auto-resume has used its retry budget after repeated drops — pick the channel again if the picture stays broken.')
+      return
+    }
+    vpnReconnectAttemptRef.current = attempt
+    const timer = setTimeout(() => {
+      // The reload makes the drop-resume story stale either way, and only this feature's
+      // notice may go — if something else has since written the shared line, leave it.
+      if (vpnNoticeActiveRef.current) {
+        vpnNoticeActiveRef.current = false
+        setStatusNotice(null)
+      }
+      if (nowPlaying.kind !== 'live') vodRestorePendingRef.current = true
+      setReloadTick((t) => t + 1)
+    }, delay)
+    return () => clearTimeout(timer)
+  }, [vpnRouteState, nowPlaying, profiles, primaryPlaylistId])
 
   // The audio-fix wait for movies/series has no real progress to report — ffmpeg either hasn't
   // opened the source yet or is still probing it — so the only honest signal available is how

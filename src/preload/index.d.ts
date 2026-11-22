@@ -132,6 +132,11 @@ interface VpnStatusPayload {
   errorMessage: string | null
 }
 
+interface VpnRouteStatePayload {
+  status: string
+  tunneledHosts: string[]
+}
+
 interface VpnAPI {
   selectConfigFile: () => Promise<string | null>
   connect: (
@@ -145,6 +150,7 @@ interface VpnAPI {
   getStatus: () => Promise<VpnStatusPayload>
   openLog: () => Promise<{ ok: boolean; message?: string }>
   onStatusChange: (callback: (status: VpnStatusPayload) => void) => () => void
+  onRouteState: (callback: (payload: VpnRouteStatePayload) => void) => () => void
   onStreamRouteWarning: (callback: (payload: { message: string }) => void) => () => void
 }
 

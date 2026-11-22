@@ -264,6 +264,23 @@ function setVpnStatus(status: VpnStatus, errorMessage: string | null = null): vo
     warnedTunnelIpChanges.clear()
   }
   mainWindowRef?.webContents.send('vpn:status-changed', { status, errorMessage })
+  sendVpnRouteState()
+}
+
+/**
+ * Pushes the renderer the full routing picture ({ status, tunneledHosts }) rather than making
+ * it infer it: the VPN dot only needs the status, but the player's VPN-aware recovery (0.36.0)
+ * has to know whether the stream it is playing actually rides the tunnel — and only the main
+ * process knows which hosts the tunnel routes (startVpn below). Sent on every status change
+ * (which is also where the host list gets cleared, see setVpnStatus) and once more in startVpn
+ * when the host list is first populated mid-'connecting' — so a subscriber always sees a
+ * consistent (status, hosts) pair, never a stale combination of the two.
+ */
+function sendVpnRouteState(): void {
+  mainWindowRef?.webContents.send('vpn:route-state', {
+    status: vpnRuntime.status,
+    tunneledHosts: [...vpnRuntime.tunneledHosts]
+  })
 }
 
 /**
@@ -678,6 +695,9 @@ async function startVpn(
     }
     vpnRuntime.tunneledHosts = xtreamHosts
     vpnRuntime.tunneledIps = xtreamIps
+    // The host list changed without a status change (still 'connecting' here) — republish the
+    // route state so the renderer's player logic sees the hosts this tunnel will cover.
+    sendVpnRouteState()
     const originalGateway = await getDefaultGateway()
     const dir = await mkdtemp(join(tmpdir(), 'allisoniptv-vpn-'))
     vpnRuntime.tempDir = dir
