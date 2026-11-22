@@ -1060,3 +1060,77 @@ describe('createProxyServer: refused-segment retry', () => {
     expect(segmentRequests).toBe(1)
   })
 })
+
+describe('createProxyServer: per-host failure circuit breaker (0.38.0)', () => {
+  // An origin that never answers is the storm the breaker exists to stop: without it, every
+  // fragment pays attempt+retry (2 × upstreamTimeoutMs) before the 502. These use a tiny
+  // injected timeout and cooldown so the whole arc runs in seconds.
+  it('fails fast once the host reaches threshold transport failures, and never reaches the origin during cooldown', async () => {
+    let attempts = 0
+    const { url: originUrl, server: origin } = await startMockOrigin((_req, _res) => {
+      attempts += 1 // never responds
+    })
+    openServers.push(origin)
+    const proxy = await startProxy(
+      makeDeps({ getProxyTargetBase: () => originUrl, upstreamTimeoutMs: 150, breakerThreshold: 3, breakerCooldownMs: 30_000 })
+    )
+
+    // Three requests, each paying attempt+retry, each ending 502. The third failure opens
+    // the breaker.
+    for (let i = 0; i < 3; i++) {
+      const res = await fetchViaProxy(proxy, '/seg.ts')
+      expect(res.statusCode).toBe(502)
+    }
+    // 2 attempts per request = 6; the breaker is now open.
+    expect(attempts).toBe(6)
+
+    const before = attempts
+    const res = await fetchViaProxy(proxy, '/seg.ts')
+    expect(res.statusCode).toBe(502)
+    expect(res.body).toContain('failure cooldown')
+    // The fast-fail never touched the origin — that is the entire point.
+    expect(attempts).toBe(before)
+  })
+
+  it('one real answer after the cooldown closes the breaker again', async () => {
+    let attempts = 0
+    let answer = false
+    const { url: originUrl, server: origin } = await startMockOrigin((_req, res) => {
+      attempts += 1
+      if (!answer) return // hang: builds up the breaker
+      res.writeHead(200)
+      res.end('back')
+    })
+    openServers.push(origin)
+    const proxy = await startProxy(
+      makeDeps({ getProxyTargetBase: () => originUrl, upstreamTimeoutMs: 100, breakerThreshold: 2, breakerCooldownMs: 300 })
+    )
+
+    for (let i = 0; i < 2; i++) await fetchViaProxy(proxy, '/seg.ts')
+    expect(attempts).toBe(4)
+
+    // Cooldown expires with the origin still hanging: the probe itself pays attempt+retry and
+    // its failure re-opens the breaker for a fresh window (count was already at threshold).
+    // Margins are generous (sleeps well past the 300ms cooldown) — real timers on a busy
+    // runner drift, and this test wants the breaker's LOGIC, not timer precision.
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    await fetchViaProxy(proxy, '/seg.ts')
+
+    // Expire AGAIN, and this time the origin answers: the probe succeeds and closes the
+    // breaker — one real answer outranks all the remembered failures.
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    answer = true
+    const ok = await fetchViaProxy(proxy, '/seg.ts')
+    expect(ok.statusCode).toBe(200)
+    expect(ok.body).toBe('back')
+
+    // …and a LATER hanging blip is treated from zero again: the success reset the count, so
+    // this request still reaches the origin (attempt + retry = 2 more) instead of being
+    // fast-failed — the breaker remembers a dead host, not a single unlucky blip.
+    answer = false
+    const before = attempts
+    const failed = await fetchViaProxy(proxy, '/seg.ts')
+    expect(failed.statusCode).toBe(502)
+    expect(attempts).toBe(before + 2)
+  })
+})

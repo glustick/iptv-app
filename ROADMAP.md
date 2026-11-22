@@ -231,6 +231,29 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.38.0** the per-host circuit breaker — a dead origin stops costing ninety seconds per
+  fragment. The gap: the per-request machinery (45s timeout → same-target retry → backup-
+  portal failover) answers "is this request salvageable", but when a HOST is genuinely down
+  (the confirmed-live Chromium-side failure mode where every request to one host hangs while
+  curl succeeds), a live session's whole playlist-refresh round hangs request by request — a
+  dozen requests at ~90s worst case each, while the player's ladder waits on answers that were
+  never coming. `src/main/proxyBreaker.ts` (pure, like proxyFailover) remembers consecutive
+  transport failures per hostname: at **5 in a row** the host opens for **30s** — requests
+  fast-fail straight to the backup portal (or a 502 immediately when none is configured), the
+  cooldown expiry turns the next request into the half-open probe, one success closes the
+  breaker outright and resets the count (the newest fact about a host outranks the remembered
+  failures), and one probe failure re-opens for a fresh window. Transport failures only — a
+  5xx is the portal answering badly, which the failover machinery owns; the breaker never
+  counts it. Injectable threshold/cooldown for tests; the wiring test drives the whole arc
+  against a hanging origin (open → fast-fail without touching the origin → probe failure re-
+  opens → probe success closes → a later blip treated from zero). The pure suite covers
+  thresholds, cooldown expiry, probe re-open, per-host independence and the exact-host match.
+  941 tests (+8). Typecheck and lint clean. **GUI smoke 147/147** (the mock provider never
+  fails transport, so the breaker stays closed — which is also the false-positive guard).
+  **Not verified interactively:** a genuinely dead real provider host — the 5/30s numbers are
+  reasoned (well past any healthy blip; short enough that a quick recovery costs one probe),
+  not tuned against a real outage yet.
+
 - **0.37.0** the resilient profile, and the player that picks it itself. **Third buffer
   profile.** Smooth and low-latency covered two network shapes; a connection that stalls
   repeatedly wants neither — it wants the deepest buffer and the longest live-sync target the

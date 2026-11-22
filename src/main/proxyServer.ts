@@ -5,6 +5,14 @@ import {
   notePrimaryFailure,
   notePrimarySuccess
 } from './proxyFailover'
+import {
+  BREAKER_COOLDOWN_MS,
+  BREAKER_THRESHOLD,
+  breakerIsOpen,
+  createBreakerState,
+  noteHostFailure,
+  noteHostSuccess
+} from './proxyBreaker'
 import { URL } from 'url'
 
 /**
@@ -142,6 +150,10 @@ export interface ProxyServerDeps {
   // 45s in production (see the reasoning at this option's use below) — overridable so tests
   // don't have to wait out a real 45-second timeout to exercise the retry path.
   upstreamTimeoutMs?: number
+  // Breaker tuning (0.38.0), injectable so tests open/close it in milliseconds instead of
+  // waiting out the real 30s cooldown.
+  breakerThreshold?: number
+  breakerCooldownMs?: number
 }
 
 /**
@@ -157,10 +169,15 @@ export interface ProxyServerDeps {
  */
 export function createProxyServer(deps: ProxyServerDeps): Server {
   const upstreamTimeoutMs = deps.upstreamTimeoutMs ?? 45000
+  const breakerThreshold = deps.breakerThreshold ?? BREAKER_THRESHOLD
+  const breakerCooldownMs = deps.breakerCooldownMs ?? BREAKER_COOLDOWN_MS
 
   // The failover memory: which primary bases are currently being failed over from (see
   // proxyFailover.ts). Scoped to this server instance, so tests get a clean slate.
   const failoverState = createFailoverState()
+  // Per-host failure breaker (0.38.0) — see proxyBreaker.ts for why the per-request machinery
+  // alone is not enough when a host is genuinely down.
+  const breakerState = createBreakerState()
 
   // --- Refused-segment retry with a fresh playlist (signature expiry) -------------------------
   //
@@ -575,6 +592,10 @@ export function createProxyServer(deps: ProxyServerDeps): Server {
           return
         }
         console.error('[proxy] upstream request error:', err)
+        // The request is over with nothing usable: one more consecutive transport failure for
+        // the host this last attempt addressed (0.38.0). At the threshold this opens the
+        // breaker — the next requests fast-fail instead of paying the same ~90s each.
+        noteHostFailure(breakerState, (attemptOnBackup && backupUrl ? backupUrl.hostname : target.hostname).toLowerCase(), Date.now(), breakerThreshold, breakerCooldownMs)
         if (!res.headersSent) res.writeHead(502)
         res.end(`Upstream request failed: ${err.message}`)
       }
@@ -625,6 +646,13 @@ export function createProxyServer(deps: ProxyServerDeps): Server {
         }
         if (!attemptOnBackup && primaryBase !== null && upstreamRes.statusCode < 500) {
           notePrimarySuccess(failoverState, primaryBase)
+        }
+        // Host-level breaker bookkeeping (0.38.0): ANY answer below 500 — from whichever host
+        // this attempt addressed — is a real fact about that host and closes its breaker /
+        // resets its counter. (5xx is the portal answering badly, which the failover machinery
+        // owns; the breaker is transport-level only.)
+        if (upstreamRes.statusCode < 500) {
+          noteHostSuccess(breakerState, (attemptOnBackup && backupUrl ? backupUrl.hostname : target.hostname).toLowerCase())
         }
 
         // A refused segment (400/403) is, on providers with ~25s signed URLs, a signature that
@@ -768,6 +796,28 @@ export function createProxyServer(deps: ProxyServerDeps): Server {
       )
       attemptOnBackup = true
       attemptUpstream(backupUrl)
+      return
+    }
+    // The circuit breaker (0.38.0): a host proven dead by BREAKER_THRESHOLD consecutive
+    // transport failures is not paid the full timeout+retry+failover worst case on every
+    // fragment for the next cooldown window. Open + a backup portal → the backup IS the
+    // request; open + no backup → fail fast and let the player's own schedule retry (its
+    // ladder reacts better to a fast 502 than to a ~90s hang per fragment). An expired open
+    // falls through — that request IS the half-open probe; one answer (success closes,
+    // failure re-opens, both wired in the handlers below) settles it.
+    const breakerHost = target.hostname.toLowerCase()
+    if (breakerIsOpen(breakerState, breakerHost, Date.now(), breakerCooldownMs)) {
+      if (backupUrl) {
+        console.warn(
+          `[proxy] ${breakerHost} is in failure cooldown — fast-failing straight to the backup portal ${backupUrl.host}`
+        )
+        attemptOnBackup = true
+        attemptUpstream(backupUrl)
+        return
+      }
+      console.warn(`[proxy] ${breakerHost} is in failure cooldown — failing fast (no backup portal)`)
+      res.writeHead(502)
+      res.end('Upstream host is in failure cooldown — will be retried shortly')
       return
     }
     attemptUpstream()
