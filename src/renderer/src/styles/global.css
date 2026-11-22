@@ -4362,6 +4362,41 @@ body.resizing-col {
   border: 1px solid rgba(0, 0, 0, 0.5);
 }
 
+/* The Sync row (0.46.0) — the one control that moves cues in time rather than in appearance. */
+.subtitle-style-sync-group {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.subtitle-style-sync-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.subtitle-style-sync-btn.active {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.subtitle-style-sync-current {
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.subtitle-style-sync-hint {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 
 /* One search for the whole app (0.24.0). A modal over everything, because a result can belong to
    any tab — the palette is the only surface that is not scoped to one of them. */

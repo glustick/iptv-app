@@ -231,6 +231,47 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.46.0** the subtitle sync delay — the panel that already decided how a cue looks now also
+  decides when it appears. A transcoded or rendition subtitle inherits the stream's own timing,
+  and when that timing disagrees with the audio (a broadcast mux offset, a sloppy provider
+  transcode) every line of a whole title lands a beat early or late. The SubtitleStylePanel gets
+  a Sync row of five coarse steps — −500/−100/0/+100/+500ms, coarse on purpose: a sync fix is
+  found by ear in one or two nudges, not dialed in — where positive means the text arrives
+  *later* than the audio and negative *earlier*, both labelled in the row's live readout
+  ("Subtitles later by 300ms (+300ms)" / "Off"). The mechanics live in lib/subtitleDelay.ts, pure
+  and structural (it takes cue-shaped objects, not real VTTCue, so it unit-tests without a DOM
+  while asserting exactly what Chromium's VTTCue offers: two writable time numbers). The one rule
+  that matters is that a CHANGED offset re-shifts from each cue's ORIGINAL times, never from the
+  already-shifted ones — +100ms then +500ms lands at +500 total, not +600 — so the first shift
+  snapshots the untouched times in a WeakMap keyed on the track object (dead tracks GC with it),
+  every later change restores the snapshot before applying the new delta, and offset 0 is the
+  same restore with the snapshot dropped. Player wiring listens where cues actually appear:
+  `cuechange` on each subtitles/captions track (hls.js parses WebVTT renditions fragment by
+  fragment into fresh cue objects, so a one-time apply would leave every later line unshifted —
+  re-apply keys on cue identity and moves only the newcomers), `addtrack`/`removetrack` on the
+  element's track list (rendition swaps create and destroy tracks mid-stream), and the list's own
+  `change` event, because which track is active is the browser's and the pickers' to decide and
+  the newly-active track needs the offset the moment it starts rendering. The ::cue appearance
+  path is untouched — this moves cues in time, never in how they look. The offset is deliberately
+  NOT persisted, unlike the appearance prefs next door: a delay tuned against one stream's audio
+  is a lie on the next one, and silently inheriting it is worse than starting at zero, so the
+  streamKey reset effect zeroes it on every channel identity change (the smoke proves this across
+  a real channel hop). Honest about the boundary, in the panel itself: the audio stream cannot be
+  delayed — Chromium offers no way to push a decoded audio track without a remux pipeline — so
+  this nudges the text toward the sound, not both ways. 994 tests (+17: the shift planner's math
+  and millisecond rounding, apply/restore with stub cues, the no-compounding rule, late-arriving
+  cues shifting once, multi-track independence, and the panel's five steps, its honest
+  Later/Earlier readout, steps leaving the appearance prefs alone, and the audio-limitation
+  hint). Typecheck and lint clean. **GUI smoke 172/172** (15 new, including the row reporting
+  each step, the fixture's own WebVTT cues measurably moving +100ms then re-reading at +500ms
+  from the original rather than compounding, the cues restoring at Off, and the offset not
+  surviving the movie→live→movie channel hop — read back on the movie, because the live fixture
+  carries no subtitle track and hence no style button to reopen the panel with). **Not verified
+  interactively:** the steps against a genuinely mistimed real-world stream (the fixture's WebVTT
+  timing is known-good, so the assertions measure movement, not relief), and cue parsing on
+  tracks that sit `disabled` through an offset change (they don't render; the mode-`change` sync
+  re-applies the moment one becomes active).
+
 - **0.45.0** the programme-detail popover — the grid's single click now describes before it
   acts. Clicking a programme block has always played (or selected) immediately, and the
   description the data carried surfaced only as a native tooltip — easy to miss, impossible to

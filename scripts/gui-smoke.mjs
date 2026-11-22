@@ -1332,6 +1332,126 @@ async function main() {
     `document.querySelector('video.player-video')?.style.getPropertyValue('--cue-color') === '#ffffff'`,
     8000
   )
+
+  // --- subtitle sync (0.46.0) ------------------------------------------------------------------
+  // The one player control that moves cues in TIME rather than in appearance. Asserted against
+  // the live element, not just the panel: the row reports the offset, the real cue times on the
+  // active track move by exactly the chosen delta, a second click REBUILDS from the cue's own
+  // time rather than compounding the first delta, and the offset does not survive a channel
+  // change. The fixture's WebVTT rendition is already chosen and playing from the section above.
+  const syncReadout = `(() => {
+    const row = document.querySelector('.subtitle-style-panel .subtitle-style-sync-current')
+    return row ? row.textContent.trim() : null
+  })()`
+  const firstCueStart = `(() => {
+    const v = document.querySelector('video.player-video')
+    if (!v) return null
+    for (const t of v.textTracks) {
+      if ((t.kind === 'subtitles' || t.kind === 'captions') && t.cues && t.cues.length > 0) return t.cues[0].startTime
+    }
+    return null
+  })()`
+  await check('the Sync row starts at Off', `${syncReadout}.includes('Off')`, 8000)
+  const cueStartBefore = await evaluate(cdp, firstCueStart)
+  await evaluate(
+    cdp,
+    `(() => { [...document.querySelectorAll('.subtitle-style-sync-btn')].find((b) => b.textContent.trim() === '+100ms')?.click(); return true })()`
+  )
+  await check('the Sync row reports +100ms', `${syncReadout}.includes('+100ms')`, 8000)
+  await check(
+    'the cues move later by the offset',
+    `(() => { const t = ${cueStartBefore}; return t === null || Math.abs(${firstCueStart} - t - 0.1) < 0.005 })()`,
+    8000
+  )
+  // The compounding regression: +100ms followed by +500ms must land at +500 from the cue's own
+  // time, not +600. In a real player this is the difference between a control and an accumulator.
+  await evaluate(
+    cdp,
+    `(() => { [...document.querySelectorAll('.subtitle-style-sync-btn')].find((b) => b.textContent.trim() === '+500ms')?.click(); return true })()`
+  )
+  await check('the Sync row reports +500ms', `${syncReadout}.includes('+500ms')`, 8000)
+  await check(
+    'a changed offset re-shifts from the original times, not the last delta',
+    `(() => { const t = ${cueStartBefore}; return t === null || Math.abs(${firstCueStart} - t - 0.5) < 0.005 })()`,
+    8000
+  )
+  await evaluate(
+    cdp,
+    `(() => { [...document.querySelectorAll('.subtitle-style-sync-btn')].find((b) => b.textContent.trim() === 'Off')?.click(); return true })()`
+  )
+  await check('the Sync row returns to Off', `${syncReadout}.includes('Off')`, 8000)
+  await check(
+    'the cues return to their own times',
+    `(() => { const t = ${cueStartBefore}; return t === null || Math.abs(${firstCueStart} - t) < 0.005 })()`,
+    8000
+  )
+
+  // ...and the per-stream reset: the offset is deliberately not persisted and must not survive a
+  // channel identity change. Re-apply it, then hop to a live channel and back — the read-back
+  // happens on the movie, because the live fixture carries no subtitle track and hence no style
+  // button to reopen the panel with.
+  await evaluate(
+    cdp,
+    `(() => { [...document.querySelectorAll('.subtitle-style-sync-btn')].find((b) => b.textContent.trim() === '+500ms')?.click(); return true })()`
+  )
+  await check('the Sync row reports +500ms again', `${syncReadout}.includes('+500ms')`, 8000)
+  await pressEscape() // close the panel (the chain's topmost layer)
+  await pressEscape() // close the player itself
+  await check('the movie player closed for the channel hop', `!document.querySelector('video.player-video')`, 8000)
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('button.tab')].find((b) => b.textContent.trim() === 'Live TV')?.click() || true`
+  )
+  await sleep(4000)
+  await click('.watch-now-button')
+  await check(
+    'the live channel plays — the channel change the sync reset rides on',
+    `[...document.querySelectorAll('video')].some((v) => v.classList.contains('player-video') && v.readyState >= 2)`,
+    30000
+  )
+  await pressEscape() // leave the live player
+  await sleep(1200)
+  // The VOD grid is virtualised and only renders once its container has a measured size, and an
+  // occluded window can defer that layout — the same flake the section above documents, so the
+  // reopen mirrors its window activation before the tab click.
+  try {
+    execFileSync('osascript', ['-e', 'tell application "AllisonIPTV" to activate'], {
+      stdio: 'ignore',
+      timeout: 5000
+    })
+  } catch {
+    // best-effort; the poll below still decides
+  }
+  await sleep(800)
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('button.tab')].find((b) => b.textContent.trim() === 'Movies')?.click() || true`
+  )
+  await check(
+    'the Movies tab lists the fixture movie again',
+    `[...document.querySelectorAll('.channel-item--grid')].some((b) => b.textContent.includes('A Movie'))`,
+    45000
+  )
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('.channel-item--grid')].find((b) => b.textContent.includes('A Movie'))?.click() || true`
+  )
+  await check('the movie player opens again', `!!document.querySelector('video.player-video')`, 20000)
+  await check(
+    'the Subtitle style button returns once the probe re-finds the track',
+    `[...document.querySelectorAll('button')].some((b) => b.textContent.includes('Subtitle style'))`,
+    60000
+  )
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('button')].find((b) => b.textContent.includes('Subtitle style'))?.click() || true`
+  )
+  await check('the style panel reopens after the hop', `!!document.querySelector('.subtitle-style-panel')`, 8000)
+  await check(
+    'the sync offset did not survive the channel change',
+    `${syncReadout}.includes('Off')`,
+    8000
+  )
   await pressEscape()
   await evaluate(cdp, `localStorage.removeItem('allisoniptv-subtitle-prefs'), true`)
 

@@ -14,6 +14,7 @@ import { nextSleepMode, sleepModeLabel, type SleepMode } from '../lib/sleepTimer
 import { previousLiveChannel } from '../lib/previousChannel'
 import { stepChannel, visibleLiveChannelList } from '../lib/channelStep'
 import { loadSubtitlePrefs, saveSubtitlePrefs, subtitleCssVariables, type SubtitlePrefs } from '../lib/subtitleStyle'
+import { applySubtitleDelay, clearSubtitleDelay } from '../lib/subtitleDelay'
 import { VpnWarnings } from './VpnWarnings'
 import { useTranscodeFallback } from '../lib/useTranscodeFallback'
 import { canDecodeAudioCodec } from '../lib/audioCodecSupport'
@@ -325,6 +326,21 @@ export function Player(): JSX.Element | null {
     setSubtitlePrefs(next)
     saveSubtitlePrefs(next)
   }
+  // Subtitle sync (0.46.0) — how long after the audio a cue appears, in ms; 0 = in time. A
+  // per-SESSION tweak, deliberately unlike the appearance prefs next door: the offset is tuned
+  // against ONE stream's audio, and a stale delay inherited by a different channel would be a
+  // lie the viewer has to notice and undo, so nothing persists it and the streamKey reset effect
+  // below zeroes it on every channel identity change.
+  const [subtitleDelayMs, setSubtitleDelayMs] = useState(0)
+  // The cuechange listener reads the offset synchronously — state alone would still hold the
+  // previous render's value if a cue event lands between the click and the re-render (the same
+  // reasoning as subtitlePrefsRef above).
+  const subtitleDelayMsRef = useRef(0)
+  subtitleDelayMsRef.current = subtitleDelayMs
+
+  function changeSubtitleDelay(ms: number): void {
+    setSubtitleDelayMs(ms)
+  }
   // null = off. A global "stop watching after N minutes" timer, not tied to any one channel —
   // deliberately survives a channel switch (see the effect below) since the point is winding
   // down a viewing session, not this specific channel. Player.tsx's own instance never actually
@@ -585,8 +601,104 @@ export function Player(): JSX.Element | null {
       vpnNoticeActiveRef.current = false
       setStatusNotice(null)
     }
+    // The subtitle sync offset is per-stream (0.46.0): whatever the last title's audio needed,
+    // the next one starts from zero. The ref is updated alongside the state so a cue event
+    // landing before the re-render already reads 0. Any shift still standing on the outgoing
+    // tracks is dropped here too — the wiring effect below also clears on unmount, but a
+    // channel SWITCH while the same element keeps its old tracks is this effect's to clean.
+    subtitleDelayMsRef.current = 0
+    setSubtitleDelayMs(0)
+    const video = videoRef.current
+    if (video) {
+      for (const track of Array.from(video.textTracks)) {
+        if (track.kind === 'subtitles' || track.kind === 'captions') clearSubtitleDelay(track)
+      }
+    }
     resetTranscodeFallback()
   }, [nowPlaying, resetTranscodeFallback])
+
+  // Subtitle sync wiring (0.46.0). Every cue the viewer sees must sit at the session offset —
+  // not just the ones parsed before the offset was chosen — so this listens where cues actually
+  // appear: 'cuechange' on each subtitles/captions track (hls.js parses WebVTT renditions
+  // fragment by fragment into fresh cue objects, so a one-time apply would leave every later
+  // line unshifted), 'addtrack'/'removetrack' on the element's track list (rendition swaps
+  // create and destroy tracks mid-stream), and the list's own 'change' event (mode switches —
+  // which track is active is the browser's and the pickers' to decide, and the newly-active
+  // track needs the offset the moment it starts rendering). Tracks of any other kind (chapters,
+  // descriptions, metadata) are left alone, and the ::cue appearance path is untouched: this
+  // moves cues in time, never in how they look.
+  const isSubtitleKind = useCallback((track: TextTrack): boolean => track.kind === 'subtitles' || track.kind === 'captions', [])
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video || !nowPlaying) return
+    const wired = new WeakSet<TextTrack>()
+
+    function applyTo(track: TextTrack): void {
+      const offset = subtitleDelayMsRef.current
+      if (offset === 0) clearSubtitleDelay(track)
+      else applySubtitleDelay(track, offset)
+    }
+
+    function wire(track: TextTrack): void {
+      if (wired.has(track)) return
+      wired.add(track)
+      // Freshly parsed cues land here one fragment at a time; applying with the current offset
+      // shifts only the newcomers (applySubtitleDelay keys stored state on cue identity).
+      track.addEventListener('cuechange', () => {
+        applyTo(track)
+      })
+    }
+
+    function syncTracks(): void {
+      // Hoisted declarations don't carry the caller's narrowing, so re-check rather than lean on
+      // the effect's early return.
+      if (!video) return
+      for (const track of Array.from(video.textTracks)) {
+        if (!isSubtitleKind(track)) continue
+        wire(track)
+        // Re-applied unconditionally and cheaply: a track re-enabled by a mode switch may hold
+        // re-parsed cues that have never seen the offset, and an offset of 0 makes this a no-op.
+        applyTo(track)
+      }
+    }
+
+    const onAddTrack = (e: TrackEvent): void => {
+      if (e.track && isSubtitleKind(e.track)) {
+        wire(e.track)
+        applyTo(e.track)
+      }
+    }
+    const onRemoveTrack = (e: TrackEvent): void => {
+      // Mostly hygiene: a removed track's WeakMap entry would GC anyway, but its cue objects
+      // can outlive the track if anything still holds them.
+      if (e.track) clearSubtitleDelay(e.track)
+    }
+    syncTracks()
+    video.textTracks.addEventListener('addtrack', onAddTrack)
+    video.textTracks.addEventListener('change', syncTracks)
+    video.textTracks.addEventListener('removetrack', onRemoveTrack)
+    return () => {
+      video.textTracks.removeEventListener('addtrack', onAddTrack)
+      video.textTracks.removeEventListener('change', syncTracks)
+      video.textTracks.removeEventListener('removetrack', onRemoveTrack)
+      for (const track of Array.from(video.textTracks)) {
+        if (isSubtitleKind(track)) clearSubtitleDelay(track)
+      }
+    }
+  }, [nowPlaying, isSubtitleKind])
+
+  // An offset CHANGE must re-shift the existing cues from their original times, never compound
+  // onto the previous delta — applySubtitleDelay does that restore-then-reapply itself off its
+  // stored snapshot, and offset 0 is the same call shape and simply restores. This effect covers
+  // the change while tracks already exist; tracks that appear later get the current offset from
+  // the wiring effect above.
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video || !nowPlaying) return
+    for (const track of Array.from(video.textTracks)) {
+      if (track.kind === 'subtitles' || track.kind === 'captions') applySubtitleDelay(track, subtitleDelayMs)
+    }
+  }, [subtitleDelayMs, nowPlaying])
 
   // Auto-reconnect with backoff (0.30.0): if the whole network dropped (not just this
   // fragment), hls.js's own retry budget may already be exhausted by the time connectivity
@@ -2998,7 +3110,9 @@ export function Player(): JSX.Element | null {
         {subtitleStyleOpen && !miniPlayer && (
           <SubtitleStylePanel
             prefs={subtitlePrefs}
+            delayMs={subtitleDelayMs}
             onChange={changeSubtitlePrefs}
+            onDelayChange={changeSubtitleDelay}
             onClose={() => setSubtitleStyleOpen(false)}
           />
         )}

@@ -587,7 +587,7 @@ describe('SubtitleStylePanel', () => {
   const prefs = { size: 100 as const, color: 'white' as const, box: 'solid' as const, outline: false }
 
   it('shows the current choices and the sample cue', () => {
-    render(<SubtitleStylePanel prefs={prefs} onChange={() => {}} onClose={() => {}} />)
+    render(<SubtitleStylePanel prefs={prefs} delayMs={0} onDelayChange={() => {}} onChange={() => {}} onClose={() => {}} />)
 
     expect((screen.getByLabelText('Size') as HTMLSelectElement).value).toBe('100')
     expect((screen.getByLabelText('Box') as HTMLSelectElement).value).toBe('solid')
@@ -598,7 +598,7 @@ describe('SubtitleStylePanel', () => {
 
   it('reports each change without touching the other choices', () => {
     const changes: unknown[] = []
-    render(<SubtitleStylePanel prefs={prefs} onChange={(next) => changes.push(next)} onClose={() => {}} />)
+    render(<SubtitleStylePanel prefs={prefs} delayMs={0} onDelayChange={() => {}} onChange={(next) => changes.push(next)} onClose={() => {}} />)
 
     // Each control reports only its own field — the owner merges, so a stale prop can never
     // resurrect an earlier value.
@@ -617,9 +617,54 @@ describe('SubtitleStylePanel', () => {
 
   it('closes on its own button', () => {
     let closed = 0
-    render(<SubtitleStylePanel prefs={prefs} onChange={() => {}} onClose={() => { closed += 1 }} />)
+    render(<SubtitleStylePanel prefs={prefs} delayMs={0} onDelayChange={() => {}} onChange={() => {}} onClose={() => { closed += 1 }} />)
     fireEvent.click(screen.getByLabelText('Close subtitle appearance'))
     expect(closed).toBe(1)
+  })
+
+  it('the Sync row shows the five steps and reports the current offset honestly', () => {
+    render(<SubtitleStylePanel prefs={prefs} delayMs={300} onDelayChange={() => {}} onChange={() => {}} onClose={() => {}} />)
+
+    for (const label of ['-500ms', '-100ms', 'Off', '+100ms', '+500ms']) {
+      expect(screen.getByText(label, { selector: '.subtitle-style-sync-btn' })).toBeTruthy()
+    }
+    // Positive means the text arrives after the sound — the row says so, not just "+300ms".
+    expect(screen.getByRole('status').textContent).toContain('Subtitles later by 300ms (+300ms)')
+    expect(screen.getByText('+500ms', { selector: '.subtitle-style-sync-btn' }).getAttribute('aria-pressed')).toBe('false')
+    // 300 is not one of the steps; nothing claims to be selected for it.
+    expect(screen.queryByText('+300ms', { selector: '.subtitle-style-sync-btn' })).toBeNull()
+  })
+
+  it('a negative offset reads as earlier, not as a signed oddity', () => {
+    render(<SubtitleStylePanel prefs={prefs} delayMs={-100} onDelayChange={() => {}} onChange={() => {}} onClose={() => {}} />)
+
+    expect(screen.getByRole('status').textContent).toContain('Subtitles earlier by 100ms (-100ms)')
+  })
+
+  it('reports offset steps without touching the appearance prefs', () => {
+    const delays: number[] = []
+    const changes: unknown[] = []
+    render(
+      <SubtitleStylePanel
+        prefs={prefs}
+        delayMs={0}
+        onDelayChange={(ms) => delays.push(ms)}
+        onChange={(next) => changes.push(next)}
+        onClose={() => {}}
+      />
+    )
+
+    fireEvent.click(screen.getByText('+100ms', { selector: '.subtitle-style-sync-btn' }))
+    fireEvent.click(screen.getByText('Off', { selector: '.subtitle-style-sync-btn' }))
+    expect(delays).toEqual([100, 0])
+    expect(changes).toEqual([])
+    expect(screen.getByRole('status').textContent).toContain('in time with the audio')
+  })
+
+  it('says plainly that the audio cannot be delayed', () => {
+    render(<SubtitleStylePanel prefs={prefs} delayMs={0} onDelayChange={() => {}} onChange={() => {}} onClose={() => {}} />)
+
+    expect(screen.getByText(/audio stream cannot be delayed/)).toBeTruthy()
   })
 })
 
