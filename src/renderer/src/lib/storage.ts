@@ -252,6 +252,14 @@ export async function loadSettings(): Promise<AppSettings> {
     console.warn('[settings] miniPlayerPosition was not a {x, y} of numbers on disk — resetting it')
     result.miniPlayerPosition = null
   }
+  // The buffer-profile auto switch (0.37.0) is a boolean toggle — a hand-edited non-boolean
+  // would make every `bufferProfileAuto ? … : …` branch unpredictable, so reset it honestly.
+  if (typeof result.bufferProfileAuto !== 'boolean') {
+    if (result.bufferProfileAuto !== undefined) {
+      console.warn('[settings] bufferProfileAuto was not a boolean on disk — resetting it')
+    }
+    result.bufferProfileAuto = false
+  }
   // Recordings (0.29.0): the folder override must be a string or null, and the preroll/postroll
   // seconds sane positive numbers — anything else reads as "unset" rather than reaching the
   // recorder's scheduling math.

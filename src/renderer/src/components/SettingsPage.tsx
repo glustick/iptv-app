@@ -181,10 +181,30 @@ export function SettingsPage(): JSX.Element | null {
             >
               Low latency
             </button>
+            <button
+              className={settings.bufferProfile === 'resilient' ? 'choice-button active' : 'choice-button'}
+              onClick={() => setBufferProfile('resilient')}
+            >
+              Resilient
+            </button>
           </div>
           <p className="settings-hint">
             Smooth buffers further ahead to avoid stalls on inconsistent connections. Low latency stays closer to
-            the live edge but is more prone to rebuffering.
+            the live edge but is more prone to rebuffering. Resilient buffers the deepest and sits furthest behind
+            the live edge — for connections that stall repeatedly.
+          </p>
+          <div className="settings-choice" style={{ marginTop: 8 }}>
+            <button
+              className={settings.bufferProfileAuto ? 'choice-button active' : 'choice-button'}
+              onClick={() => updateSettings({ bufferProfileAuto: !settings.bufferProfileAuto })}
+            >
+              Auto: {settings.bufferProfileAuto ? 'on' : 'off'}
+            </button>
+          </div>
+          <p className="settings-hint">
+            With Auto on, the player switches between Smooth and Resilient by itself — after repeated stall
+            recoveries it escalates to Resilient, and after ten clean minutes it settles back down. Your fixed
+            choice above is ignored while Auto is on.
           </p>
         </section>
 

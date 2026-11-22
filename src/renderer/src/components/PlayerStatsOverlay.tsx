@@ -53,13 +53,17 @@ function bufferedAhead(video: HTMLVideoElement): number {
 export function PlayerStatsOverlay({
   videoRef,
   hlsRef,
-  isLive = false
+  isLive = false,
+  getBufferProfile
 }: {
   videoRef: RefObject<HTMLVideoElement | null>
   hlsRef: RefObject<Hls | null>
   // Only live content gets the "playlist" row below: a finished playlist is normal (and correct)
   // for VOD and for the audio-fix transcode's own output, so reporting it there would be noise.
   isLive?: boolean
+  // Read fresh on every tick (0.37.0): the effective buffer profile can change mid-session
+  // (auto mode switches it via a reload), so a snapshot prop would go stale silently.
+  getBufferProfile?: () => string
 }): JSX.Element | null {
   const [stats, setStats] = useState<Stats | null>(null)
   // Fetched once per open: this describes the GPU/Chromium state, which changes far less often
@@ -160,6 +164,12 @@ export function PlayerStatsOverlay({
         <span>Buffered ahead</span>
         <span>{stats.bufferedAheadSeconds}s</span>
       </div>
+      {getBufferProfile && (
+        <div className="player-stats-row">
+          <span>Buffer profile</span>
+          <span>{getBufferProfile()}</span>
+        </div>
+      )}
       <div className="player-stats-row">
         <span>Dropped frames</span>
         <span>

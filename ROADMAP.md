@@ -231,6 +231,32 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.37.0** the resilient profile, and the player that picks it itself. **Third buffer
+  profile.** Smooth and low-latency covered two network shapes; a connection that stalls
+  repeatedly wants neither — it wants the deepest buffer and the longest live-sync target the
+  architecture allows. Resilient is exactly that: maxBufferLength 90, maxMaxBufferLength 150,
+  backBufferLength 180, liveSync 8 / latency 14 (smooth: 60/120/90 and 5/10). The ceiling is
+  not a taste decision: the live remux window is 15 segments (transcodeService's own invariant
+  comment), `liveMaxLatencyDurationCount` must be satisfiable INSIDE it, and 14 is the largest
+  count that fits — documented at both ends so neither file can silently drift past the other.
+  **Auto mode.** `bufferProfileAuto` (off by default; the fixed choice wins when off): the
+  player logs a timestamp for every stall-ladder action and network retry, and
+  `lib/bufferProfileAuto.ts` — pure, clock-injected, tested — turns the rolling log into
+  decisions: two recoveries inside five minutes escalate to resilient; ten clean minutes
+  de-escalate; a five-minute per-switch cool-down keeps the profile itself from flapping into
+  the instability it exists to prevent (a switch costs a reload). The asymmetry is deliberate:
+  escalating wrongly costs seconds of join latency, staying smooth wrongly costs the stalls
+  the viewer actually feels. The adaptation's state lives in refs (it must survive the reload
+  it triggers — stallLadderRef's reasoning), de-escalation gets a 60s heartbeat because quiet
+  stretches are exactly when nothing else fires, and the stats overlay's new Buffer profile row
+  reads fresh per tick so an auto switch is visible the moment it happens. Settings gains the
+  Resilient button and the Auto toggle (the fixed select stays honest about being ignored
+  while Auto is on). 933 tests (+6 adaptation decisions: escalation, de-escalation, sparse
+  holds, the cool-down on both sides). Typecheck and lint clean. **GUI smoke 147/147** —
+  defaults unchanged (auto off), which is the point: nothing moves unless asked. **Not
+  verified interactively:** the thresholds are reasoned, not tuned — no real flaky-network
+  session drove them yet; the operator's install is where that evidence comes from.
+
 - **0.36.0** VPN-aware playback — a tunnel drop finally reaches the player instead of only
   repainting status dots. The gap this closes: `vpn:status-changed` has always fired on every
   OpenVPN management-interface transition, but its only consumers were dots and banners — a

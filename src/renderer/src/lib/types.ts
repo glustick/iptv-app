@@ -176,7 +176,7 @@ export interface EpisodeProgress {
   updatedAt: number
 }
 
-export type BufferProfile = 'smooth' | 'lowLatency'
+export type BufferProfile = 'smooth' | 'lowLatency' | 'resilient'
 export type ClockFormat = '12h' | '24h'
 export type EpgRowDensity = 'comfortable' | 'compact'
 // Maps directly onto the <video> element's own object-fit values — 'contain' (the default,
@@ -279,6 +279,10 @@ export type TranscodeMemoryEntry =
 
 export interface AppSettings {
   bufferProfile: BufferProfile
+  // Auto mode (0.37.0): when on, the player escalates smooth→resilient by itself after
+  // repeated stall recoveries and de-escalates after a long clean stretch; the fixed choice
+  // above wins when this is off. Persisted like any setting so the choice survives restarts.
+  bufferProfileAuto: boolean
   clockFormat: ClockFormat
   parentalPin: string | null
   lockedCategoryIds: string[]
@@ -379,6 +383,7 @@ export interface AppSettings {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   bufferProfile: 'smooth',
+  bufferProfileAuto: false,
   clockFormat: '12h',
   parentalPin: null,
   lockedCategoryIds: [],

@@ -24,6 +24,7 @@ import { useNumericChannelEntry } from '../lib/useNumericChannelEntry'
 import { useToolbarOverflow } from '../lib/useToolbarOverflow'
 import { useHoverAutoHide } from '../lib/useHoverAutoHide'
 import { clampRestorePosition, isBufferStallError, nextStallAction, playbackSignature, stallRecoveryDelayMs } from '../lib/playbackWatchdog'
+import { adaptBufferProfile } from '../lib/bufferProfileAuto'
 import { nextReconnectDelayMs, shouldResetReconnectAttempts } from '../lib/reconnectBackoff'
 import { isTunneledNowPlaying, playingProviderHosts } from '../lib/vpnPlayback'
 import { describeHlsLevel } from '../lib/hlsLevels'
@@ -195,6 +196,7 @@ export function Player(): JSX.Element | null {
   const play = useAppStore((s) => s.play)
   const findChannelByNumber = useAppStore((s) => s.findChannelByNumber)
   const bufferProfile = useAppStore((s) => s.settings.bufferProfile)
+  const bufferProfileAuto = useAppStore((s) => s.settings.bufferProfileAuto)
   const persistedVolume = useAppStore((s) => s.settings.playerVolume)
   const persistedMuted = useAppStore((s) => s.settings.playerMuted)
   const videoScaleMode = useAppStore((s) => s.settings.videoScaleMode)
@@ -429,6 +431,13 @@ export function Player(): JSX.Element | null {
   // signature change after our own nudge/reload is swallowed; only a *second*, independent
   // change — i.e. playback genuinely moving — resets the ladder.
   const stallLadderRef = useRef({ lastSignature: '', lastProgressAt: 0, recoveries: 0, ignoreNextProgress: false })
+  // Adaptive buffer profile (0.37.0). The recovery-event log and the adaptation's own state
+  // (current profile, last switch) live in refs because they must survive the reloads a
+  // profile switch itself causes — exactly the stallLadderRef reasoning above. The effective
+  // profile is read by the hls constructor at attach time via adaptiveProfileRef.
+  const recoveryEventsRef = useRef<number[]>([])
+  const adaptiveProfileRef = useRef<'smooth' | 'resilient'>('smooth')
+  const lastProfileSwitchRef = useRef<number | null>(null)
   // Reconnect backoff (0.30.0) — the offline→online effect's attempt schedule, kept in refs
   // because it must survive the reloads it itself triggers (a state counter re-created per
   // attach would reset every cycle, exactly the reload-resets-the-ladder bug stallLadderRef
@@ -497,6 +506,43 @@ export function Player(): JSX.Element | null {
     startRememberedVodFallback,
     rememberDirectOutcome
   } = useTranscodeFallback()
+
+  // ---- adaptive buffer profile (0.37.0) ------------------------------------------------------
+  // Every stall-ladder action and network retry logs one timestamp; adaptBufferProfile turns
+  // the rolling log into escalate/de-escalate/hold decisions (hysteresis lives there, tested).
+  // A decision that differs from the current profile reloads the player — the constructor reads
+  // adaptiveProfileRef, so the next attach builds the new buffer shape; the refs survive the
+  // reload, so the adaptation's history is never reset by its own action.
+  const recordRecoveryEvent = useCallback((): void => {
+    const now = Date.now()
+    const events = recoveryEventsRef.current
+    events.push(now)
+    // The lib reasons over a 5-minute escalation window; 15 minutes of log gives de-escalation
+    // ("quiet for 10") all the history it needs without growing on a long session.
+    while (events.length > 0 && now - events[0] > 15 * 60_000) events.shift()
+  }, [])
+
+  const maybeAdaptBufferProfile = useCallback((): void => {
+    if (!bufferProfileAuto) return
+    const decision = adaptBufferProfile({
+      recoveryEvents: recoveryEventsRef.current,
+      current: adaptiveProfileRef.current,
+      lastSwitchAt: lastProfileSwitchRef.current,
+      now: Date.now()
+    })
+    if (!decision || decision === adaptiveProfileRef.current) return
+    adaptiveProfileRef.current = decision
+    lastProfileSwitchRef.current = Date.now()
+    // The sanctioned internal-reload channel: the constructor picks up the new profile.
+    setReloadTick((t) => t + 1)
+  }, [bufferProfileAuto])
+  // De-escalation has no event to piggyback on — quiet stretches are exactly when nothing
+  // fires — so a slow timer gives the adaptation its own heartbeat while something is playing.
+  useEffect(() => {
+    if (!bufferProfileAuto || !nowPlaying) return
+    const timer = setInterval(() => maybeAdaptBufferProfile(), 60_000)
+    return () => clearInterval(timer)
+  }, [bufferProfileAuto, nowPlaying, maybeAdaptBufferProfile])
 
   // Channel identity changing (including to nothing, i.e. the player closing) is the only
   // thing that should reset the transcode-fallback state or tear down a session — a fresh
@@ -918,6 +964,10 @@ export function Player(): JSX.Element | null {
       if (now - ladder.lastProgressAt < recoveryDelayMs) return
       const action = nextStallAction(ladder.recoveries, 2, nowPlaying.kind === 'live')
       ladder.recoveries += 1
+      // A recovery action is exactly the evidence the auto buffer-profile reasons over
+      // (0.37.0) — feed it, and let the decision (possibly a reload) follow immediately.
+      recordRecoveryEvent()
+      maybeAdaptBufferProfile()
       ladder.lastProgressAt = now
       if (action === 'liveEdge') {
         // Live's cheapest-first rung (0.30.0): a live channel that stopped progressing is most
@@ -1018,7 +1068,14 @@ export function Player(): JSX.Element | null {
     const isM3u8 = sourceUrl.endsWith('.m3u8')
 
     if (isM3u8 && Hls.isSupported()) {
-      const smooth = bufferProfile === 'smooth'
+      // The effective profile (0.37.0): the fixed setting wins when auto is off; when auto is
+      // on, the adaptation lib's last decision (mirrored into a ref so the whole session's
+      // history survives the reloads a switch itself causes) is what applies here.
+      const effectiveProfile = bufferProfileAuto
+        ? (adaptiveProfileRef.current ?? 'smooth')
+        : bufferProfile
+      const smooth = effectiveProfile === 'smooth'
+      const resilient = effectiveProfile === 'resilient'
       // hls.js only knows a playlist is genuinely finished once it sees #EXT-X-ENDLIST — until
       // then, it treats it as "live" regardless of *why* the tag is absent. The audio-fix
       // transcode's own output (movies/series, never real Live TV) has no ENDLIST for as long
@@ -1037,14 +1094,19 @@ export function Player(): JSX.Element | null {
         // "Smooth" favors stutter-free playback over sitting right on the live edge: a
         // generous buffer absorbs brief network hiccups at the cost of a few seconds of
         // extra latency. "Low latency" trades that back for staying closer to real-time.
-        maxBufferLength: smooth ? 60 : 20,
-        maxMaxBufferLength: smooth ? 120 : 40,
-        backBufferLength: smooth ? 90 : 30,
+        // Resilient (0.37.0) is the deepest-buffers shape this 15-segment remux window allows:
+        // see liveMaxLatencyDurationCount below for the invariant that caps it at 14.
+        maxBufferLength: smooth ? 60 : resilient ? 90 : 20,
+        maxMaxBufferLength: smooth ? 120 : resilient ? 150 : 40,
+        backBufferLength: smooth ? 90 : resilient ? 180 : 30,
         // hls.js requires liveMaxLatencyDurationCount to be strictly greater than
         // liveSyncDurationCount (it throws synchronously from the constructor otherwise) — so
         // the non-live "effectively infinite" values below must differ, not just both be huge.
-        liveSyncDurationCount: isLiveContent ? (smooth ? 5 : 3) : 1_000_000,
-        liveMaxLatencyDurationCount: isLiveContent ? (smooth ? 10 : 6) : 2_000_000,
+        // INVARIANT (mirrors transcodeService.ts's hls_list_size comment): the live remux
+        // window is 15 segments, and liveMaxLatencyDurationCount must be satisfiable INSIDE
+        // it — 14 (resilient) is the hard ceiling; a 16th segment cannot exist to satisfy 15.
+        liveSyncDurationCount: isLiveContent ? (smooth ? 5 : resilient ? 8 : 3) : 1_000_000,
+        liveMaxLatencyDurationCount: isLiveContent ? (smooth ? 10 : resilient ? 14 : 6) : 2_000_000,
         // These three load policies are what hls.js 1.7 actually reads — the flat
         // fragLoadingMaxRetry/levelLoadingMaxRetry/manifestLoadingMaxRetry fields this used to
         // set are @deprecated and silently ignored (checked directly against the installed
@@ -1313,6 +1375,8 @@ export function Player(): JSX.Element | null {
         switch (data.type) {
           case Hls.ErrorTypes.NETWORK_ERROR:
             networkRetryCount += 1
+            recordRecoveryEvent()
+            maybeAdaptBufferProfile()
             if (networkRetryCount <= MAX_NETWORK_RETRIES) {
               if (networkRetryTimer) clearTimeout(networkRetryTimer)
               networkRetryTimer = setTimeout(() => hls.startLoad(), NETWORK_RETRY_DELAY_MS)
@@ -1632,7 +1696,10 @@ export function Player(): JSX.Element | null {
     }
     // healthOverride (0.31.0): flipping it re-runs the attach so the refused channel plays;
     // everything else here is unchanged from pre-0.31.0.
-  }, [nowPlaying, bufferProfile, reloadTick, healthOverride])
+    // bufferProfileAuto (0.37.0): the constructor reads it (and the adaptive ref) at attach
+    // time, so toggling auto — or the callbacks' own identity changing with it — re-attaches,
+    // which is exactly what a profile-mode change wants.
+  }, [nowPlaying, bufferProfile, bufferProfileAuto, reloadTick, healthOverride, recordRecoveryEvent, maybeAdaptBufferProfile])
 
   // A live channel with a remembered transcode outcome (settings.transcodeMemory — an audio
   // fix or a raw-TS verdict; 0.17.0 unified the two memories) opens straight into the ffmpeg
@@ -3025,7 +3092,15 @@ export function Player(): JSX.Element | null {
         // unless the cursor is actually near the bottom edge — see the mousemove effect above.
         nowPlaying.kind === 'live' && !showChannelBar && !miniPlayer && cursorNearBottom && <PlayerSeekBar videoRef={videoRef} />}
         {showChannelBar && !miniPlayer && <PlayerChannelBar />}
-        {statsVisible && !miniPlayer && <PlayerStatsOverlay videoRef={videoRef} hlsRef={hlsRef} isLive={nowPlaying.kind === 'live'} />}
+        {statsVisible && !miniPlayer && (
+          <PlayerStatsOverlay
+            videoRef={videoRef}
+            hlsRef={hlsRef}
+            isLive={nowPlaying.kind === 'live'}
+            // Read per tick — auto mode (0.37.0) can switch the profile mid-session.
+            getBufferProfile={() => (bufferProfileAuto ? adaptiveProfileRef.current : bufferProfile)}
+          />
+        )}
       </div>
       {/* Rendered here too (App.tsx also mounts one) since .player-overlay is a fixed,
           full-viewport layer that covers everything else, fullscreen or not — without this,
