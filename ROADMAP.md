@@ -231,6 +231,28 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.41.0** the crash-resilient resume banner. The player can now survive stalls, dead
+  feeds, VPN drops and provider outages — but a renderer crash or a hard quit still lost the
+  viewing context entirely: relaunch landed on the Live TV tab with nothing acknowledging what
+  was on screen. `settings.lastPlayback` (identity only: kind, stream id, name, extension,
+  icon, tvArchive, playlistId — everything play() needs, and nothing more) is persisted at
+  every play() and cleared at every deliberate stop(), so a crash or Cmd+Q leaves the identity
+  behind and a stop never does. On the next launch the Live TV tab shows a dismissible
+  banner — **"You were watching X when the app closed" — Resume / Dismiss** — and never
+  auto-plays: the account may be single-connection, another device may hold the slot, and an
+  app that starts streaming uninvited is exactly the behaviour this provider throttles.
+  Resume routes through the store's own play(), so playlist-aware URL resolution, the
+  recording-conflict confirm and the previous-channel memory all apply unchanged; a VOD
+  title's position rides the existing episodeProgress machinery (0.18.0), which already
+  restores it — the banner deliberately carries no position of its own. Shape-checked on load
+  (a truncated write can never make the banner offer garbage), cleared by the smoke preamble
+  so every run starts on the plain Live TV surface its assertions expect. 955 tests (+2 store:
+  persist-then-clear and newest-wins). Typecheck and lint clean. **GUI smoke 147/147.**
+  **Not verified interactively:** the banner against a real crash mid-playback (the store path
+  is unit-covered; a quit-and-relaunch cycle isn't harness-drivable cheaply) and whether the
+  offering feels right on a machine where the app quit for the night rather than crashed —
+  the banner cannot tell the two apart, which is by design: both are "you were watching this".
+
 - **0.40.0** the recovery telemetry panel — every automatic recovery this player performs is
   now visible and copyable. The player has accumulated a lot of self-healing (the stall ladder,
   network retries, the reconnect backoff, the off-air re-probe, auto buffer-profile switches),

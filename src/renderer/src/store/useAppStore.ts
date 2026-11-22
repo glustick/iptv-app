@@ -2469,6 +2469,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     const updated = [entry, ...withoutDupe].slice(0, RECENTLY_WATCHED_LIMIT)
     set({ recentlyWatched: updated })
     saveRecentlyWatched(updated).catch((err) => console.error('[store] failed to save recently-watched:', err))
+    // Crash-resilient last-channel identity (0.41.0): whatever was playing when the app died
+    // or quit, the launch banner can offer it back. Identity only — a VOD title's position
+    // rides the existing episodeProgress machinery (0.18.0), which already restores it.
+    get().updateSettings({
+      lastPlayback: { kind, streamId, name, extension, icon, tvArchive, playlistId: playlistId ?? null }
+    })
   },
 
   playTimeshift: (channel, program) => {
@@ -2492,7 +2498,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
   },
 
-  stop: () => set({ nowPlaying: null, channelBarOpen: false, subtitleStyleOpen: false, miniPlayer: false }),
+  stop: () => {
+    set({ nowPlaying: null, channelBarOpen: false, subtitleStyleOpen: false, miniPlayer: false })
+    // Deliberate stop clears the resume offer (0.41.0) — the viewer said stop; a crash, by
+    // contrast, never reaches this, which is exactly what makes the launch banner honest.
+    get().updateSettings({ lastPlayback: null })
+  },
 
   // ---- Recordings (0.29.0) ------------------------------------------------------------------
 

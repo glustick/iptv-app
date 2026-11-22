@@ -102,6 +102,9 @@ function resetTestMappings() {
     // A leftover second playlist would group the sidebar and tag every row, which changes what the
     // fixture assertions see. The harness runs against exactly one provider.
     settings.enabledPlaylistIds = ['mock-test-1']
+    // The launch resume banner (0.41.0) persists whatever the last run was watching — cleared
+    // here so every run starts on the plain Live TV surface its assertions expect.
+    settings.lastPlayback = null
     const hiddenBefore = Array.isArray(settings.hiddenEpgSourceUrls) ? settings.hiddenEpgSourceUrls.length : 0
     settings.hiddenEpgSourceUrls = (settings.hiddenEpgSourceUrls ?? []).filter(
       (url) => !String(url).includes('127.0.0.1:8123')

@@ -11,6 +11,7 @@ import { Player } from './components/Player'
 import { PlayerErrorBoundary } from './components/PlayerErrorBoundary'
 import { SeriesModal } from './components/SeriesModal'
 import { EpgGridPanel } from './components/EpgGridPanel'
+import { ResumeLastPlaybackBanner } from './components/ResumeLastPlaybackBanner'
 import { MultiView } from './components/MultiView'
 import { SportsView } from './components/SportsView'
 import { RecordingsView } from './components/RecordingsView'
@@ -196,8 +197,13 @@ function App(): JSX.Element {
         {viewMode === 'live' ? (
           // The EPG grid's own channel column already lists every channel, so on the
           // Live TV tab it replaces the separate list entirely instead of sitting docked
-          // beside it — no point browsing the same channels twice.
-          <EpgGridPanel fullWidth />
+          // beside it — no point browsing the same channels twice. The resume banner (0.41.0)
+          // sits above it: the returning viewer's first surface is the first thing that
+          // should acknowledge what they were watching.
+          <>
+            <ResumeLastPlaybackBanner />
+            <EpgGridPanel fullWidth />
+          </>
         ) : viewMode === 'multiview' ? (
           // Sidebar (category selection) stays mounted and visible here on purpose — its
           // selected category is what scopes liveStreams for MultiView's own channel picker,

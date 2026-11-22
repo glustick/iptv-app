@@ -283,6 +283,18 @@ export interface AppSettings {
   // repeated stall recoveries and de-escalates after a long clean stretch; the fixed choice
   // above wins when this is off. Persisted like any setting so the choice survives restarts.
   bufferProfileAuto: boolean
+  // What was playing when the app last closed (0.41.0) — identity only, enough to call play()
+  // again; a VOD title's position rides the existing episodeProgress machinery. Cleared on
+  // stop, so the launch banner only ever offers something the viewer was actually watching.
+  lastPlayback: {
+    kind: 'live' | 'movie' | 'series'
+    streamId: number
+    name: string
+    extension: string
+    icon: string
+    tvArchive: number
+    playlistId: string | null
+  } | null
   clockFormat: ClockFormat
   parentalPin: string | null
   lockedCategoryIds: string[]
@@ -384,6 +396,7 @@ export interface AppSettings {
 export const DEFAULT_SETTINGS: AppSettings = {
   bufferProfile: 'smooth',
   bufferProfileAuto: false,
+  lastPlayback: null,
   clockFormat: '12h',
   parentalPin: null,
   lockedCategoryIds: [],

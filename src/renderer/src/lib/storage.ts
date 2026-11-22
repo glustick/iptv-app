@@ -260,6 +260,22 @@ export async function loadSettings(): Promise<AppSettings> {
     }
     result.bufferProfileAuto = false
   }
+  // Last-playback identity (0.41.0): must be the exact primitive shape play() needs or absent
+  // — a truncated write must never make the launch banner offer garbage.
+  const last = result.lastPlayback
+  if (
+    last !== null &&
+    last !== undefined &&
+    (typeof last !== 'object' ||
+      Array.isArray(last) ||
+      (last.kind !== 'live' && last.kind !== 'movie' && last.kind !== 'series') ||
+      typeof last.streamId !== 'number' ||
+      typeof last.name !== 'string' ||
+      typeof last.extension !== 'string')
+  ) {
+    console.warn('[settings] lastPlayback was not a valid playback identity on disk — resetting it')
+    result.lastPlayback = null
+  }
   // Recordings (0.29.0): the folder override must be a string or null, and the preroll/postroll
   // seconds sane positive numbers — anything else reads as "unset" rather than reaching the
   // recorder's scheduling math.

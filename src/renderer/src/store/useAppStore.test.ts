@@ -882,6 +882,43 @@ describe('tvArchive threading through play()', () => {
   })
 })
 
+describe('lastPlayback persistence (0.41.0)', () => {
+  function makeClient(): XtreamClient {
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    vi.spyOn(client, 'getStreamUrl').mockReturnValue('http://example.com/stream')
+    return client
+  }
+
+  it('play() persists the identity the launch banner needs; stop() clears it', () => {
+    useAppStore.setState({ client: makeClient(), settings: { ...useAppStore.getState().settings, lastPlayback: null } })
+
+    useAppStore.getState().play('live', 501, 'Channel', 'm3u8', 'icon.png', 1, 'mock-test-1')
+
+    const last = useAppStore.getState().settings.lastPlayback
+    expect(last).toEqual({
+      kind: 'live',
+      streamId: 501,
+      name: 'Channel',
+      extension: 'm3u8',
+      icon: 'icon.png',
+      tvArchive: 1,
+      playlistId: 'mock-test-1'
+    })
+
+    useAppStore.getState().stop()
+    expect(useAppStore.getState().settings.lastPlayback).toBeNull()
+  })
+
+  it('a second play() overwrites the first — the banner offers the newest thing watched', () => {
+    useAppStore.setState({ client: makeClient(), settings: { ...useAppStore.getState().settings, lastPlayback: null } })
+
+    useAppStore.getState().play('live', 501, 'First', 'm3u8')
+    useAppStore.getState().play('movie', 202, 'A Movie', 'mp4')
+
+    expect(useAppStore.getState().settings.lastPlayback).toMatchObject({ kind: 'movie', streamId: 202, name: 'A Movie' })
+  })
+})
+
 describe('toggleFavorite / isFavorited', () => {
   it('adds then removes the same entry on repeated toggles', () => {
     const entry: FavoriteEntry = { kind: 'live', stream: { stream_id: 42 } as unknown as LiveStream }

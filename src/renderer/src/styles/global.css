@@ -1349,6 +1349,23 @@ body.resizing-col {
   color: var(--text-dim);
 }
 
+/* The launch resume banner (0.41.0): sits above the Live TV grid until acted on. */
+.resume-last-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 8px 12px 0;
+  background: rgba(79, 124, 255, 0.08);
+  font-size: 13px;
+}
+
+.resume-last-banner strong {
+  margin: 0 2px;
+}
+
 /* The Recovery section (0.40.0): the module log's tail under the live counters, plus the
    one-line session-health copy a bug report wants. */
 .player-stats-recovery {
