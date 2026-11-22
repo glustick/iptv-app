@@ -64,9 +64,15 @@ describe('Xtream client + EPG pipeline against a synthetic provider', () => {
 
   it('decodes per-channel short EPG', async () => {
     const listings = await client.getShortEpg(mock.ids.channelMatchedById, 48)
-    expect(listings).toHaveLength(1)
+    // The fixture's ONE archived channel carries the catch-up window's shape: a programme that
+    // has already ended (the DVR window's reach, 0.47.0) ahead of the current listing,
+    // back-to-back as real EPG data is.
+    expect(listings).toHaveLength(2)
+    expect(listings[0].title).toBe("One's Earlier")
+    expect(Number(listings[0].stop_timestamp)).toBeLessThanOrEqual(Number(listings[1].start_timestamp))
+    expect(Number(listings[0].stop_timestamp)).toBeLessThan(Math.floor(Date.now() / 1000))
     // Titles arrive base64-encoded from a real panel; the client decodes them.
-    expect(listings[0].title).toBe('Short EPG Title')
+    expect(listings[1].title).toBe('Short EPG Title')
     // A channel the provider has nothing for stays honestly empty rather than inventing rows.
     expect(await client.getShortEpg(mock.ids.channelMatchedByFuzzyName, 48)).toEqual([])
   })

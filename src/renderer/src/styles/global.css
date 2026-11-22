@@ -1324,6 +1324,46 @@ body.resizing-col {
   background: #e5484d;
 }
 
+/* Catch-up timeline (0.47.0): the marker strip above the track, drawn only when the playing
+   channel genuinely carries an archive AND its short EPG lists programmes (Player passes the
+   bundle; PlayerSeekBar otherwise renders the plain bar with nothing added). Markers sit
+   proportionally across the same span the track below measures — see lib/catchupTimeline.ts
+   for the epoch mapping — with the programme containing right now highlighted. */
+
+.player-seekbar-column {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.player-seekbar-markers {
+  position: relative;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.player-seekbar-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.player-seekbar-marker--current {
+  background: var(--accent);
+}
+
+.player-seekbar-extent {
+  align-self: flex-end;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
 .player-stats-overlay {
   position: absolute;
   top: 12px;

@@ -309,6 +309,14 @@ export interface NowPlaying {
   // (Player.tsx) can show it without depending on the currently-browsed category's liveStreams
   // list, which may not even contain this channel (e.g. reached via Favorites or search).
   icon: string
+  // How far back this channel's catch-up archive goes, in HOURS (the provider field is
+  // tv_archive_duration and is hours — see LiveStream). 0 means "no usable archive window",
+  // which keeps the seek bar's catch-up timeline (0.47.0) hidden for M3U profiles and
+  // un-archived channels alike rather than rendering markers nobody can seek onto. play()
+  // resolves it from the loaded channel catalogs and playTimeshift takes it straight off the
+  // full LiveStream record the grid handed it; playRecording uses 0 honestly — a local
+  // recording is its own DVR window, not the provider's.
+  tvArchiveDurationHours: number
 }
 
 /**
@@ -2500,6 +2508,22 @@ export const useAppStore = create<AppState>((set, get) => ({
         return
       }
     }
+    // The catch-up window (0.47.0) rides the same ride-along the tvArchive flag does — but
+    // resolved from the loaded catalogs rather than threaded through the signature: the one
+    // play() call site that matters most without the full LiveStream record in hand is the
+    // launch banner's lastPlayback replay (identity-only by design), so a required parameter
+    // would arrive undefined exactly where the timeline is likeliest to be wanted. Every live
+    // play() call site's channel came from liveStreams (browsed category) or
+    // numericChannelCatalog (the full catalog search/numeric entry use), so the lookup finds
+    // it; finding nothing yields 0, which only hides the timeline — never misplaces it.
+    const liveRecord =
+      kind === 'live'
+        ? [...get().liveStreams, ...(get().numericChannelCatalog ?? [])].find(
+            (stream) =>
+              stream.stream_id === streamId &&
+              (playlistId == null || stream.playlistId == null || stream.playlistId === playlistId)
+          )
+        : undefined
     set({
       nowPlaying: {
         kind,
@@ -2510,6 +2534,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         extension,
         tvArchive,
         icon,
+        tvArchiveDurationHours: liveRecord?.tv_archive_duration ?? 0,
         url
       },
       // Starting something new while the mini card is up is an explicit "watch this" — restore
@@ -2561,6 +2586,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         extension: 'm3u8',
         tvArchive: channel.tv_archive,
         icon: channel.stream_icon,
+        // The full LiveStream record is in hand here (the grid/channel bar passed it), so the
+        // DVR window threads directly off it — no catalog lookup needed.
+        tvArchiveDurationHours: channel.tv_archive_duration,
         url
       },
       // Same rule as play(): a new programme is an explicit watch — leave mini mode.
@@ -2705,7 +2733,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         url: `${proxyBase}/__recordings/${entry.id}/index.m3u8`,
         extension: 'm3u8',
         tvArchive: 0,
-        icon: ''
+        icon: '',
+        tvArchiveDurationHours: 0
       },
       miniPlayer: false
     })

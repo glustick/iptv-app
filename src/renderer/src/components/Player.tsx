@@ -202,6 +202,7 @@ export function Player(): JSX.Element | null {
   const persistedVolume = useAppStore((s) => s.settings.playerVolume)
   const persistedMuted = useAppStore((s) => s.settings.playerMuted)
   const videoScaleMode = useAppStore((s) => s.settings.videoScaleMode)
+  const clockFormat = useAppStore((s) => s.settings.clockFormat)
   const updateSettings = useAppStore((s) => s.updateSettings)
   const episodeProgress = useAppStore((s) => s.episodeProgress)
   const updateEpisodeProgress = useAppStore((s) => s.updateEpisodeProgress)
@@ -2433,6 +2434,20 @@ export function Player(): JSX.Element | null {
         )
       : undefined
 
+  // The seek bar's catch-up timeline (0.47.0) — offered only when the channel genuinely
+  // carries an archive: the flag is on AND the provider named a window length (both live on
+  // NowPlaying, threaded by play()/playTimeshift) AND this channel's short EPG has listings to
+  // draw (an M3U profile fetches none, so the plain bar renders there with nothing added —
+  // m3uClient's getTimeshiftUrl throws, making catch-up honestly unavailable, not broken).
+  const catchupTimelineData =
+    nowPlaying.kind === 'live' && nowPlaying.tvArchive === 1 && nowPlaying.tvArchiveDurationHours > 0
+      ? {
+          programmes: shortEpgByStream[channelKey(nowPlaying.playbackPlaylistId, nowPlaying.streamId, primaryPlaylistId)] ?? [],
+          archiveHours: nowPlaying.tvArchiveDurationHours,
+          clockFormat
+        }
+      : null
+
   async function togglePip(): Promise<void> {
     const video = videoRef.current
     if (!video) return
@@ -3277,7 +3292,9 @@ export function Player(): JSX.Element | null {
         {// Hidden while the channel bar/EPG is open (both anchor to the bottom edge, and the
         // channel bar already shows its own sense of "when" via the EPG grid's now-line) and
         // unless the cursor is actually near the bottom edge — see the mousemove effect above.
-        nowPlaying.kind === 'live' && !showChannelBar && !miniPlayer && cursorNearBottom && <PlayerSeekBar videoRef={videoRef} />}
+        nowPlaying.kind === 'live' && !showChannelBar && !miniPlayer && cursorNearBottom && (
+          <PlayerSeekBar videoRef={videoRef} catchup={catchupTimelineData} />
+        )}
         {showChannelBar && !miniPlayer && <PlayerChannelBar />}
         {statsVisible && !miniPlayer && (
           <PlayerStatsOverlay

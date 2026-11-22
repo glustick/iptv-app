@@ -859,6 +859,60 @@ describe('tvArchive threading through play()', () => {
     expect(state.recentlyWatched[0].tvArchive).toBe(1)
   })
 
+  it('resolves tvArchiveDurationHours for play() from the browsed catalog (0.47.0)', () => {
+    // The same channel shape the grid hands play(): the full LiveStream record carries
+    // tv_archive_duration (HOURS) — play() looks the record up rather than threading an extra
+    // parameter through every call site, so the launch banner's identity-only replay resolves
+    // it too.
+    useAppStore.setState({
+      client: makeClient(),
+      liveStreams: [{ stream_id: 501, tv_archive: 1, tv_archive_duration: 4 } as never]
+    })
+
+    useAppStore.getState().play('live', 501, 'Channel With Catchup', 'm3u8', 'icon.png', 1)
+
+    expect(useAppStore.getState().nowPlaying?.tvArchiveDurationHours).toBe(4)
+  })
+
+  it('resolves tvArchiveDurationHours from the full numeric catalog when the browsed list lacks the channel', () => {
+    // The search palette and numeric entry play channels the browsed category doesn't hold —
+    // the full catalog (numericChannelCatalog) is where those records live.
+    useAppStore.setState({
+      client: makeClient(),
+      liveStreams: [],
+      numericChannelCatalog: [{ stream_id: 501, tv_archive: 1, tv_archive_duration: 12 } as never]
+    })
+
+    useAppStore.getState().play('live', 501, 'Channel Via Search', 'm3u8', 'icon.png', 1)
+
+    expect(useAppStore.getState().nowPlaying?.tvArchiveDurationHours).toBe(12)
+  })
+
+  it('leaves tvArchiveDurationHours at the honest 0 when no catalog holds the channel', () => {
+    // 0 hides the seek bar's timeline — a wrong window would misplace markers, so unknown
+    // resolves to hidden, never guessed.
+    useAppStore.setState({ client: makeClient(), liveStreams: [] })
+
+    useAppStore.getState().play('live', 501, 'Channel Unknown', 'm3u8', 'icon.png', 1)
+
+    expect(useAppStore.getState().nowPlaying?.tvArchiveDurationHours).toBe(0)
+  })
+
+  it('playTimeshift threads tvArchiveDurationHours straight off the channel record (0.47.0)', () => {
+    const client = new XtreamClient('http://example.com', 'user', 'pass')
+    useAppStore.setState({ client, liveStreams: [] })
+
+    useAppStore.getState().playTimeshift(
+      { stream_id: 501, name: 'One HD', tv_archive: 1, tv_archive_duration: 4, stream_icon: '' } as never,
+      { title: 'A Show', start_timestamp: String(Math.floor(Date.now() / 1000) - 3600), stop_timestamp: String(Math.floor(Date.now() / 1000)) } as never
+    )
+
+    const np = useAppStore.getState().nowPlaying
+    expect(np?.tvArchive).toBe(1)
+    expect(np?.tvArchiveDurationHours).toBe(4)
+    expect(np?.url).toContain('/timeshift/')
+  })
+
   it('defaults tvArchive to 0 when not provided, without disturbing other entries already in recentlyWatched', () => {
     useAppStore.setState({ client: makeClient() })
 

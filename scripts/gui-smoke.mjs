@@ -1916,11 +1916,14 @@ async function main() {
   // --- programme detail popover (0.45.0) ----------------------------------------------------------
   // A single click on a programme block now OPENS a detail popover (channel, title, time range,
   // description, actions) instead of acting right away; a second click on the SAME block — or the
-  // popover's Watch button — takes the action the click always did. The fixture carries no
-  // catch-up archive (tv_archive is 0 everywhere), so that action is the ordinary one: selecting
-  // the channel into the preview, observable in the preview panel's own header. 'Two's Show' has
-  // no guide description on purpose (the honest empty state) while 'Two's Next' genuinely does.
+  // popover's Watch button — takes the action the click always did. The catch-up archive lives
+  // only on One HD (0.47.0, caught up in its own section below); these blocks are on 101 Two HD,
+  // un-archived, so the action stays the ordinary one: selecting the channel into the preview,
+  // observable in the preview panel's own header. 'Two's Show' has no guide description on
+  // purpose (the honest empty state) while 'Two's Next' genuinely does.
   // The Escape below is mid-section and single: the section ends on a Watch click, not an Escape.
+  // Programme-block clicks (shared with the 0.47.0 catch-up section further down): the grid is
+  // virtualized in rows but its blocks are plain DOM, so a text-exact click lands like a user's.
   const clickProgrammeBlock = (title) => `(() => {
     const b = [...document.querySelectorAll('.epg-block')].find((x) => x.querySelector('.epg-block-label')?.textContent?.trim() === ${JSON.stringify(title)})
     if (!b) return false
@@ -2018,6 +2021,71 @@ async function main() {
     `[...document.querySelectorAll('.tabs .tab')].find((b) => b.textContent.trim() === 'Live TV')?.click() || true`
   )
   await sleep(800)
+
+  // --- catch-up timeline on the seek bar (0.47.0) --------------------------------------------------
+  // Placed here deliberately, AFTER every grid-dependent section: the catch-up action closes the
+  // channel preview (watchFromStart), and the full-width grid panel renders nothing but a
+  // "Loading channels…" placeholder without a previewed channel — running this any earlier
+  // would leave every later block click clicking nothing (found live, first run: 12 cascade
+  // failures). One HD is the fixture's ONLY archived channel (tv_archive 1, a 4-hour window), and
+  // its short EPG carries a programme that genuinely ENDED 90 seconds ago ("One's Earlier")
+  // back-to-back with the current listing — exactly what a provider's guide holds for an archived
+  // channel. Clicking that past block opens the detail popover, whose action reads Catch-up and
+  // takes the timeshift path; the player it opens carries the archive flag AND the window length
+  // onto the seek bar, which draws the catch-up timeline: one marker per buffered programme,
+  // proportional across the same seekable range the progress bar reads, the programme containing
+  // now highlighted, and the extent label naming how far behind live the window reaches. The
+  // synthetic mousemove in each expression is what reveals the bar at all (it lives in the
+  // player's bottom-edge hover zone and auto-hides after 5s — HOVER_AUTO_HIDE_MS in Player.tsx),
+  // re-sent on every poll so the bar stays up while the check reads it; the first poll paints
+  // the bar, the second one reads it.
+  await evaluate(
+    cdp,
+    `(() => { const row = [...document.querySelectorAll('.epg-row')].find((r) => r.innerText.includes('One HD')); row?.querySelector('.epg-row-channel')?.click(); return !!row })()`
+  )
+  await check('the One HD row re-previews the archived channel', `document.querySelector('.epg-panel-top-heading h2')?.innerText === 'One HD'`, 15000)
+  // The listing the store cached when this row first rendered is stale by now — a run reaches
+  // this section tens of minutes in, and a "current" programme fetched at run start has long
+  // since ended (found live, first run: the marker strip could only ever draw the pooled
+  // future listing). Refresh through the app's own per-channel affordance — the same button a
+  // user hits when the guide looks stale — and give the fetch a moment to land.
+  await evaluate(
+    cdp,
+    `(() => { const b = [...document.querySelectorAll('button')].find((x) => (x.title || '').startsWith("Fetch this channel's listings again")); b?.click(); return !!b })()`
+  )
+  await sleep(3000)
+  await evaluate(cdp, clickProgrammeBlock("One's Earlier"))
+  await check(
+    "a past programme on the archived channel offers Catch-up in the popover",
+    `document.querySelector('.epg-programme-popover-watch')?.textContent.trim().startsWith('▶ Catch-up')`
+  )
+  await evaluate(cdp, `(() => { document.querySelector('.epg-programme-popover-watch')?.click(); return true })()`)
+  await check(
+    'the catch-up action opens the player on the timeshift stream',
+    `[...document.querySelectorAll('video')].some((v) => v.classList.contains('player-video') && v.readyState >= 2 && v.seekable.length > 0)`,
+    40000
+  )
+  const revealSeekbar = `(() => {
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: window.innerWidth / 2, clientY: window.innerHeight - 10, bubbles: true }))
+    return true
+  })()`
+  await check(
+    'the seek bar draws the catch-up marker strip with the buffered programmes named',
+    `${revealSeekbar};
+     [...document.querySelectorAll('.player-seekbar-marker')].some((m) => (m.title || '').includes("One's Earlier")) &&
+     [...document.querySelectorAll('.player-seekbar-marker')].some((m) => (m.title || '').includes('Short EPG Title')) &&
+     !!document.querySelector('.player-seekbar-marker--current')`,
+    20000
+  )
+  await check(
+    "the extent label says how far behind live the window reaches",
+    `${revealSeekbar};
+     (document.querySelector('.player-seekbar-extent')?.innerText || '').includes('behind live')`,
+    20000
+  )
+  // No trailing Escape on purpose: the cheat-sheet section below opens with its own, and a
+  // double-Escape would close the channel preview the grid lives in — its leading pressEscape
+  // is what closes this player.
 
   // --- keyboard cheat-sheet (0.26.0) -----------------------------------------------------------
   // The component test holds the render and Close; what it cannot hold is the keystroke itself,

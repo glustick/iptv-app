@@ -118,7 +118,11 @@ const ids = {
 }
 
 const LIVE_STREAMS = [
-  live(ids.channelMatchedById, 'One HD', 'one.hd', '10'),
+  // The ONE archived channel (0.47.0): catch-up via the timeshift path, a 4-hour DVR window —
+  // the only channel whose short EPG carries past programmes and the only one the seek bar's
+  // catch-up timeline ever renders for. Every other channel stays tv_archive 0 so the feature
+  // stays honestly hidden there.
+  live(ids.channelMatchedById, 'One HD', 'one.hd', '10', 1, 4),
   // Residue by construction: "Channel One News Extra" shares two of its three loose tokens with the
   // guide's "Channel One News", so it is NOT an exact or relaxed match — but it scores 0.8, which is
   // what the bulk-suggestion planner exists to place. Without a channel like this the bulk apply
@@ -142,7 +146,14 @@ const LIVE_STREAMS = [
   live(ids.channelOffAirFeed, 'Off Air Feed', null, '10')
 ]
 
-function live(streamId: number, name: string, epgChannelId: string | null, categoryId: string) {
+function live(
+  streamId: number,
+  name: string,
+  epgChannelId: string | null,
+  categoryId: string,
+  tvArchive = 0,
+  tvArchiveDuration = 0
+) {
   return {
     num: streamId,
     name,
@@ -153,9 +164,9 @@ function live(streamId: number, name: string, epgChannelId: string | null, categ
     added: '0',
     category_id: categoryId,
     custom_sid: null,
-    tv_archive: 0,
+    tv_archive: tvArchive,
     direct_source: '',
-    tv_archive_duration: 0
+    tv_archive_duration: tvArchiveDuration
   }
 }
 
@@ -205,19 +216,27 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
     }
 
     // Xtream stream paths — the app plays live TV as /live/<user>/<pass>/<id>.m3u8 through its own
-    // proxy, so serving the same shape here lets real playback run against the fixture.
-    if (url.pathname.startsWith('/live/')) {
+    // proxy, so serving the same shape here lets real playback run against the fixture. Catch-up
+    // (0.47.0) plays at /timeshift/<user>/<pass>/<minutes>/<start-token>/<id>.m3u8; the fixture
+    // answers ANY such request with one bounded 150-second stream rather than honoring the start
+    // token — what the catch-up checks need from this path is a stream that plays and whose
+    // seekable window is minutes deep (so the "behind live" extent label and the marker strip
+    // have something to draw), not the 6-second live file.
+    const isTimeshift = url.pathname.startsWith('/timeshift/')
+    if (url.pathname.startsWith('/live/') || isTimeshift) {
       const name = url.pathname.split('/').pop() ?? ''
       if (!mediaDir) {
         res.writeHead(404)
         res.end('playback fixtures not configured')
         return
       }
-      const variant = name.endsWith('.m3u8')
-        ? variantForStreamId(name.replace(/\.m3u8$/, ''))
-        : name.startsWith('dolby')
-          ? 'dolby'
-          : 'aac'
+      const variant: MediaVariant = isTimeshift
+        ? 'catchup'
+        : name.endsWith('.m3u8')
+          ? variantForStreamId(name.replace(/\.m3u8$/, ''))
+          : name.startsWith('dolby')
+            ? 'dolby'
+            : 'aac'
       void ensureMedia(variant)
         .then(() => {
           if (name.endsWith('.m3u8')) {
@@ -426,20 +445,45 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
       case 'get_short_epg': {
         const streamId = url.searchParams.get('stream_id')
         const { start, end } = programmeWindow()
+        // One HD — the fixture's ONE archived channel (0.47.0) — runs its OWN schedule rather
+        // than the shared programmeWindow: a REAL provider's short EPG for an archived channel
+        // reaches back into the DVR window, and the seek bar's catch-up markers can only ever
+        // show what the played stream's buffer contains (the fixture's catch-up stream is 150
+        // seconds deep — a still-started timeshift window is minutes, not the advertised 4
+        // hours). So the schedule here puts a programme boundary just inside that window: "One's
+        // Earlier" genuinely ENDED 90 seconds ago, and the current listing started right where
+        // it ended — back-to-back, as real EPG data is — which gives the marker strip two honest
+        // segments to draw and the guide a past block deep enough to render in the current-hour
+        // window without scrolling. The current listing keeps the title the row assertions have
+        // always read ("Short EPG Title"); only its start moved to the boundary.
+        const catchupStart = start + 1710 // the current programme began 90 seconds ago
+        const catchupEarlierStart = catchupStart - 3600 // …the one before it is an hour long, ending exactly where this one began
         json({
           epg_listings:
             streamId === String(ids.channelMatchedById)
               ? [
                   {
+                    id: '0',
+                    epg_id: 'one.hd',
+                    title: Buffer.from("One's Earlier").toString('base64'),
+                    lang: '',
+                    start: isoLocal(catchupEarlierStart),
+                    end: isoLocal(catchupStart),
+                    description: Buffer.from('The programme just before the current one').toString('base64'),
+                    channel_id: 'one.hd',
+                    start_timestamp: String(catchupEarlierStart),
+                    stop_timestamp: String(catchupStart)
+                  },
+                  {
                     id: '1',
                     epg_id: 'one.hd',
                     title: Buffer.from('Short EPG Title').toString('base64'),
                     lang: '',
-                    start: isoLocal(start),
+                    start: isoLocal(catchupStart),
                     end: isoLocal(end),
                     description: Buffer.from('Desc').toString('base64'),
                     channel_id: 'one.hd',
-                    start_timestamp: String(start),
+                    start_timestamp: String(catchupStart),
                     stop_timestamp: String(end)
                   }
                 ]
@@ -459,7 +503,8 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
   const mediaDir = options.ffmpegPath ? mkdtempSync(join(tmpdir(), 'mock-hls-')) : null
   const mediaReady = new Map<string, Promise<void>>()
   let movieReady: Promise<void> | null = null
-  const ensureMedia = (variant: 'aac' | 'dolby' | 'stall' | 'offair'): Promise<void> => {
+  type MediaVariant = 'aac' | 'dolby' | 'stall' | 'offair' | 'catchup'
+  const ensureMedia = (variant: MediaVariant): Promise<void> => {
     if (!options.ffmpegPath || !mediaDir) return Promise.resolve()
     let pending = mediaReady.get(variant)
     if (!pending) {
@@ -471,8 +516,10 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
             '-f', 'lavfi', '-i', 'testsrc=size=640x360:rate=25',
             '-f', 'lavfi', '-i', 'sine=frequency=440',
             // The stalled-feed fixture needs enough media to keep advancing for the better part
-            // of a minute after its freeze; the others only ever need a few seconds.
-            '-t', variant === 'stall' || variant === 'offair' ? '60' : '6',
+            // of a minute after its freeze; the catch-up fixture (0.47.0) needs a window deep
+            // enough to read as "behind live" (150s → "2m"); the others only ever need a few
+            // seconds.
+            '-t', variant === 'stall' || variant === 'offair' ? '60' : variant === 'catchup' ? '150' : '6',
             '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-g', '25',
             '-c:a', variant === 'dolby' ? 'eac3' : 'aac',
             ...(variant === 'dolby' ? ['-b:a', '192k'] : []),

@@ -148,6 +148,7 @@ describe('transcode memory (VOD/series)', () => {
         url: PLAY_URL,
         extension: 'mkv',
         tvArchive: 0,
+        tvArchiveDurationHours: 0,
         icon: ''
       }
     })
@@ -263,6 +264,7 @@ describe('transcode memory (VOD/series)', () => {
         url: 'http://provider.example/live/u/p/42.ts',
         extension: 'ts',
         tvArchive: 0,
+        tvArchiveDurationHours: 0,
         icon: ''
       }
     })
@@ -305,6 +307,7 @@ describe('transcode memory (VOD/series)', () => {
         url: 'http://provider.example/live/u/p/42.ts',
         extension: 'ts',
         tvArchive: 0,
+        tvArchiveDurationHours: 0,
         icon: ''
       }
     })
@@ -389,6 +392,7 @@ describe('quality ceiling (live re-encode cap)', () => {
         url: PLAY_URL,
         extension: 'mkv',
         tvArchive: 0,
+        tvArchiveDurationHours: 0,
         icon: ''
       }
     })

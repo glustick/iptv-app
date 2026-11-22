@@ -231,6 +231,67 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.47.0** the catch-up timeline — the seek bar now says what a rewound stream is showing, not
+  just how far behind it is. Rewinding live TV has existed since the DVR bar landed (wheel-scrub,
+  skip, click-to-seek over the video's own seekable range), and catch-up from the guide has played
+  past programmes since the timeshift path landed — but the bar itself was content-blind: it drew
+  one anonymous progress line, and the one field that says how far back a channel's archive
+  actually goes (`tv_archive_duration`, HOURS on every LiveStream record) was never threaded
+  anywhere at all, so the app could offer catch-up without ever knowing the shape of the window
+  it was offering. NowPlaying carries `tvArchiveDurationHours` beside the flag it always carried
+  (`tvArchive`) — playTimeshift takes it straight off the full channel record the grid hands it,
+  and play() resolves it from the loaded catalogs (browsed liveStreams, then the full
+  numericChannelCatalog) rather than threading a ninth parameter through every call site,
+  because the call site that matters most without a LiveStream in hand is the launch banner's
+  identity-only replay, where a required parameter would arrive undefined exactly when the
+  timeline is likeliest to be wanted; playRecording stays honest at 0 (a local recording is its
+  own window, not the provider's). The mechanics live in lib/catchupTimeline.ts, pure and
+  structural: given the seekable window and the channel's short EPG listings it returns one
+  marker per programme still in the buffer — fractions 0..1 across the window, programmes
+  clipping at both ends, unparseable stamps dropped rather than misplaced, back-to-back
+  listings meeting exactly. The epoch mapping is the one honest bridge available: the <video>
+  element's seekable range is MEDIA-RELATIVE seconds (hls.js keeps program-date-time on its own
+  events, never on the element), programme stamps are epoch seconds — converted once, in the
+  lib — so the window's END anchors at now (the live edge, the same identity goToLive has always
+  relied on) and spans backwards across its own duration, making media-seconds fractions and
+  epoch fractions two readings of one line; PlayerSeekBar computes markers per poll tick from
+  the same seekable it already polls, the programme containing now highlighted, hovering a
+  marker naming title and air times through the popover's own formatProgrammeTime (a title
+  attribute — no new popover infra), and a windowExtentLabel beside the strip saying what the
+  depth is worth ("3.2h behind live" for a real archive, "2m" for a just-started timeshift's
+  shallow buffer, "at live" under a minute — never counting buffer beyond now as reachable
+  depth). Honesty carries the boundaries: an M3U profile (whose client's getTimeshiftUrl throws
+  and whose guide fetches nothing) or a channel with the flag but no window length renders the
+  plain bar with nothing added — no empty chrome, no markers nobody can seek onto — and the LIVE
+  edge dot is untouched. The fixture grew its first archived channel for this: One HD carries
+  tv_archive 1 with a 4-hour window, and its short EPG now runs a real archived channel's shape —
+  a programme that genuinely ENDED 90 seconds ago, back-to-back with the current listing —
+  served by a bounded 150-second catch-up stream on the /timeshift/ path (the start token is not
+  honored on purpose: what the checks need from that path is a minutes-deep buffer to draw
+  against, not the 6-second live file). 1009 tests (+15: the fraction math with clipping at both
+  ends, seconds→ms conversion, multi-programme ordering across a shared boundary, the
+  empty/inverted/unparseable honest empties, the extent label's hours/minutes/at-live rounding,
+  play()'s catalog resolution of the window — browsed list, full catalog, and the unknown-channel
+  0 that hides rather than guesses — and playTimeshift threading the record's own field).
+  Typecheck and lint clean. **GUI smoke 177/177** (5 new: the past block's popover reading
+  "▶ Catch-up", the timeshift stream actually playing, the marker strip naming both buffered
+  programmes with the current one highlighted, and the "behind live" extent label — the seek bar
+  revealed per check by the synthetic bottom-edge mousemove its hover zone needs, and the section
+  re-previewing One HD first). Two live-found harness lessons shaped that section's placement:
+  the catch-up action closes the channel preview, and the full-width grid renders nothing but a
+  "Loading channels…" placeholder without one — so the section runs AFTER every grid-dependent
+  section (its first run, placed early, left twelve later checks clicking nothing); and the
+  listing the store cached at run start is genuinely stale tens of minutes later (a "current"
+  programme fetched then has long ended — the marker strip could only draw the pooled future
+  slot), so the section refreshes through the app's own per-channel "↻ Refresh listings" button
+  before clicking the past block. **Not verified interactively:** the marker math against a REAL
+  provider's sliding DVR window — the fixture's catch-up stream is a bounded file, so
+  end-at-now anchoring is exact to within segment duration on a genuine live stream but has
+  never been pointed at a real provider's tv_archive_duration beyond what the integration test
+  decodes; and markers against a window whose listings sit hours deep (the 4-hour fixture
+  archive is advertised, but its buffer only ever reaches minutes back — the honest case a
+  still-started timeshift actually shows).
+
 - **0.46.0** the subtitle sync delay — the panel that already decided how a cue looks now also
   decides when it appears. A transcoded or rendition subtitle inherits the stream's own timing,
   and when that timing disagrees with the audio (a broadcast mux offset, a sloppy provider
