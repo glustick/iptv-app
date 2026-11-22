@@ -12,6 +12,7 @@ import { PlayerErrorBoundary } from './components/PlayerErrorBoundary'
 import { SeriesModal } from './components/SeriesModal'
 import { EpgGridPanel } from './components/EpgGridPanel'
 import { ResumeLastPlaybackBanner } from './components/ResumeLastPlaybackBanner'
+import { registerConnectionHolder, releaseConnectionHolder } from './lib/connectionLedger'
 import { MultiView } from './components/MultiView'
 import { SportsView } from './components/SportsView'
 import { RecordingsView } from './components/RecordingsView'
@@ -45,6 +46,17 @@ function App(): JSX.Element {
     const interval = setInterval(() => void checkEpgReminders(), 30_000)
     return () => clearInterval(interval)
   }, [checkEpgReminders])
+
+  // An active recording holds the provider connection for its whole duration (0.29.0's ffmpeg
+  // reads the origin directly) — a ledger holder so the readouts' "held by" line names it
+  // (0.43.0). Keyed to the recording id: stop or finish releases, a new one re-registers.
+  const activeRecording = useAppStore((s) => s.recordings.find((r) => r.status === 'recording'))
+  useEffect(() => {
+    if (!activeRecording) return
+    const id = `recording-${activeRecording.id}`
+    registerConnectionHolder(id, `Recording — ${activeRecording.channelName}`)
+    return () => releaseConnectionHolder(id)
+  }, [activeRecording?.id, activeRecording?.channelName])
 
   // The About modal renders at App's root, outside the fullscreen player's own DOM subtree —
   // while truly fullscreen (the Fullscreen API only paints the fullscreened element and its

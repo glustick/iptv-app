@@ -1,6 +1,7 @@
 import { useEffect, useRef, type RefObject } from 'react'
 import Hls from 'hls.js'
 import { useTranscodeFallback } from './useTranscodeFallback'
+import { registerConnectionHolder, releaseConnectionHolder } from './connectionLedger'
 
 const HLS_CONFIG = { enableWorker: true, maxBufferLength: 15, maxMaxBufferLength: 30 }
 
@@ -13,7 +14,15 @@ const HLS_CONFIG = { enableWorker: true, maxBufferLength: 15, maxMaxBufferLength
  * useTranscodeFallback): that failure mode doesn't just kill audio, it kills the whole
  * fragment's demux — video freezes too, muted or not — so it's worth fixing here as well.
  */
-export function useHlsAttach(videoRef: RefObject<HTMLVideoElement>, url: string | null, muted = true): void {
+export function useHlsAttach(
+  videoRef: RefObject<HTMLVideoElement>,
+  url: string | null,
+  muted = true,
+  // Connection-ledger identity (0.43.0): when set, this attach registers itself as a holder
+  // for exactly as long as it holds the stream — the readouts' "held by" line is only honest
+  // if secondary surfaces (Multi-View tiles, the docked preview) declare themselves too.
+  holder?: { id: string; label: string }
+): void {
   const lastUrlRef = useRef<string | null>(null)
   const {
     getSourceUrl,
@@ -37,6 +46,7 @@ export function useHlsAttach(videoRef: RefObject<HTMLVideoElement>, url: string 
     let hls: Hls | null = null
     video.muted = muted
     beginTranscodeRun()
+    if (holder) registerConnectionHolder(holder.id, holder.label)
 
     // Wraps a fresh Hls instance for the given source with the transcode-fallback error
     // handler — factored out so a successful fallback (which swaps in a different source
@@ -79,9 +89,10 @@ export function useHlsAttach(videoRef: RefObject<HTMLVideoElement>, url: string 
     attach(getSourceUrl(url))
 
     return () => {
+      if (holder) releaseConnectionHolder(holder.id)
       hls?.destroy()
       video.removeAttribute('src')
       video.load()
     }
-  }, [videoRef, url, muted, getSourceUrl, tryFallback, tryFallbackForRawStream, beginTranscodeRun])
+  }, [videoRef, url, muted, getSourceUrl, tryFallback, tryFallbackForRawStream, beginTranscodeRun, holder?.id, holder?.label])
 }

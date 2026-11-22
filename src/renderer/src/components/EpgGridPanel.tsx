@@ -171,7 +171,15 @@ export function EpgGridPanel({ fullWidth = false }: { fullWidth?: boolean }): JS
     () => (client && previewChannel && !nowPlaying ? client.getStreamUrl('live', previewChannel.stream_id, 'm3u8') : null),
     [client, previewChannel, nowPlaying]
   )
-  useHlsAttach(videoRef, previewUrl, muted)
+  // The docked preview holds its own provider connection whenever it attaches (which it only
+  // does when the fullscreen player is closed) — a ledger holder so the readouts' "held by"
+  // line names it too (0.43.0).
+  useHlsAttach(
+    videoRef,
+    previewUrl,
+    muted,
+    previewChannel && previewUrl ? { id: 'preview', label: `Preview — ${previewChannel.name}` } : undefined
+  )
 
   useEffect(() => {
     setMuted(true)

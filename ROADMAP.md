@@ -231,6 +231,26 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.43.0** the connection ledger — "who has the connection" stops being a guess. The
+  single-connection failures this app handles all reduce to the same invisible fact: someone
+  else holds the slot (the fullscreen player, a Multi-View tile, the docked preview that
+  attaches whenever the player is closed, the ffmpeg recorder). `lib/connectionLedger.ts`
+  (module-level, like recoveryLog — writers are the components that open streams, readers are
+  render-time snapshots) makes each holder declare itself: the Player registers on
+  nowPlaying, every Multi-View tile on attach, the docked preview on attach (which only
+  happens when the player is closed, so the holder list is exactly the live picture), and an
+  active recording from App's own store effect. Readouts: the stats overlay's **Connections**
+  row ("Player — BBC One, Recording — Sky News" or an honest "none") and Multi-View's blocked
+  tile, which now ends with **"Held by: …"** — the 0.32.0 auto-release button's decision is
+  no longer blind. Registration is by id (no double-holding on a quick switch), release is
+  the cleanup (a holder that forgets cannot leak), and the describe line renders holders in
+  the order their slots were taken. 961 tests (+4 ledger semantics: order, re-register
+  updates in place, unknown-id no-op, honest empty). Typecheck and lint clean. **GUI smoke
+  147/147.** **Not verified interactively:** the readouts populated with concurrent holders —
+  the fixture rig is single-provider and the smoke never runs player+recording+tile at once
+  by design; the ledger's semantics are unit-covered and every writer is wired, but a real
+  "Screen 1 + Player + Recording" readout awaits the operator's install.
+
 - **0.42.0** the reload storm ends — provider courtesy pacing. The last place the app still
   hammered a failing provider was the frozen-window path: the not-broadcasting tracker
   declared after 30s, but the ACT only happened once the playhead drained into the verdict —

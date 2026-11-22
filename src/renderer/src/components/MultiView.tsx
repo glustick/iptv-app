@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { useHlsAttach } from '../lib/useHlsAttach'
+import { describeConnectionHolders } from '../lib/connectionLedger'
 import { planConnectionRelease, releaseCandidates } from '../lib/connectionRelease'
 import { MultiViewChannelPicker } from './MultiViewChannelPicker'
 import type { LiveStream, MultiViewLayout } from '../lib/types'
@@ -110,6 +111,7 @@ export function MultiView(): JSX.Element {
         {slots.map((channel, i) => (
           <MultiViewTile
             key={i}
+            slotIndex={i}
             channel={channel}
             addBlocked={addBlocked}
             canPlayHereInstead={addBlocked && planConnectionRelease(releaseCandidates(slots, activeAudioSlot), true) !== null}
@@ -131,6 +133,7 @@ export function MultiView(): JSX.Element {
 }
 
 function MultiViewTile({
+  slotIndex,
   channel,
   addBlocked,
   canPlayHereInstead,
@@ -141,6 +144,7 @@ function MultiViewTile({
   onPlayHereInstead,
   onRemove
 }: {
+  slotIndex: number
   channel: LiveStream | null
   addBlocked: boolean
   canPlayHereInstead: boolean
@@ -157,7 +161,7 @@ function MultiViewTile({
   // Muted by default like every other tile — clicking one unmutes it and re-mutes whichever
   // other tile was previously active, so at most one plays audio at a time regardless of how
   // many tiles are actually filled.
-  useHlsAttach(videoRef, url, !active)
+  useHlsAttach(videoRef, url, !active, channel ? { id: `multiview-${slotIndex}`, label: `Screen ${slotIndex + 1} — ${channel.name}` } : undefined)
 
   if (!channel) {
     return (
@@ -167,6 +171,7 @@ function MultiViewTile({
             <p>
               This account only allows 1 connection at a time — another tile on this screen is using it.
             </p>
+            <p className="multiview-tile-blocked-holders">Held by: {describeConnectionHolders()}</p>
             {/* Only offered when there is honestly something to stop: never the audible tile
                 (lib/connectionRelease's rule), so the button disappears when the only filled
                 tile is the one making sound. */}

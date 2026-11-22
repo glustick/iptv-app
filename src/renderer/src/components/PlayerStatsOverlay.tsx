@@ -3,6 +3,7 @@ import type Hls from 'hls.js'
 import { hasInformativeLevelData } from '../lib/hlsLevels'
 import { describeGpuDecode } from '../lib/gpuDecode'
 import { formatRecoveryTime, recentRecoveryEvents, recoverySummary } from '../lib/recoveryLog'
+import { describeConnectionHolders } from '../lib/connectionLedger'
 
 const POLL_INTERVAL_MS = 1000
 
@@ -181,6 +182,10 @@ export function PlayerStatsOverlay({
           <span>{getBufferProfile()}</span>
         </div>
       )}
+      <div className="player-stats-row">
+        <span>Connections</span>
+        <span>{describeConnectionHolders()}</span>
+      </div>
       {getFragTtfb && (
         <div className="player-stats-row">
           <span>Frag TTFB</span>

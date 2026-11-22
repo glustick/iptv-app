@@ -26,6 +26,7 @@ import { useHoverAutoHide } from '../lib/useHoverAutoHide'
 import { clampRestorePosition, fragmentTtfbMs, isBufferStallError, medianTtfb, networkFlavor, nextStallAction, playbackSignature, stallRecoveryDelayMs } from '../lib/playbackWatchdog'
 import { adaptBufferProfile } from '../lib/bufferProfileAuto'
 import { clearRecoveryLog, recordRecoveryEvent as logRecoveryEvent } from '../lib/recoveryLog'
+import { registerConnectionHolder, releaseConnectionHolder } from '../lib/connectionLedger'
 import { nextReconnectDelayMs, shouldResetReconnectAttempts } from '../lib/reconnectBackoff'
 import { isTunneledNowPlaying, playingProviderHosts } from '../lib/vpnPlayback'
 import { describeHlsLevel } from '../lib/hlsLevels'
@@ -704,6 +705,14 @@ export function Player(): JSX.Element | null {
     }, delay)
     return () => clearTimeout(timer)
   }, [vpnRouteState, nowPlaying, profiles, primaryPlaylistId])
+
+  // The player is the ledger's primary holder (0.43.0): whether it plays the origin directly
+  // or through its own remux, it is ONE origin connection, and the readouts should say whose.
+  useEffect(() => {
+    if (!nowPlaying) return
+    registerConnectionHolder('player', `Player — ${nowPlaying.name}`)
+    return () => releaseConnectionHolder('player')
+  }, [nowPlaying])
 
   // The audio-fix wait for movies/series has no real progress to report — ffmpeg either hasn't
   // opened the source yet or is still probing it — so the only honest signal available is how
