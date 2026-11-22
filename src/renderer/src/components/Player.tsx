@@ -25,6 +25,7 @@ import { useToolbarOverflow } from '../lib/useToolbarOverflow'
 import { useHoverAutoHide } from '../lib/useHoverAutoHide'
 import { clampRestorePosition, fragmentTtfbMs, isBufferStallError, medianTtfb, networkFlavor, nextStallAction, playbackSignature, stallRecoveryDelayMs } from '../lib/playbackWatchdog'
 import { adaptBufferProfile } from '../lib/bufferProfileAuto'
+import { clearRecoveryLog, recordRecoveryEvent as logRecoveryEvent } from '../lib/recoveryLog'
 import { nextReconnectDelayMs, shouldResetReconnectAttempts } from '../lib/reconnectBackoff'
 import { isTunneledNowPlaying, playingProviderHosts } from '../lib/vpnPlayback'
 import { describeHlsLevel } from '../lib/hlsLevels'
@@ -539,6 +540,7 @@ export function Player(): JSX.Element | null {
     if (!decision || decision === adaptiveProfileRef.current) return
     adaptiveProfileRef.current = decision
     lastProfileSwitchRef.current = Date.now()
+    logRecoveryEvent('profile-switch', `auto: now ${decision}`)
     // The sanctioned internal-reload channel: the constructor picks up the new profile.
     setReloadTick((t) => t + 1)
   }, [bufferProfileAuto])
@@ -566,6 +568,9 @@ export function Player(): JSX.Element | null {
     // never be restored into this one, and the open-time resume machinery owns the first seek.
     vodRestorePositionRef.current = null
     vodRestorePendingRef.current = false
+    // The recovery log is session-scoped (0.40.0): a new channel starts a fresh history, so
+    // the overlay's section always describes the thing currently on screen.
+    clearRecoveryLog()
     // A new channel is a new context for the reconnect budget too (0.31.0): whatever the last
     // offline period spent fighting a different channel's provider connection says nothing
     // about this one, and an inherited "exhausted" would suppress the very first auto-reconnect.
@@ -615,6 +620,7 @@ export function Player(): JSX.Element | null {
     if (delay === null) {
       // Budget spent: stop auto-retrying against a provider that is evidently not coming back
       // on its own, and let the viewer decide when to try again.
+      logRecoveryEvent('reconnect-exhausted')
       setReconnectExhausted(true)
       return
     }
@@ -623,6 +629,7 @@ export function Player(): JSX.Element | null {
       // A VOD/series title reconnects where it left off (0.30.0) — arm the reload-continuity
       // restore; the position itself is kept current by the watchdog's tick.
       if (nowPlaying.kind !== 'live') vodRestorePendingRef.current = true
+      logRecoveryEvent('reconnect-backoff', `attempt ${attempt} of 5`)
       setReloadTick((t) => t + 1)
     }, delay)
     return () => clearTimeout(timer)
@@ -981,6 +988,7 @@ export function Player(): JSX.Element | null {
       maybeAdaptBufferProfile()
       ladder.lastProgressAt = now
       if (action === 'liveEdge') {
+        logRecoveryEvent('stall-live-edge')
         // Live's cheapest-first rung (0.30.0): a live channel that stopped progressing is most
         // often just parked behind the live edge — jump to it, which costs nothing (no reload,
         // no provider connection) and fixes exactly that. Half a second shy of the true edge so
@@ -999,6 +1007,7 @@ export function Player(): JSX.Element | null {
         hlsRef.current?.startLoad()
         void video.play().catch(() => {})
       } else if (action === 'nudge') {
+        logRecoveryEvent('stall-nudge')
         // Via the ref, not the local `hls`: this watchdog is registered for every source (a
         // native VOD stream has no instance at all), and hlsRef.current is the live instance
         // whenever there is one.
@@ -1010,6 +1019,7 @@ export function Player(): JSX.Element | null {
           // Not seekable yet — startLoad() above alone still re-arms the loader.
         }
       } else if (action === 'reload') {
+        logRecoveryEvent('stall-reload')
         ladder.ignoreNextProgress = true
         // Arm the reload-continuity restore (VOD/series only — a live reload rejoins the live
         // edge, see the liveEdge rung) so the new instance seeks back to this position on
@@ -1026,6 +1036,7 @@ export function Player(): JSX.Element | null {
         // dead session URL — reproduced live, frozen forever at the playlist's last frame. This
         // is the only rung that starts a genuinely NEW remux, so spend it before declaring the
         // stream dead.
+        logRecoveryEvent('stall-give-up')
         if (
           nowPlaying.kind === 'live' &&
           hlsRef.current &&
@@ -1039,6 +1050,7 @@ export function Player(): JSX.Element | null {
           )
         ) {
           sessionReplacements += 1
+          logRecoveryEvent('stall-remux', 'fresh ffmpeg session started')
           setStatusNotice('The stream session ended — restarting it…')
           return
         }
@@ -1249,6 +1261,7 @@ export function Player(): JSX.Element | null {
         console.warn(
           `[player] playlist window frozen at ${details.startSN}-${details.endSN} — declaring the channel not broadcasting`
         )
+        logRecoveryEvent('off-air-verdict', `window frozen at ${details.startSN}-${details.endSN}`)
         if (hasFallbackActive) resetTranscodeFallback()
         hls.destroy()
         el.pause()
@@ -1278,6 +1291,7 @@ export function Player(): JSX.Element | null {
               ) {
                 if (offAirProbeTimer) clearInterval(offAirProbeTimer)
                 offAirProbeTimer = null
+                logRecoveryEvent('off-air-resume', 'playlist window advancing again')
                 setPlaybackError(null)
                 setStatusNotice('The channel is back — rejoining…')
                 setReloadTick((t) => t + 1)
@@ -1399,6 +1413,7 @@ export function Player(): JSX.Element | null {
           case Hls.ErrorTypes.NETWORK_ERROR:
             networkRetryCount += 1
             recordRecoveryEvent()
+            logRecoveryEvent('network-retry', `attempt ${networkRetryCount} of ${MAX_NETWORK_RETRIES}`)
             maybeAdaptBufferProfile()
             if (networkRetryCount <= MAX_NETWORK_RETRIES) {
               if (networkRetryTimer) clearTimeout(networkRetryTimer)

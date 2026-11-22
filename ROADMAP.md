@@ -231,6 +231,29 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.40.0** the recovery telemetry panel — every automatic recovery this player performs is
+  now visible and copyable. The player has accumulated a lot of self-healing (the stall ladder,
+  network retries, the reconnect backoff, the off-air re-probe, auto buffer-profile switches),
+  but it was all invisible: a user watching a channel that silently climbed a ladder and
+  recovered had no way to know, and a bug report said only "it froze". A module-level session
+  log (`lib/recoveryLog.ts`, capped at 200, newest-last) records every action the recovery
+  paths take: **stall-live-edge / stall-nudge / stall-reload / stall-remux / stall-give-up**
+  (the ladder's rungs), **network-retry** (which attempt of how many), **reconnect-backoff /
+  reconnect-exhausted** (the offline budget), **off-air-verdict / off-air-resume** (the
+  frozen-window arc), and **profile-switch** (the 0.37.0 auto escalation). Cleared on channel
+  change — the section always describes what is currently on screen. The stats overlay's new
+  **Recovery** section shows the one-line summary (`N recoveries — counts by kind — last:
+  <kind> <age>s ago`, honestly "No recoveries this session" when nothing happened), the last
+  four events with wall-clock stamps, and a **Copy session health** button that puts the
+  summary line on the clipboard — the exact artifact a bug report wants, one click. Read
+  straight off the module on the overlay's existing 1s tick: no subscription plumbing for a
+  reader that polls anyway. 953 tests (+6: record/tail/summary/cap/clear/format). Typecheck
+  and lint clean. **GUI smoke 147/147** (the overlay's section renders empty on the healthy
+  fixture — also the no-false-events guard). **Not verified interactively:** the Copy click
+  (clipboard is not driven by the harness) and the section populated with real events — the
+  smoke fixture never stalls long enough to trigger a ladder rung on camera; the 0.30.0/0.31.0
+  smoke checks prove the underlying actions fire, and the log sits on the same call sites.
+
 - **0.39.0** the stall triage stops guessing and starts measuring. The watchdog knew two
   things about a stall — that the playhead froze, and (0.30.0) whether data was buffered
   ahead — but not WHY data wasn't moving: a starved network and a wedged decoder looked

@@ -2,6 +2,7 @@ import { useEffect, useState, type RefObject } from 'react'
 import type Hls from 'hls.js'
 import { hasInformativeLevelData } from '../lib/hlsLevels'
 import { describeGpuDecode } from '../lib/gpuDecode'
+import { formatRecoveryTime, recentRecoveryEvents, recoverySummary } from '../lib/recoveryLog'
 
 const POLL_INTERVAL_MS = 1000
 
@@ -69,6 +70,13 @@ export function PlayerStatsOverlay({
   getFragTtfb?: () => { medianMs: number | null; samples: number }
 }): JSX.Element | null {
   const [stats, setStats] = useState<Stats | null>(null)
+  // The Copy button's brief "Copied" acknowledgement — local, cosmetic, self-resetting.
+  const [copied, setCopied] = useState(false)
+  useEffect(() => {
+    if (!copied) return
+    const timer = setTimeout(() => setCopied(false), 2000)
+    return () => clearTimeout(timer)
+  }, [copied])
   // Fetched once per open: this describes the GPU/Chromium state, which changes far less often
   // than the per-second frame counters the interval below tracks.
   const [gpuDecode, setGpuDecode] = useState<string | null>(null)
@@ -222,6 +230,40 @@ export function PlayerStatsOverlay({
           <span>{stats.bandwidthEstimateKbps} kbps</span>
         </div>
       )}
+      {(() => {
+        // Read straight off the module log on every tick (0.40.0) — no subscription plumbing:
+        // the writers are Player's recovery paths, this overlay is the only reader.
+        const tail = recentRecoveryEvents(4)
+        const summary = recoverySummary()
+        return (
+          <div className="player-stats-recovery">
+            <div className="player-stats-row">
+              <span>Recovery</span>
+              <span>{summary}</span>
+            </div>
+            {tail.map((event, i) => (
+              <div className="player-stats-row" key={`${event.at}-${i}`}>
+                <span>{formatRecoveryTime(event.at)}</span>
+                <span>
+                  {event.kind}
+                  {event.detail ? ` — ${event.detail}` : ''}
+                </span>
+              </div>
+            ))}
+            <button
+              className="player-stats-copy"
+              onClick={() => {
+                void navigator.clipboard
+                  .writeText(recoverySummary())
+                  .then(() => setCopied(true))
+                  .catch(() => {})
+              }}
+            >
+              {copied ? 'Copied' : 'Copy session health'}
+            </button>
+          </div>
+        )
+      })()}
     </div>
   )
 }

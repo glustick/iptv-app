@@ -1349,6 +1349,31 @@ body.resizing-col {
   color: var(--text-dim);
 }
 
+/* The Recovery section (0.40.0): the module log's tail under the live counters, plus the
+   one-line session-health copy a bug report wants. */
+.player-stats-recovery {
+  border-top: 1px solid var(--border);
+  margin-top: 6px;
+  padding-top: 4px;
+}
+
+.player-stats-copy {
+  margin-top: 6px;
+  width: 100%;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.player-stats-copy:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
 /* Left-edge channel info panel: hovering the left 10% of the player (see Player.tsx's
    channelInfoVisible) reveals the currently playing channel's icon, name and current programme —
    a glanceable "what am I watching" panel, like the header/seek bar it's purely hover-driven and
