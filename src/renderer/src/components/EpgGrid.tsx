@@ -7,6 +7,11 @@ import { channelKey } from '../lib/channelIdentity'
 import { findAlsoOnCandidates, type AlsoOnCandidate } from '../lib/crossPlaylist'
 import { describeVideoFailure } from '../lib/undecodableVideo'
 import { describeChannelHealth } from '../lib/channelHealth'
+import {
+  buildProgrammeDetail,
+  NO_DESCRIPTION_LABEL,
+  programmeWatchAction
+} from '../lib/programmeDetail'
 import type { LiveStream, ShortEpgProgram, ClockFormat } from '../lib/types'
 
 const HOUR_MS = 3_600_000
@@ -80,6 +85,45 @@ interface ChannelMenuState {
   y: number
 }
 
+/** The programme-detail popover (0.45.0): which programme on which channel, plus the clicked
+ *  block's viewport rect captured at open time. Like the context menu above, it lives at the
+ *  grid level — one instance, above the virtualized rows — and the rect is stored as numbers
+ *  rather than an element reference: by the time the popover renders, the row that opened it may
+ *  have been recycled onto another channel, so re-reading the DOM would be a lie. */
+interface ProgrammePopoverState {
+  channel: LiveStream
+  programme: ShortEpgProgram
+  rect: { left: number; right: number; top: number; bottom: number }
+}
+
+// The popover's layout, sized generously for the ~200-character description cap (lib/
+// programmeDetail) — used only to edge-clamp the captured anchor into the viewport, never to
+// re-read the DOM.
+const POPOVER_WIDTH = 340
+const POPOVER_MAX_HEIGHT = 240
+const POPOVER_MARGIN = 8
+const POPOVER_GAP = 6
+
+// Anchors the popover just below the clicked block and clamps it into the viewport, flipping
+// above the block when there is no room below. Pure, so the flip rule reads next to the open
+// handler; everything it works on was captured at open time (see ProgrammePopoverState).
+function placePopover(
+  rect: ProgrammePopoverState['rect'],
+  viewportWidth: number,
+  viewportHeight: number
+): { left: number; top: number } {
+  let left = rect.left
+  if (left + POPOVER_WIDTH > viewportWidth - POPOVER_MARGIN) {
+    left = viewportWidth - POPOVER_WIDTH - POPOVER_MARGIN
+  }
+  left = Math.max(POPOVER_MARGIN, left)
+  let top = rect.bottom + POPOVER_GAP
+  if (top + POPOVER_MAX_HEIGHT > viewportHeight - POPOVER_MARGIN) {
+    top = Math.max(POPOVER_MARGIN, rect.top - POPOVER_MAX_HEIGHT - POPOVER_GAP)
+  }
+  return { left: Math.round(left), top: Math.round(top) }
+}
+
 interface RowProps {
   channels: LiveStream[]
   windowStart: number
@@ -90,7 +134,14 @@ interface RowProps {
   clockFormat: ClockFormat
   onSelectChannel: (channel: LiveStream) => void
   onWatchFullscreen: (channel: LiveStream) => void
-  onWatchTimeshift: (channel: LiveStream, program: ShortEpgProgram) => void
+  // A click on a programme block — the row reports it up with the block's viewport rect rather
+  // than acting itself, because the popover that click opens lives at the grid level (rows are
+  // virtualized) and the grid is what decides open-vs-move-vs-play.
+  onProgrammeBlockClick: (
+    channel: LiveStream,
+    program: ShortEpgProgram,
+    rect: { left: number; right: number; top: number; bottom: number }
+  ) => void
   // Right-click (or Ctrl+click / the keyboard Menu key) on a row — the row reports the event up
   // so the menu itself can live at the grid level, where it doesn't get recycled by
   // virtualization and doesn't need a copy per row.
@@ -111,7 +162,7 @@ function EpgRow({
   onSelectChannel,
   isVideoFailed,
   onWatchFullscreen,
-  onWatchTimeshift,
+  onProgrammeBlockClick,
   onChannelContextMenu
 }: { index: number; style: CSSProperties } & RowProps): JSX.Element {
   const channel = channels[index]
@@ -225,8 +276,19 @@ function EpgRow({
                 title={`${formatTime(p.start_timestamp, clockFormat)} – ${formatTime(p.stop_timestamp, clockFormat)}\n${p.title}${p.description ? '\n' + p.description : ''}`}
                 onClick={(e) => {
                   e.stopPropagation()
-                  if (canCatchUp) onWatchTimeshift(channel, p)
-                  else onSelectChannel(channel)
+                  // 0.45.0: the click no longer plays right away — it opens (or moves) the
+                  // grid-level detail popover, and a second click on this same block takes the
+                  // action (the grid decides which, via onProgrammeBlockClick). The rect is
+                  // captured HERE, at click time: rows are virtualized, so by the time the
+                  // popover renders, this element may already have been recycled onto another
+                  // channel — only the captured numbers stay honest.
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  onProgrammeBlockClick(channel, p, {
+                    left: rect.left,
+                    right: rect.right,
+                    top: rect.top,
+                    bottom: rect.bottom
+                  })
                 }}
               >
                 <span className="epg-block-label">{p.title}</span>
@@ -335,6 +397,21 @@ export function EpgGrid({
   // it scrolled out of view.
   const [contextMenu, setContextMenu] = useState<ChannelMenuState | null>(null)
   const contextMenuRef = useRef<HTMLDivElement>(null)
+  // The programme-detail popover (0.45.0) — same one-instance-at-grid-level reasoning as the
+  // context menu above. The Escape chain (lib/overlays.ts) reads the STORE, not component state,
+  // so the store carries a boolean mirror (programmeDetailOpen) that the effects below keep in
+  // sync with this payload; Escape closing it is the one close path that bypasses this component,
+  // and the second effect watches for exactly that and drops the payload.
+  const [programmePopover, setProgrammePopover] = useState<ProgrammePopoverState | null>(null)
+  const programmePopoverRef = useRef<ProgrammePopoverState | null>(null)
+  const setProgrammeDetailOpen = useAppStore((s) => s.setProgrammeDetailOpen)
+  const programmeDetailOpen = useAppStore((s) => s.programmeDetailOpen)
+  // The popover's remind/record actions are the same ones the row's own bell/⏺ buttons call.
+  const isEpgReminderSet = useAppStore((s) => s.isEpgReminderSet)
+  const toggleEpgReminder = useAppStore((s) => s.toggleEpgReminder)
+  const scheduleRecording = useAppStore((s) => s.scheduleRecording)
+  const cancelScheduledRecording = useAppStore((s) => s.cancelScheduledRecording)
+  const recordings = useAppStore((s) => s.recordings)
 
   // Shared by the main docked guide and the fullscreen channel-swap overlay (both render this
   // same component) — persisted so a name that was clipped once stays legible everywhere this
@@ -394,6 +471,107 @@ export function EpgGrid({
     return () => document.removeEventListener('mousedown', onDocMouseDown)
   }, [contextMenu])
 
+  // The popover's mirror: the store boolean follows this payload wherever THIS component takes
+  // it (open, move, close, play) — written in the same synchronous breath as the payload, so
+  // both batch into one render and nothing ever observes a payload without its mirror. (A
+  // post-hoc sync effect can't do this: on the open commit itself the Escape-watcher below
+  // would still see the stale mirror=false alongside a live payload and instantly close what
+  // was just opened — found live in the first smoke run, where every popover vanished before
+  // it could paint.) Unlike the context menu above — deliberately outside the chain — the
+  // popover IS in the chain, because unlike a right-click menu it sits over surfaces whose own
+  // Escape responses would otherwise win: a popover open over the fullscreen channel bar must
+  // close before the bar swaps the channel underneath it.
+  function openProgrammePopover(state: ProgrammePopoverState): void {
+    setProgrammePopover(state)
+    setProgrammeDetailOpen(true)
+  }
+  function closeProgrammePopover(): void {
+    setProgrammePopover(null)
+    setProgrammeDetailOpen(false)
+  }
+  // For the ref below and the unmount cleanup: a snapshot of the payload as of the last commit.
+  useEffect(() => {
+    programmePopoverRef.current = programmePopover
+  }, [programmePopover])
+  // Unmount drops the mirror only if THIS grid is the one holding an open popover: two grids can
+  // be mounted at once (the docked panel and the fullscreen channel bar both render this
+  // component), and one unmounting must not close the other's popover as far as Escape cares.
+  useEffect(() => {
+    return () => {
+      if (programmePopoverRef.current !== null) setProgrammeDetailOpen(false)
+    }
+  }, [setProgrammeDetailOpen])
+  // Escape closing the popover is decided centrally and never passes through this component's
+  // setters — so watch the mirror flip off underneath a live payload and drop the payload with
+  // it. Without this, the next click on the same block would read a stale payload, see "already
+  // open", and play instead of (re)opening.
+  useEffect(() => {
+    if (!programmeDetailOpen && programmePopover !== null) setProgrammePopover(null)
+  }, [programmeDetailOpen, programmePopover])
+
+  // Closes the popover when the user clicks anywhere else — but NOT on a programme block: a
+  // block's own click decides what happens (move the popover to that block; a second click on
+  // the same one plays), and closing on mousedown would fire first and make every block click
+  // look like a first click again. Buttons inside the popover keep it open so remind/record can
+  // be toggled without dismissing the panel they belong to.
+  useEffect(() => {
+    if (!programmePopover) return
+    function onDocMouseDown(e: MouseEvent): void {
+      const target = e.target as HTMLElement | null
+      if (target?.closest('.epg-programme-popover')) return
+      if (target?.closest('.epg-block')) return
+      // The same paired write closeProgrammePopover does — inlined because the helpers are
+      // plain closures, and effect deps want the stable setters.
+      setProgrammePopover(null)
+      setProgrammeDetailOpen(false)
+    }
+    document.addEventListener('mousedown', onDocMouseDown)
+    return () => document.removeEventListener('mousedown', onDocMouseDown)
+  }, [programmePopover, setProgrammeDetailOpen])
+
+  // The same programme on the same channel — matched by the provider's programme id AND its
+  // listed start time (the two fields the recording-schedule matcher uses), so a re-listed
+  // programme with a shifted slot is a different popover, not a stray second click.
+  function isPopoverForSameProgramme(channel: LiveStream, programme: ShortEpgProgram): boolean {
+    return (
+      programmePopover !== null &&
+      programmePopover.channel.stream_id === channel.stream_id &&
+      programmePopover.channel.playlistId === channel.playlistId &&
+      programmePopover.programme.id === programme.id &&
+      programmePopover.programme.start_timestamp === programme.start_timestamp
+    )
+  }
+
+  // The watch action the block's click has always taken (lib/programmeDetail owns the rule: a
+  // past programme on an archived channel plays from the start, everything else selects).
+  function takeProgrammeAction(channel: LiveStream, programme: ShortEpgProgram): void {
+    if (programmeWatchAction(programme, channel, now) === 'catchup') onWatchTimeshift(channel, programme)
+    else onSelectChannel(channel)
+  }
+
+  // 0.45.0: a single click on a programme block OPENS (or moves) the detail popover instead of
+  // acting right away; a second click on the same block takes the action. Playing closes the
+  // popover either way — the click that follows playback must read as a fresh first click.
+  function handleProgrammeBlockClick(
+    channel: LiveStream,
+    programme: ShortEpgProgram,
+    rect: ProgrammePopoverState['rect']
+  ): void {
+    if (isPopoverForSameProgramme(channel, programme)) {
+      closeProgrammePopover()
+      takeProgrammeAction(channel, programme)
+      return
+    }
+    openProgrammePopover({ channel, programme, rect })
+  }
+
+  function watchFromPopover(): void {
+    if (!programmePopover) return
+    const { channel, programme } = programmePopover
+    closeProgrammePopover()
+    takeProgrammeAction(channel, programme)
+  }
+
   // The menu is 190px wide and two items tall (plus its title row) — clamped against the viewport
   // so a right-click near an edge still opens it fully on screen rather than half off it.
   function openChannelMenu(x: number, y: number, channel: LiveStream): void {
@@ -413,6 +591,10 @@ export function EpgGrid({
 
   function handleRowContextMenu(e: React.MouseEvent, channel: LiveStream): void {
     e.preventDefault()
+    // Two popups at once is one too many — right-clicking (even on the block the popover is
+    // open on) is a different gesture asking for a different panel, and the menu's own
+    // outside-click rule would leave the popover stranded behind it.
+    closeProgrammePopover()
     if (!numericChannelCatalog) void ensureChannelCatalog()
     openChannelMenu(e.clientX, e.clientY, channel)
   }
@@ -473,8 +655,10 @@ export function EpgGrid({
   function handleWheel(e: React.WheelEvent): void {
     // The menu is anchored to a screen position, but the row it belongs to scrolls with the
     // grid — so any scroll over the grid (but not over the menu itself) closes it, which is the
-    // behaviour every native context menu has.
+    // behaviour every native context menu has. The popover is anchored the same way (numbers
+    // captured at open time), so it closes for the same reason.
     if (contextMenu && !(e.target as HTMLElement).closest('.epg-context-menu')) setContextMenu(null)
+    if (programmePopover && !(e.target as HTMLElement).closest('.epg-programme-popover')) closeProgrammePopover()
     // Horizontal trackpad swipe (deltaX) or a plain mouse wheel while holding Shift
     // (browsers report that as deltaX too) shifts the visible time window; a normal
     // vertical scroll is left alone so it can scroll the channel rows as usual.
@@ -498,8 +682,10 @@ export function EpgGrid({
     // drag at the same time, fighting over the same mousemove/mouseup listeners.
     if ((e.target as HTMLElement).closest('.resize-handle')) return
     // The context menu floats over the timeline, so a click on one of its items would otherwise
-    // also start (and immediately finish) a time-pan drag underneath it.
+    // also start (and immediately finish) a time-pan drag underneath it. The programme-detail
+    // popover floats the same way.
     if ((e.target as HTMLElement).closest('.epg-context-menu')) return
+    if ((e.target as HTMLElement).closest('.epg-programme-popover')) return
     const container = rootRef.current
     if (!container) return
     const rect = container.getBoundingClientRect()
@@ -534,6 +720,11 @@ export function EpgGrid({
       window.removeEventListener('mousemove', onMouseMove)
       window.removeEventListener('mouseup', onMouseUp)
       if (moved) {
+        // A real drag panned the timeline out from under any open popover's captured anchor —
+        // close it (the same reasoning as the wheel close above) rather than leave it floating
+        // where its block used to be. (A mousedown that lands on a block doesn't close it — the
+        // block's own click decides — so this is the one drag path that can strand it.)
+        closeProgrammePopover()
         window.addEventListener('click', suppressNextClick, { capture: true, once: true })
         setTimeout(() => window.removeEventListener('click', suppressNextClick, { capture: true }), 0)
       }
@@ -570,6 +761,12 @@ export function EpgGrid({
       setFocusedIndex(next)
       listRef.current?.scrollToRow({ index: next, align: 'smart' })
     } else if (e.key === 'Enter') {
+      // Enter inside the popover belongs to the popover's own focused button — buttons fire
+      // click on Enter keydown, so letting the event bubble here as well would select the
+      // grid's focused row on top of whatever the button just did. (Escape needs no such guard:
+      // this handler has no Escape branch, and the key travels to the central chain, which
+      // closes the popover.)
+      if ((e.target as HTMLElement).closest('.epg-programme-popover')) return
       e.preventDefault()
       const channel = channels[focusedIndex]
       if (channel) onSelectChannel(channel)
@@ -644,7 +841,7 @@ export function EpgGrid({
               clockFormat,
               onSelectChannel,
               onWatchFullscreen,
-              onWatchTimeshift,
+              onProgrammeBlockClick: handleProgrammeBlockClick,
               isVideoFailed,
               onChannelContextMenu: handleRowContextMenu
             }}
@@ -720,6 +917,87 @@ export function EpgGrid({
             ))}
         </div>
       )}
+      {programmePopover &&
+        (() => {
+          // Content shaping lives in lib/programmeDetail (pure, unit-tested) — the rule for what
+          // the button offers is exactly the block click's old catch-up rule.
+          const { channel, programme, rect } = programmePopover
+          const detail = buildProgrammeDetail(programme, channel, now, clockFormat)
+          const popoverChannelId = channelKey(channel.playlistId, channel.stream_id, primaryPlaylistId)
+          const popoverReminderSet = isEpgReminderSet(channel.stream_id, programme.id, channel.playlistId)
+          const popoverRecording = scheduledRecordingOf(popoverChannelId, programme, recordings)
+          const position = placePopover(rect, window.innerWidth, window.innerHeight)
+          return (
+            // position:fixed at the captured viewport anchor — the same arrangement the context
+            // menu uses, and for the same reason: the row that opened this is virtualized and may
+            // be gone (or recycled) by the time this paints. Escape is handled by the central
+            // chain (lib/overlays.ts), not here — the popover renders with no focused element of
+            // its own, so the grid keeps its arrow-key navigation while it is open.
+            <div
+              className="epg-programme-popover"
+              style={{ left: position.left, top: position.top }}
+              role="dialog"
+              aria-label={`${programme.title} on ${channel.name}`}
+            >
+              <span className="epg-programme-popover-channel" title={channel.name}>
+                {channel.name}
+              </span>
+              <h3 className="epg-programme-popover-title" title={programme.title}>
+                {programme.title}
+              </h3>
+              <span className="epg-programme-popover-time">{detail.timeRange}</span>
+              <p className="epg-programme-popover-desc">{detail.description ?? NO_DESCRIPTION_LABEL}</p>
+              <div className="epg-programme-popover-actions">
+                <button
+                  className="epg-programme-popover-watch"
+                  title={
+                    detail.watchAction === 'catchup'
+                      ? `Play ${programme.title} from its start (catch-up)`
+                      : `Select ${channel.name}`
+                  }
+                  onClick={watchFromPopover}
+                >
+                  ▶ {detail.watchLabel}
+                </button>
+                {detail.isUpcoming && (
+                  <button
+                    className={`epg-programme-popover-action${popoverReminderSet ? ' epg-programme-popover-action--set' : ''}`}
+                    title={popoverReminderSet ? 'Remove programme reminder' : 'Set programme reminder'}
+                    aria-label={
+                      popoverReminderSet ? `Remove reminder for ${programme.title}` : `Set reminder for ${programme.title}`
+                    }
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      toggleEpgReminder(channel.stream_id, channel.name, programme, channel.playlistId)
+                    }}
+                  >
+                    {popoverReminderSet ? '🔔' : '🔕'}
+                  </button>
+                )}
+                {detail.isUpcoming && (
+                  <button
+                    className={`epg-programme-popover-action${popoverRecording ? ' epg-programme-popover-action--set' : ''}`}
+                    title={
+                      popoverRecording
+                        ? `Cancel scheduled recording of ${programme.title}`
+                        : `Record ${programme.title} (starts ${formatStartLabel(programme.start_timestamp, clockFormat)})`
+                    }
+                    aria-label={
+                      popoverRecording ? `Cancel recording of ${programme.title}` : `Record ${programme.title}`
+                    }
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (popoverRecording) void cancelScheduledRecording(popoverRecording.id)
+                      else void scheduleRecording(channel, programme)
+                    }}
+                  >
+                    {popoverRecording ? '⏹' : '⏺'}
+                  </button>
+                )}
+              </div>
+            </div>
+          )
+        })()}
     </div>
   )
 }

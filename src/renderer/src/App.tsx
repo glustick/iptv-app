@@ -161,6 +161,12 @@ function App(): JSX.Element {
         case 'closeSubtitleStyle':
           state.setSubtitleStyleOpen(false)
           break
+        case 'closeProgrammeDetail':
+          // The popover's payload lives in EpgGrid's own component state (rows are virtualized);
+          // this only flips the mirror boolean, and EpgGrid clears the payload when it sees the
+          // chain close it — see the effect there.
+          state.setProgrammeDetailOpen(false)
+          break
         case 'restorePlayer':
           state.setMiniPlayer(false)
           break

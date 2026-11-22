@@ -2204,6 +2204,105 @@ body.resizing-col {
   color: var(--accent);
 }
 
+/* The programme-detail popover (0.45.0) — opens on a single click of a programme block and
+   describes it (title, time range, description, actions). Fixed-positioned from the viewport
+   rect EpgGrid captured at open time and clamped by placePopover there, for the same reason as
+   the context menu above: the row that opened it is virtualized and may be recycled by the time
+   this paints. */
+.epg-programme-popover {
+  position: fixed;
+  z-index: 70;
+  width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.5);
+}
+
+.epg-programme-popover-channel {
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.epg-programme-popover-title {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.epg-programme-popover-time {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.epg-programme-popover-desc {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+  /* The description is capped at ~200 characters in lib/programmeDetail; this clamp is the
+     layout guard for whatever the provider still squeezes into that. */
+  max-height: 7em;
+  overflow-y: auto;
+  white-space: pre-line;
+}
+
+.epg-programme-popover-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.epg-programme-popover-watch {
+  flex: 1;
+  background: var(--accent);
+  border: none;
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  cursor: pointer;
+}
+
+.epg-programme-popover-watch:hover {
+  filter: brightness(1.1);
+}
+
+.epg-programme-popover-action {
+  width: 32px;
+  height: 30px;
+  padding: 0;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.epg-programme-popover-action:hover {
+  background: var(--bg-hover);
+}
+
+/* Mirrors the row buttons' "this is armed" look (epg-reminder-button--set) so a reminder or
+   recording reads the same whether it was set from the row or from the popover. */
+.epg-programme-popover-action--set {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* "EPG match…" banner inside the mapping editor, naming the channel the guide was opened for. */
 .epg-match-banner {
   margin: 0;

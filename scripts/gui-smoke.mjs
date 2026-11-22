@@ -1793,6 +1793,65 @@ async function main() {
   )
   await sleep(800)
 
+  // --- programme detail popover (0.45.0) ----------------------------------------------------------
+  // A single click on a programme block now OPENS a detail popover (channel, title, time range,
+  // description, actions) instead of acting right away; a second click on the SAME block — or the
+  // popover's Watch button — takes the action the click always did. The fixture carries no
+  // catch-up archive (tv_archive is 0 everywhere), so that action is the ordinary one: selecting
+  // the channel into the preview, observable in the preview panel's own header. 'Two's Show' has
+  // no guide description on purpose (the honest empty state) while 'Two's Next' genuinely does.
+  // The Escape below is mid-section and single: the section ends on a Watch click, not an Escape.
+  const clickProgrammeBlock = (title) => `(() => {
+    const b = [...document.querySelectorAll('.epg-block')].find((x) => x.querySelector('.epg-block-label')?.textContent?.trim() === ${JSON.stringify(title)})
+    if (!b) return false
+    b.click()
+    return true
+  })()`
+  console.log('preview header before the popover section:', await evaluate(cdp, `document.querySelector('.epg-panel-top-heading h2')?.innerText ?? null`))
+  await evaluate(cdp, clickProgrammeBlock("Two's Show"))
+  await check('a single click on a programme block opens the detail popover', '!!document.querySelector(".epg-programme-popover")')
+  await check(
+    'the popover names the programme and the channel it is on',
+    `document.querySelector('.epg-programme-popover-title')?.innerText === ${JSON.stringify("Two's Show")} && document.querySelector('.epg-programme-popover-channel')?.innerText === '101 Two HD'`
+  )
+  await check(
+    "the popover shows the start–end range ('start – end')",
+    `/\\S+ – \\S+/.test(document.querySelector('.epg-programme-popover-time')?.innerText || '')`
+  )
+  await check(
+    'a programme with no description says so honestly',
+    `document.querySelector('.epg-programme-popover-desc')?.innerText === 'No description available.'`
+  )
+  await pressEscape()
+  await sleep(600)
+  await check('Escape closes the popover', '!document.querySelector(".epg-programme-popover")')
+  // Reopen on the described, upcoming programme — the one the Watch action then targets.
+  await evaluate(cdp, clickProgrammeBlock("Two's Next"))
+  await check(
+    'the popover shows the programme description when the guide has one',
+    `document.querySelector('.epg-programme-popover-title')?.innerText === ${JSON.stringify("Two's Next")} && (document.querySelector('.epg-programme-popover-desc')?.innerText || '').includes('pool-matched channel')`
+  )
+  await check(
+    'the popover offers the watch action for a non-archived programme',
+    `document.querySelector('.epg-programme-popover-watch')?.textContent.trim().startsWith('▶ Watch')`
+  )
+  // Second click on the SAME block takes the action (and closes the popover).
+  await evaluate(cdp, clickProgrammeBlock("Two's Next"))
+  await check(
+    'a second click on the same block selects its channel and closes the popover',
+    `!document.querySelector('.epg-programme-popover') && document.querySelector('.epg-panel-top-heading h2')?.innerText === '101 Two HD'`,
+    15000
+  )
+  // And after the action, the block behaves like a first click again (open, not act).
+  await evaluate(cdp, clickProgrammeBlock("Two's Next"))
+  await check('after playing, the same block opens the popover again', '!!document.querySelector(".epg-programme-popover")')
+  await evaluate(cdp, `(() => { const b = document.querySelector('.epg-programme-popover-watch'); if (!b) return false; b.click(); return true })()`)
+  await check(
+    "the popover's Watch button takes the action and closes it",
+    `!document.querySelector('.epg-programme-popover') && document.querySelector('.epg-panel-top-heading h2')?.innerText === '101 Two HD'`,
+    15000
+  )
+
   // --- scheduled recordings (0.34.0) -------------------------------------------------------------
   // The grid's ⏺ schedules a FUTURE programme (the fixture guide's 'Two's Next' on the pooled
   // matched Two row starts half an hour out and runs 45 minutes — computed per request by the

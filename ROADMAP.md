@@ -231,6 +231,36 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.45.0** the programme-detail popover — the grid's single click now describes before it
+  acts. Clicking a programme block has always played (or selected) immediately, and the
+  description the data carried surfaced only as a native tooltip — easy to miss, impossible to
+  act from. A single click on a block now opens a small popover anchored to it: channel name,
+  title, the start–end range in the app's clock format, the first ~200 characters of the
+  description (an honest "No description available." when the guide has none — a blank block
+  would read as a rendering bug), and an action row — **Watch** (labelled **Catch-up** for a
+  past programme on an archived channel: the exact rule the direct click always applied, now
+  shaped in lib/programmeDetail so popover and click can't drift), plus the row's existing 🔔/⏺
+  buttons for upcoming programmes. A second click on the SAME block — or the popover's own
+  button — takes the action; clicking another block moves the popover; Escape closes it via a
+  new central-chain entry (`closeProgrammeDetail`), resolving after the subtitle popover and
+  BEFORE the channel-swap bar and mini-player, because the popover floats above a grid that
+  renders inside both — Escape with a popover open over the bar must close the popover, not
+  fall through and swap the channel underneath (pinned in the chain test's ORDER). It lives at
+  grid level, one state above the virtualized rows (the same reasoning as the context menu),
+  with the block's rect captured at open time so a recycled row can't re-anchor it; the store's
+  `programmeDetailOpen` is a boolean mirror for the chain only, and EpgGrid clears its payload
+  when the chain closes it from outside. Wheel-scrolling, a timeline drag and the right-click
+  menu all close it rather than leave it stranded where its block used to be; the row's own
+  bell/⏺ still work untouched, and dblclick-to-fullscreen is unchanged (dblclick never went
+  through the click path). 977 tests (+14: the content shaping — time range, description cap
+  and honest empty state, the catch-up rule's four cases — and the chain slot, including
+  popover-over-channel-bar priority). Typecheck and lint clean. **GUI smoke 157/157** (10 new,
+  including second-click-acts and the popover reopening fresh after an action; the fixture has
+  no catch-up archive, so "acts" is the ordinary select-into-preview). **Not verified
+  interactively:** the Catch-up label against a genuinely archived real channel (unit-covered
+  only — the fixture's channels all carry tv_archive: 0), and the viewport edge-flip at real
+  screen extremes (reasoned, not screenshotted).
+
 - **0.44.0** the launch self-test and the fresh badges — the round's closer. Two small
   honesty measures that cut attach-time stalls before the viewer clicks anything. **Provider
   reachability, for free:** connect() authenticates anyway, so the authenticate round-trip IS

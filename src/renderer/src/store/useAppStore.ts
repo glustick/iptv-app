@@ -424,6 +424,12 @@ interface AppState {
   /** The player's subtitle-appearance popover — see lib/subtitleStyle. Lives here (not in
    *  Player.tsx) so the one central Escape chain can close it in the right order. */
   subtitleStyleOpen: boolean
+  /** The EPG grid's programme-detail popover (0.45.0) — a boolean MIRROR of the popover, whose
+   *  payload (channel, programme, the block's captured rect) lives as component state in EpgGrid:
+   *  rows are virtualized, so the grid owns the one instance above them. This flag exists purely
+   *  for the central Escape chain's ordering; EpgGrid keeps it in sync and clears its payload
+   *  when the chain closes it. */
+  programmeDetailOpen: boolean
   /** Mini-player mode (0.28.0): the fullscreen player shrinks to a draggable corner card while
    *  playback continues on the same <video>/hls.js instance. In the store (not Player.tsx local
    *  state) for the same reason as channelBarOpen above — the one central Escape chain resolves
@@ -655,6 +661,8 @@ interface AppState {
   stop: () => void
   setChannelBarOpen: (open: boolean) => void
   setSubtitleStyleOpen: (open: boolean) => void
+  /** The Escape chain's mirror of the grid's programme-detail popover — see programmeDetailOpen. */
+  setProgrammeDetailOpen: (open: boolean) => void
   /** Shrinks/restores the player without touching the stream — the whole point of the mini
    *  card is that the same hls.js instance keeps its connection to a single-connection
    *  account, so this only ever flips layout mode. */
@@ -881,6 +889,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   nowPlaying: null,
   channelBarOpen: false,
   subtitleStyleOpen: false,
+  programmeDetailOpen: false,
   miniPlayer: false,
 
   openSeries: null,
@@ -1305,6 +1314,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       proxyBase: null,
       nowPlaying: null,
       channelBarOpen: false,
+      programmeDetailOpen: false,
       miniPlayer: false,
       unlockedCategoryIds: [],
       numericChannelCatalog: null,
@@ -2702,6 +2712,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setChannelBarOpen: (open) => set({ channelBarOpen: open }),
   setSubtitleStyleOpen: (open) => set({ subtitleStyleOpen: open }),
+  setProgrammeDetailOpen: (open) => set({ programmeDetailOpen: open }),
   setMiniPlayer: (open) => set({ miniPlayer: open }),
 
   openSeriesDetail: async (item) => {

@@ -23,6 +23,13 @@
  *   8b. the player's own subtitle-style popover — inside the player, but a thing you opened on
  *      purpose, so it closes before the player does (and before the channel-swap bar, which is a
  *      navigation layer rather than a dialog)
+ *   8b2. the EPG grid's programme-detail popover (0.45.0) — the same "opened on purpose" argument
+ *      as 8b, one surface over: it floats above a grid that itself renders inside either the
+ *      docked preview or the fullscreen channel-swap bar, so it must resolve before the bar
+ *      closes (otherwise Escape with a popover open over the channel bar would fall through and
+ *      swap the channel underneath — exactly the bug class this chain exists for) and before the
+ *      mini-player restores, because the popover is the thing the user just clicked, while the
+ *      card is a layout mode of the player.
  *   8c. the mini-player card — Escape restores the full player rather than stopping playback,
  *      because while the card is up the app behind it is the thing being used (the card exists
  *      so browsing continues while video keeps playing; stopping it is what the card's own ✕
@@ -49,6 +56,11 @@ export interface OverlayState {
   pinPromptCategoryId: string | null
   openSeries: unknown | null
   subtitleStyleOpen: boolean
+  /** The EPG grid's programme-detail popover (0.45.0) — a boolean mirror of the popover that
+   *  lives as component state inside EpgGrid (rows are virtualized, so the payload can't live
+   *  per-row, and the grid owns the one instance). In the store only so the one central Escape
+   *  chain can close it in the right order — see EpgGrid, which keeps the mirror in sync. */
+  programmeDetailOpen: boolean
   /** Mini-player mode (0.28.0) — playback continues in a corner card while the app behind it
    *  stays interactive. True only while something is playing (the store clears it with
    *  nowPlaying), so it cannot outlive the player it belongs to. */
@@ -69,6 +81,7 @@ export type OverlayEscapeAction =
   | 'cancelPinPrompt'
   | 'closeSeries'
   | 'closeSubtitleStyle'
+  | 'closeProgrammeDetail'
   | 'restorePlayer'
   | 'closeChannelBar'
   | 'stopPlayback'
@@ -85,6 +98,7 @@ export function resolveEscapeAction(state: OverlayState): OverlayEscapeAction | 
   if (state.pinPromptCategoryId) return 'cancelPinPrompt'
   if (state.openSeries) return 'closeSeries'
   if (state.subtitleStyleOpen) return 'closeSubtitleStyle'
+  if (state.programmeDetailOpen) return 'closeProgrammeDetail'
   if (state.miniPlayer) return 'restorePlayer'
   if (state.channelBarOpen) return 'closeChannelBar'
   if (state.nowPlaying) return 'stopPlayback'

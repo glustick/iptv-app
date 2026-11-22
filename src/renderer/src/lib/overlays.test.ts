@@ -13,6 +13,7 @@ const base: OverlayState = {
   pinPromptCategoryId: null,
   openSeries: null,
   subtitleStyleOpen: false,
+  programmeDetailOpen: false,
   miniPlayer: false,
   channelBarOpen: false,
   nowPlaying: null,
@@ -31,6 +32,10 @@ const ORDER: Array<{ key: keyof OverlayState; action: OverlayEscapeAction; on: u
   { key: 'pinPromptCategoryId', action: 'cancelPinPrompt', on: 'live:12' },
   { key: 'openSeries', action: 'closeSeries', on: { series_id: 1 } },
   { key: 'subtitleStyleOpen', action: 'closeSubtitleStyle', on: true },
+  // 0.45.0: the grid's programme-detail popover resolves before the channel-swap bar (it floats
+  // above a grid that renders inside that bar) and before the mini-player restores (the popover
+  // is what the user just clicked; the card is a player layout mode).
+  { key: 'programmeDetailOpen', action: 'closeProgrammeDetail', on: true },
   { key: 'miniPlayer', action: 'restorePlayer', on: true },
   { key: 'channelBarOpen', action: 'closeChannelBar', on: true },
   { key: 'nowPlaying', action: 'stopPlayback', on: { kind: 'live' } },
@@ -73,6 +78,15 @@ describe('resolveEscapeAction', () => {
 
   it('Escape restores the mini card rather than stopping the stream it is still playing (0.28.0)', () => {
     expect(resolveEscapeAction({ ...base, miniPlayer: true, nowPlaying: { kind: 'live' } })).toBe('restorePlayer')
+  })
+
+  it('Escape closes the programme popover before the channel bar it floats over (0.45.0)', () => {
+    // The popover opens on blocks inside the channel-swap bar's grid: falling through to the bar
+    // would swap the channel underneath while the popover stayed open.
+    expect(resolveEscapeAction({ ...base, programmeDetailOpen: true, channelBarOpen: true })).toBe('closeProgrammeDetail')
+    // ...and before the docked preview behind it closes, and before playback stops.
+    expect(resolveEscapeAction({ ...base, programmeDetailOpen: true, previewChannel: { stream_id: 4 } })).toBe('closeProgrammeDetail')
+    expect(resolveEscapeAction({ ...base, programmeDetailOpen: true, nowPlaying: { kind: 'live' } })).toBe('closeProgrammeDetail')
   })
 
   it('closes the manager rather than the thing behind it (the 0.7.81 bug)', () => {
