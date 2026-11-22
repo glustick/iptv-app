@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import { mkdtemp, rm, readFile, writeFile } from 'fs/promises'
-import { existsSync } from 'fs'
+import { existsSync, readdirSync, statSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, extname } from 'path'
 import { parseTsProgramStreams } from './tsProgramMap'
@@ -128,6 +128,17 @@ export interface TranscodeSession {
   // on normal termination — confirmed live, a SIGKILLed first attempt's exit event fired with
   // code null while exitCode stayed null, leaving any exitCode-based check waiting forever).
   exited: boolean
+  // ---- post-start output watchdog (0.35.0) ----
+  // Whether this attempt was itself the output-stall respawn (see the watchdog below) — the
+  // respawn gets exactly one shot, and a second stall fails the session outright rather than
+  // looping against a source that is demonstrably not delivering.
+  outputRespawned: boolean
+  isVod: boolean
+  startedAt: number
+  // Newest seg_* mtime seen by the watchdog's last tick (null until the first tick found a
+  // segment) — what getSessions() exposes so the recovery panel can show feed freshness.
+  lastSegmentMtime: number | null
+  outputWatchdogTimer: ReturnType<typeof setInterval> | null
 }
 
 export interface TranscodeServiceDeps {
@@ -140,6 +151,15 @@ export interface TranscodeServiceDeps {
   stopGraceMs?: number
   subtitleGraceMs?: number
   probeTimeoutMs?: number
+  // Post-start output watchdog (0.35.0): how stale the newest segment's mtime may get on a
+  // still-"active" session before the feed behind ffmpeg is declared dead and the session
+  // respawns once. Live gets a shorter fuse than VOD (a live feed that stops appending is dead
+  // within seconds; a VOD encode can legitimately pause between writes on a hard title), and
+  // the tick interval is coarse on purpose — this is a backstop, not a fast path, and the
+  // player's own stall ladder (0.30.0) reacts far sooner than this fires.
+  outputStallMs?: number
+  vodOutputStallMs?: number
+  watchdogIntervalMs?: number
   // Whether the *client* can decode HEVC from fragmented MP4 in MSE. Injectable rather than a
   // constant because the answer is per-machine, and it decides which of the two HEVC
   // remediations the self-restart below applies: a client that can decode gets a lossless video
@@ -190,13 +210,19 @@ export interface TranscodeService {
     // video re-encode path — a copy cannot reshape, so every copy session (hvc1 respawns
     // included) and every VOD remux ignores it. Normalized by normalizeMaxHeight; null/absent
     // means Source — the provider's own resolution, never silently changed.
-    maxHeightOverride?: number | null
+    maxHeightOverride?: number | null,
+    // Internal — set only by the output watchdog's post-start respawn below; external callers
+    // pass undefined. Arms the "second stall fails the session" rule instead of respawning.
+    outputRespawned?: boolean
   ): Promise<{ sessionId: string; playlistPath: string; subtitleTracks: SubtitleTrackInfo[] }>
   stopTranscode(sessionId: string): Promise<void>
   serveTranscodeFile(url: string, res: ServerResponse): Promise<void>
   // Fire-and-forget by design, matching the one real caller (app 'before-quit'): every active
   // session gets a stopTranscode() kicked off, but quitting doesn't wait on any of them.
   stopAll(): void
+  // Read-only snapshot of the active sessions (0.35.0) — the recovery telemetry panel (0.40.0)
+  // and any diagnosis of "why is this remux frozen" want what the watchdog itself sees.
+  getSessions(): Array<{ sessionId: string; isVod: boolean; startedAt: number; lastSegmentMtime: number | null }>
   // A lightweight, output-less probe (ffmpeg -i with nothing to write to, which exits almost
   // immediately once it's read the source's headers/PMT — confirmed live, typically well under
   // a second against this app's real test account) that reports every audio/subtitle stream the
@@ -382,6 +408,9 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
   // clicked "check for extra audio tracks" wait out the full 240s VOD deadline for what's
   // supposed to be a quick, no-output probe.
   const probeTimeoutMs = deps.probeTimeoutMs ?? 30000
+  const outputStallMs = deps.outputStallMs ?? 30000
+  const vodOutputStallMs = deps.vodOutputStallMs ?? 60000
+  const watchdogIntervalMs = deps.watchdogIntervalMs ?? 10000
   const log = deps.log ?? (() => {})
 
   const transcodeSessions = new Map<string, TranscodeSession>()
@@ -400,6 +429,12 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
     const session = transcodeSessions.get(sessionId)
     if (!session) return
     transcodeSessions.delete(sessionId)
+    // The watchdog belongs to the session it watches — stopping the session stops it. (Without
+    // this, a stopped session's interval keeps firing until its next cancelled-sessions check.)
+    if (session.outputWatchdogTimer) {
+      clearInterval(session.outputWatchdogTimer)
+      session.outputWatchdogTimer = null
+    }
 
     if (session.proc.exitCode === null) {
       session.proc.kill('SIGTERM')
@@ -410,6 +445,106 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
       if (session.proc.exitCode === null) session.proc.kill('SIGKILL')
     }
     await rm(session.dir, { recursive: true, force: true }).catch(() => {})
+  }
+
+  // ---- the post-start output watchdog (0.35.0) -----------------------------------------------
+  // The readiness loop above only answers "did ffmpeg ever produce a playlist" — once it has,
+  // nothing watches the output again. That gap is exactly the frozen-channel failure mode this
+  // provider produces most often: the provider kills paced-reader connections at unpredictable
+  // intervals (see the exit handler's own comment), the "live" session stays registered, its
+  // playlist simply stops advancing, and the player freezes with no error anywhere — the exit
+  // handler even logs it ("after producing output — playlist frozen") with nobody acting on it.
+  // The stderr-silence scheme was tried and abandoned long ago (stdio buffering false-positives,
+  // see startTranscode's comment), but segment mtimes are a different signal entirely: the HLS
+  // muxer touches a new seg_* file every few seconds on any healthy feed. Segment FILES, never
+  // the playlist — a VOD event playlist exists from early on while segments are what actually
+  // grow, and a live delete_segments window's playlist is rewritten in place.
+  function newestSegmentMtime(dir: string): number | null {
+    try {
+      let newest: number | null = null
+      for (const name of readdirSync(dir)) {
+        if (!name.startsWith('seg_')) continue
+        const mtime = statSync(join(dir, name)).mtimeMs
+        if (newest === null || mtime > newest) newest = mtime
+      }
+      return newest
+    } catch {
+      // Directory already gone (stopped underneath us) — nothing to watch.
+      return null
+    }
+  }
+
+  function armOutputWatchdog(
+    session: TranscodeSession,
+    sessionId: string,
+    attempt: {
+      sourceUrl: string
+      subtitleStreamIndex: number
+      audioStreamIndex: number
+      tagHvc1: boolean
+      reencodeVideo: boolean
+      maxHeightOverride: number | null
+    }
+  ): void {
+    const stallMs = session.isVod ? vodOutputStallMs : outputStallMs
+    session.outputWatchdogTimer = setInterval(() => {
+      // A stop() that landed between ticks: stopTranscode already cleared this timer, but a tick
+      // that fired before that check must not act on a cancelled session.
+      if (cancelledSessions.has(sessionId)) return
+      const newest = newestSegmentMtime(session.dir)
+      session.lastSegmentMtime = newest
+      if (newest !== null && Date.now() - newest < stallMs) return
+      // Stalled: the newest segment is older than the fuse allows — or there are no segments at
+      // all yet (the readiness loop guaranteed the playlist, so a segment-less session is every
+      // bit as dead as a stale one).
+      if (session.outputWatchdogTimer) {
+        clearInterval(session.outputWatchdogTimer)
+        session.outputWatchdogTimer = null
+      }
+      // A VOD session whose process EXITED is not stalled — it finished (the event muxer wrote
+      // its complete playlist; the exit handler deliberately keeps it for scrubbing). A live
+      // session whose process exited is the provider-kill case exactly.
+      if (session.exited && session.isVod) {
+        log(`[transcode] session ${sessionId}: VOD remux complete — watchdog retiring`)
+        return
+      }
+      if (session.outputRespawned) {
+        // Second stall: the respawn already had its one fresh connection and the feed died
+        // again. Fail the session for real — the player's own stall ladder (0.30.0) owns it
+        // from here, and a session that is gone makes the player's next playlist/segment
+        // request fail loudly instead of silently serving a frozen window forever.
+        log(`[transcode] session ${sessionId}: output stalled again after respawn — failing the session`)
+        transcodeSessions.delete(sessionId)
+        if (!session.exited) session.proc.kill('SIGKILL')
+        rm(session.dir, { recursive: true, force: true }).catch(() => {})
+        return
+      }
+      log(
+        `[transcode] session ${sessionId}: no new output for ${stallMs}ms (${session.exited ? 'process exited' : 'process alive'}, feed ${session.isVod ? 'VOD' : 'live'}) — respawning once on a fresh connection`
+      )
+      // The renderer keeps polling the SAME /__transcode/<sessionId>/... URL: serveTranscodeFile
+      // looks the session up by id, so the respawn re-registering under it (into a fresh
+      // mkdtemp dir) is seamless — no renderer involvement at all. isRetry=true on the respawn
+      // keeps the total budget at exactly one extra attempt (it skips the start-phase retry the
+      // fresh attempt would otherwise also get), matching the "respawn once" contract.
+      void startTranscode(
+        attempt.sourceUrl,
+        session.isVod,
+        sessionId,
+        attempt.subtitleStreamIndex,
+        attempt.audioStreamIndex,
+        attempt.tagHvc1,
+        true,
+        attempt.reencodeVideo,
+        attempt.maxHeightOverride,
+        true
+      ).catch((err: Error) => {
+        log(`[transcode] session ${sessionId}: output-stall respawn failed: ${err.message}`)
+      })
+    }, watchdogIntervalMs)
+    // Never hold the process open for a backstop timer — app quit runs stopAll anyway, and a
+    // test suite must not hang on a session nobody stopped.
+    session.outputWatchdogTimer.unref()
   }
 
   async function startTranscode(
@@ -431,7 +566,10 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
     // carried through every respawn below. It applies ONLY where a reshape is even possible —
     // the re-encode path; a copy cannot reshape, so the hvc1-copy respawn ignores it. Normalized
     // here (not at the IPC boundary) so this is the one place that decides what is a cap.
-    maxHeightOverride: number | null = null
+    maxHeightOverride: number | null = null,
+    // Internal: set by the output watchdog's post-start respawn (see armOutputWatchdog) — this
+    // attempt is the one and only respawn the stalled session gets.
+    outputRespawned = false
   ): Promise<{ sessionId: string; playlistPath: string; subtitleTracks: SubtitleTrackInfo[] }> {
     const ffmpegPath = await deps.resolveFfmpegPath()
     if (!ffmpegPath) {
@@ -604,11 +742,33 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
       await rm(dir, { recursive: true, force: true }).catch(() => {})
       throw new Error('Transcode cancelled')
     }
-    const session: TranscodeSession = { proc, dir, stderrTail: [], subtitleTracks: [], inputStreamListEnded: false, hvc1RestartPending: false, exited: false }
+    const session: TranscodeSession = {
+      proc,
+      dir,
+      stderrTail: [],
+      subtitleTracks: [],
+      inputStreamListEnded: false,
+      hvc1RestartPending: false,
+      exited: false,
+      outputRespawned,
+      isVod,
+      startedAt: Date.now(),
+      lastSegmentMtime: null,
+      outputWatchdogTimer: null
+    }
     transcodeSessions.set(sessionId, session)
     log(
       `[transcode] session ${sessionId} started (${isVod ? 'vod' : `live${tagHvc1 ? ', hvc1 copy' : ''}${reencodeVideo ? ', h264 re-encode' : ''}${isRetry ? ', retry' : ''}`}) source=${sourceUrl}`
     )
+
+    // Every success path funnels through here so the output watchdog is armed exactly once per
+    // attempt, with THIS attempt's own parameters — the respawn it may later trigger needs them
+    // (same source, same codec decisions, fresh connection). Without the funnel, each of the
+    // seven success returns would need its own arming call and one would inevitably be missed.
+    const succeed = (playlistPath: string): { sessionId: string; playlistPath: string; subtitleTracks: SubtitleTrackInfo[] } => {
+      armOutputWatchdog(session, sessionId, { sourceUrl, subtitleStreamIndex, audioStreamIndex, tagHvc1, reencodeVideo, maxHeightOverride })
+      return { sessionId, playlistPath, subtitleTracks: session.subtitleTracks }
+    }
 
     // A stall-detection scheme keyed on "time since ffmpeg last wrote to stderr" was tried here
     // and had to be abandoned: ffmpeg's stderr is a pipe, not a tty, and glibc/libSystem's stdio
@@ -763,7 +923,7 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
         const mappedTrackExists = session.subtitleTracks.some((t) => t.index === subtitleStreamIndex && t.supported)
         if (!isVod || !mappedTrackExists) {
           log(`[transcode] session ${sessionId}: playlist ready after ${Date.now() - startedAt}ms`)
-          return { sessionId, playlistPath: playlistFile, subtitleTracks: session.subtitleTracks }
+          return succeed(playlistFile)
         }
         videoReadyAt = Date.now()
       }
@@ -786,10 +946,10 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
             ].join('\n'),
             'utf8'
           )
-          return { sessionId, playlistPath: masterPlaylistFile, subtitleTracks: session.subtitleTracks }
+          return succeed(masterPlaylistFile)
         }
         if (Date.now() - videoReadyAt > subtitleGraceMs) {
-          return { sessionId, playlistPath: playlistFile, subtitleTracks: session.subtitleTracks }
+          return succeed(playlistFile)
         }
       }
       if (session.exited) {
@@ -820,7 +980,7 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
         // video/audio playlist but before the subtitle rendition catches up — that's still a
         // successful transcode, just one that isn't getting subtitles, not a failure.
         if (videoReadyAt !== null) {
-          return { sessionId, playlistPath: playlistFile, subtitleTracks: session.subtitleTracks }
+          return succeed(playlistFile)
         }
         // Confirmed live against a real file (see SUBTITLE_CODEC_INCOMPATIBLE_PATTERN's own
         // comment): a bitmap-codec subtitle stream crashes ffmpeg entirely, before it ever
@@ -854,10 +1014,10 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
             ].join('\n'),
             'utf8'
           )
-          return { sessionId, playlistPath: masterPlaylistFile, subtitleTracks: session.subtitleTracks }
+          return succeed(masterPlaylistFile)
         }
         if (existsSync(playlistFile)) {
-          return { sessionId, playlistPath: playlistFile, subtitleTracks: session.subtitleTracks }
+          return succeed(playlistFile)
         }
         log(`[transcode] session ${sessionId}: ffmpeg exited before producing output: ${session.stderrTail.slice(-3).join(' | ')}`)
         throw new Error(`ffmpeg exited before producing output: ${session.stderrTail.slice(-10).join('\n')}`)
@@ -865,7 +1025,7 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
       await sleep(pollIntervalMs)
     }
     if (videoReadyAt !== null) {
-      return { sessionId, playlistPath: playlistFile, subtitleTracks: session.subtitleTracks }
+      return succeed(playlistFile)
     }
     await stopTranscode(sessionId)
     // Confirmed live 2026-09-26: this provider's live-stream edge intermittently stalls a NEW
@@ -1040,5 +1200,14 @@ export function createTranscodeService(deps: TranscodeServiceDeps): TranscodeSer
     })
   }
 
-  return { startTranscode, stopTranscode, serveTranscodeFile, stopAll, probeTracks }
+  function getSessions(): Array<{ sessionId: string; isVod: boolean; startedAt: number; lastSegmentMtime: number | null }> {
+    return [...transcodeSessions.entries()].map(([id, s]) => ({
+      sessionId: id,
+      isVod: s.isVod,
+      startedAt: s.startedAt,
+      lastSegmentMtime: s.lastSegmentMtime
+    }))
+  }
+
+  return { startTranscode, stopTranscode, serveTranscodeFile, stopAll, probeTracks, getSessions }
 }

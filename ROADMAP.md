@@ -231,6 +231,37 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.35.0** the remux session watchdog — the main process finally watches its own ffmpeg
+  output after startup. The gap, measured in failure reports: the readiness loop only answers
+  "did ffmpeg ever produce a playlist" (it polls `existsSync` alone), and once `startTranscode`
+  returned, nothing watched the output again — while this provider kills paced-reader
+  connections at unpredictable intervals, leaving the "live" session registered, its playlist
+  frozen forever, the exit handler logging "after producing output — playlist frozen" with
+  nobody acting on it, and the player frozen with no error anywhere. The post-start watchdog
+  polls the session directory every 10s for the newest `seg_*` file's mtime — **segment files,
+  never the playlist** (a VOD event playlist exists from early on; segments are what actually
+  grow) — and when nothing new is written for 30s on a live source (60s on VOD, where a hard
+  encode can legitimately pause between writes), the feed behind ffmpeg is declared dead:
+  **one respawn on a fresh connection**, re-registered under the SAME session id into a fresh
+  temp dir — `serveTranscodeFile` looks sessions up by id, so the renderer's polling URL never
+  changes and recovery is seamless — with `isRetry` semantics so the total budget stays at
+  exactly one extra attempt; a second stall deletes the session and its directory, which makes
+  the player's next request fail loudly into its own stall ladder (0.30.0) instead of serving a
+  frozen window forever. A VOD session whose process EXITED is retired, never respawned — that
+  is a finished encode, and the exit handler's keep-for-scrubbing rule stands; a live session
+  whose process exited is the provider-kill case exactly, and the watchdog handles it without
+  SIGKILLing an already-dead pid (`session.exited`, not exitCode — the signal-death subtlety
+  that field exists for). The stderr-silence scheme abandoned long ago (stdio buffering
+  false-positives) stays abandoned — mtimes are a different signal entirely. New
+  `getSessions()` exposes what the watchdog sees (id, kind, startedAt, newest-segment mtime)
+  for the recovery panel due in 0.40.0. 915 tests (+5: stale-alive respawn-and-recover,
+  second-stall-fails, exited-after-output respawn, completed-VOD retirement, healthy-never-
+  respawned; the fixture gained segment-writing modes with a shared run tracker). Typecheck and
+  lint clean. GUI smoke unchanged and green — the existing Dolby-channel remux check doubles as
+  the false-positive guard (a healthy session must never respawn). **Not verified interactively:**
+  thresholds against a real provider kill (30s/60s are reasoned: well past any healthy gap the
+  4s segment cadence produces, well before a viewer waits out the player ladder's give-up).
+
 - **0.34.0** the recordings-honesty round — the Recordings tab stops hiding when a scheduled
   programme actually airs, and the guide stops scheduling blind over itself.
   **Air time on scheduled entries.** A scheduled entry in the main process's recordings.json

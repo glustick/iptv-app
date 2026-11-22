@@ -168,6 +168,84 @@ seg0.ts
 ' > "$last_arg"
     exit 0
     ;;
+  # ---- output-watchdog modes (0.35.0) ----------------------------------------------------------
+  # Each writes a playlist plus seg_* files (the watchdog's signal is segment mtimes), then
+  # behaves per mode. FAKE_FFMPEG_SEGMENT_DELAY controls append pacing; FAKE_FFMPEG_RUN_TRACKER
+  # is a shared file distinguishing "first attempt" from "the respawn" (each attempt gets a
+  # fresh mkdtemp dir, so like FAKE_FFMPEG_MARKER_FILE this lives outside the session dir).
+  live_output)
+    # Healthy live output: playlist (no ENDLIST — delete_segments window), then a new segment
+    # every $FAKE_FFMPEG_SEGMENT_DELAY ms until killed. The run tracker records invocations.
+    dir="$(dirname "$last_arg")"
+    printf '#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:4.0,\nseg_00000.m4s\n' > "$last_arg"
+    printf 'fake-segment-0' > "$dir/seg_00000.m4s"
+    echo 1 >> "${FAKE_FFMPEG_RUN_TRACKER:?FAKE_FFMPEG_RUN_TRACKER must be set for this mode}"
+    i=1
+    while [ "$i" -lt 400 ]; do
+      sleep "${FAKE_FFMPEG_SEGMENT_DELAY:-0.05}"
+      printf "fake-segment-$i" > "$dir/seg_$(printf '%05d' "$i").m4s"
+      i=$((i + 1))
+    done
+    ;;
+  live_stall_alive)
+    # The provider-kill case with a twist: ffmpeg stays ALIVE but the feed behind it died —
+    # playlist + segments appear, then nothing new is ever written while the process lingers.
+    dir="$(dirname "$last_arg")"
+    printf '#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:4.0,\nseg_00000.m4s\n' > "$last_arg"
+    printf 'fake-segment-0' > "$dir/seg_00000.m4s"
+    echo 1 >> "${FAKE_FFMPEG_RUN_TRACKER:?FAKE_FFMPEG_RUN_TRACKER must be set for this mode}"
+    sleep 300
+    ;;
+  live_stall_then_recover)
+    # First attempt: stalls alive (above). Respawn — the marker file exists — keeps appending:
+    # the watchdog's one fresh-connection retry actually recovers the feed.
+    marker="${FAKE_FFMPEG_RUN_TRACKER:?FAKE_FFMPEG_RUN_TRACKER must be set for this mode}.recovered"
+    dir="$(dirname "$last_arg")"
+    printf '#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:4.0,\nseg_00000.m4s\n' > "$last_arg"
+    printf 'fake-segment-0' > "$dir/seg_00000.m4s"
+    if [ -f "$marker" ]; then
+      echo 2 >> "${FAKE_FFMPEG_RUN_TRACKER}"
+      i=1
+      while [ "$i" -lt 400 ]; do
+        sleep "${FAKE_FFMPEG_SEGMENT_DELAY:-0.05}"
+        printf "fake-segment-$i" > "$dir/seg_$(printf '%05d' "$i").m4s"
+        i=$((i + 1))
+      done
+    else
+      touch "$marker"
+      echo 1 >> "${FAKE_FFMPEG_RUN_TRACKER}"
+      sleep 300
+    fi
+    ;;
+  live_stall_exited)
+    # Exited-after-output: playlist + segments, then exit 0 — the exit handler keeps the session
+    # (its "player finishes what it was handed" rule), and the watchdog must see a dead live
+    # feed and respawn rather than SIGKILL a pid that is already gone.
+    dir="$(dirname "$last_arg")"
+    printf '#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:4.0,\nseg_00000.m4s\n' > "$last_arg"
+    printf 'fake-segment-0' > "$dir/seg_00000.m4s"
+    echo 1 >> "${FAKE_FFMPEG_RUN_TRACKER:?FAKE_FFMPEG_RUN_TRACKER must be set for this mode}"
+    exit 0
+    ;;
+  vod_stall_then_complete)
+    # VOD flavour: the first attempt stalls alive mid-encode (hard title, input died), the
+    # respawn — marker present — writes everything and exits 0 with a complete ENDLIST playlist.
+    marker="${FAKE_FFMPEG_RUN_TRACKER:?FAKE_FFMPEG_RUN_TRACKER must be set for this mode}.vod-done"
+    dir="$(dirname "$last_arg")"
+    if [ -f "$marker" ]; then
+      printf '#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:4.0,\nseg_00000.ts\n#EXTINF:4.0,\nseg_00001.ts\n#EXT-X-ENDLIST\n' > "$last_arg"
+      printf 'fake-segment-0' > "$dir/seg_00000.ts"
+      printf 'fake-segment-1' > "$dir/seg_00001.ts"
+      echo 2 >> "${FAKE_FFMPEG_RUN_TRACKER}"
+      exit 0
+    else
+      touch "$marker"
+      printf '#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:4.0,\nseg_00000.ts\n' > "$last_arg"
+      printf 'fake-segment-0' > "$dir/seg_00000.ts"
+      echo 1 >> "${FAKE_FFMPEG_RUN_TRACKER}"
+      sleep 300
+    fi
+    ;;
   *)
     echo "fake ffmpeg: unset or unknown FAKE_FFMPEG_MODE: ${FAKE_FFMPEG_MODE:-<unset>}" >&2
     exit 1

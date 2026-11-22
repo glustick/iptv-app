@@ -1543,3 +1543,129 @@ describe('real ffmpeg integration', () => {
     }
   }, 30000)
 })
+
+describe('output watchdog (0.35.0)', () => {
+  // Watchdog timings are injected tiny: tick every 50ms, live fuse 200ms, VOD fuse 250ms — so a
+  // stall is detected within ~300ms of the feed actually dying, and every test here finishes in
+  // well under a couple of seconds. The run tracker (a shared file the fixture appends one line
+  // to per invocation) is how a test counts ffmpeg attempts — each attempt gets a fresh mkdtemp
+  // dir, so like the marker files above this must live outside the session directory.
+  const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+  function makeWatchdogService(): TranscodeService {
+    return track(
+      makeService({
+        resolveFfmpegPath: resolverFor(FAKE_FFMPEG),
+        watchdogIntervalMs: 50,
+        outputStallMs: 200,
+        vodOutputStallMs: 250
+      })
+    )
+  }
+
+  async function waitFor(pred: () => boolean, timeoutMs = 4000): Promise<void> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if (pred()) return
+      await sleep(50)
+    }
+    throw new Error('condition not met within timeout')
+  }
+
+  const trackerLines = (tracker: string): number => (existsSync(tracker) ? readFileSync(tracker, 'utf8').trim().split('\n').filter(Boolean).length : 0)
+
+  function newestSegAgeSeconds(service: TranscodeService, sessionId: string): number | null {
+    const entry = service.getSessions().find((s) => s.sessionId === sessionId)
+    if (!entry || entry.lastSegmentMtime === null) return null
+    return (Date.now() - entry.lastSegmentMtime) / 1000
+  }
+
+  it('respawns once when a live session goes stale with ffmpeg still alive, and the respawn recovers', async () => {
+    const tracker = join(mkdtempSync(join(tmpdir(), 'wd-')), 'runs')
+    await withFakeFfmpegMode('live_stall_then_recover', async () => {
+      await withEnv({ FAKE_FFMPEG_RUN_TRACKER: tracker, FAKE_FFMPEG_SEGMENT_DELAY: '0.05' }, async () => {
+        const service = makeWatchdogService()
+        const started = await service.startTranscode('http://fixture/live.m3u8', false, 'wd-recover')
+        expect(existsSync(started.playlistPath)).toBe(true)
+        // The first attempt stalled: wait out fuse + tick, then the respawn's own readiness.
+        await waitFor(() => trackerLines(tracker) >= 2)
+        // The respawn keeps appending under the SAME session id — getSessions still lists it,
+        // and its newest-segment mtime stays fresh across ticks.
+        await sleep(600)
+        const sessions = service.getSessions()
+        expect(sessions).toHaveLength(1)
+        expect(sessions[0].sessionId).toBe('wd-recover')
+        const age = newestSegAgeSeconds(service, 'wd-recover')
+        expect(age).not.toBeNull()
+        expect(age as number).toBeLessThan(1)
+        // Exactly one respawn: two invocations total, never a third.
+        await sleep(400)
+        expect(trackerLines(tracker)).toBe(2)
+      })
+    })
+  })
+
+  it('fails the session when the respawned attempt stalls too — the player ladder owns it then', async () => {
+    const tracker = join(mkdtempSync(join(tmpdir(), 'wd-')), 'runs')
+    await withFakeFfmpegMode('live_stall_alive', async () => {
+      await withEnv({ FAKE_FFMPEG_RUN_TRACKER: tracker }, async () => {
+        const service = makeWatchdogService()
+        await service.startTranscode('http://fixture/live.m3u8', false, 'wd-fail')
+        // Stall → respawn → stall again → session gone. Two invocations, never three.
+        await waitFor(() => service.getSessions().length === 0, 6000)
+        expect(trackerLines(tracker)).toBe(2)
+      })
+    })
+  })
+
+  it('respawns a live session whose process exited after producing output — without killing the dead pid', async () => {
+    const tracker = join(mkdtempSync(join(tmpdir(), 'wd-')), 'runs')
+    await withFakeFfmpegMode('live_stall_exited', async () => {
+      await withEnv({ FAKE_FFMPEG_RUN_TRACKER: tracker }, async () => {
+        const service = makeWatchdogService()
+        await service.startTranscode('http://fixture/live.m3u8', false, 'wd-exited')
+        // First run exits 0 with output (the exit handler keeps the session); the watchdog
+        // must see a dead live feed and respawn. This mode exits every time, so after the
+        // respawn stalls+exits too, the session fails — asserting the whole arc.
+        await waitFor(() => trackerLines(tracker) >= 2)
+        await waitFor(() => service.getSessions().length === 0, 6000)
+        expect(trackerLines(tracker)).toBe(2)
+      })
+    })
+  })
+
+  it('retires a COMPLETED VOD remux instead of respawning it, and keeps the session for scrubbing', async () => {
+    const tracker = join(mkdtempSync(join(tmpdir(), 'wd-')), 'runs')
+    await withFakeFfmpegMode('vod_stall_then_complete', async () => {
+      await withEnv({ FAKE_FFMPEG_RUN_TRACKER: tracker }, async () => {
+        const service = makeWatchdogService()
+        await service.startTranscode('http://fixture/movie.m3u8', true, 'wd-vod')
+        // First attempt stalls (VOD fuse 250ms) → respawn → completes and exits 0.
+        await waitFor(() => trackerLines(tracker) >= 2)
+        await sleep(500)
+        // The completed session is deliberately retained (the exit handler's rule) and the
+        // watchdog retires without a third invocation.
+        expect(service.getSessions()).toHaveLength(1)
+        expect(service.getSessions()[0].sessionId).toBe('wd-vod')
+        await sleep(400)
+        expect(trackerLines(tracker)).toBe(2)
+      })
+    })
+  })
+
+  it('never respawns a healthy session — segments keep flowing, one invocation total', async () => {
+    const tracker = join(mkdtempSync(join(tmpdir(), 'wd-')), 'runs')
+    await withFakeFfmpegMode('live_output', async () => {
+      await withEnv({ FAKE_FFMPEG_RUN_TRACKER: tracker, FAKE_FFMPEG_SEGMENT_DELAY: '0.05' }, async () => {
+        const service = makeWatchdogService()
+        await service.startTranscode('http://fixture/live.m3u8', false, 'wd-healthy')
+        await sleep(800)
+        expect(trackerLines(tracker)).toBe(1)
+        expect(service.getSessions()).toHaveLength(1)
+        const age = newestSegAgeSeconds(service, 'wd-healthy')
+        expect(age).not.toBeNull()
+        expect(age as number).toBeLessThan(0.5)
+      })
+    })
+  })
+})
