@@ -231,6 +231,30 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.44.0** the launch self-test and the fresh badges — the round's closer. Two small
+  honesty measures that cut attach-time stalls before the viewer clicks anything. **Provider
+  reachability, for free:** connect() authenticates anyway, so the authenticate round-trip IS
+  the reachability probe — now timed and recorded either way (`providerCheck`:
+  ok/latency/checkedAt/error, session-scoped), and Settings' new Provider section says
+  "Provider reachable · 240ms (authenticated at 18:02)" or names exactly what failed and
+  when. No extra request exists anywhere in the feature. **Fresh health badges:** the grid's
+  ok/loop/unavailable badges are probed lazily as rows scroll in — so a favorite was fresh but
+  everything off-screen wasn't, and the first click on it could pay the full attach → stall →
+  verdict cycle on a channel the probe would have flagged in advance. connect success now
+  walks the watchlist through the EXISTING probeChannelHealth queue (its dedupe, cooldowns and
+  refusal rules apply unchanged): favorites first, deduped by composite key, capped at 30,
+  sequential — a burst of parallel manifest GETs would fight the very connection cap this
+  whole round respects. Favorites only, deliberately: a LiveStream carries its playlistId, so
+  multi-playlist users probe the right account, while recently-watched entries carry no
+  provenance at all (probing one of those by bare stream id against the primary playlist
+  could flag a channel on the wrong account) — extending there needs the identity threaded
+  through save, a separate change. 963 tests (+2: the walk's dedupe/kind-skip/cap and the
+  favorites-only scope). Typecheck and lint clean. **GUI smoke 147/147.** **Not verified
+  interactively:** the badges against a real provider's genuinely-dead favorites (the 0.15.2-era
+  live-verification caveat again — no real channel has been in that state on camera), and the
+  latency number against the real panel (the fixture's authenticate answers in single-digit
+  milliseconds).
+
 - **0.43.0** the connection ledger — "who has the connection" stops being a guess. The
   single-connection failures this app handles all reduce to the same invisible fact: someone
   else holds the slot (the fullscreen player, a Multi-View tile, the docked preview that

@@ -14,6 +14,7 @@ export function SettingsPage(): JSX.Element | null {
   const openGuide = useAppStore((s) => s.openGuide)
   const providerGuideAvailable = useAppStore((s) => s.providerGuideAvailable)
   const settings = useAppStore((s) => s.settings)
+  const providerCheck = useAppStore((s) => s.providerCheck)
   const updateSettings = useAppStore((s) => s.updateSettings)
   const categories = useAppStore((s) => s.categories)
   const viewMode = useAppStore((s) => s.viewMode)
@@ -205,6 +206,20 @@ export function SettingsPage(): JSX.Element | null {
             With Auto on, the player switches between Smooth and Resilient by itself — after repeated stall
             recoveries it escalates to Resilient, and after ten clean minutes it settles back down. Your fixed
             choice above is ignored while Auto is on.
+          </p>
+        </section>
+
+        <section className="settings-section">
+          <h3>Provider</h3>
+          <p className="settings-hint">
+            {(() => {
+              if (!providerCheck) return 'No reachability check yet — it runs when a profile connects.'
+              const when = new Date(providerCheck.checkedAt).toLocaleTimeString()
+              if (providerCheck.ok) {
+                return `Provider reachable · ${providerCheck.ms}ms (authenticated at ${when})`
+              }
+              return `Provider check failed at ${when}: ${providerCheck.error ?? 'unknown error'}`
+            })()}
           </p>
         </section>
 

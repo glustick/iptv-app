@@ -96,6 +96,10 @@ export type ConnectionStatus = 'idle' | 'connecting' | 'ready' | 'error'
 // full-page tab in its own right, a low cap would feel sparse for anyone watching a lot in a
 // day — raised well past that.
 const RECENTLY_WATCHED_LIMIT = 100
+// How many watchlist channels the launch health refresh walks (0.44.0) — favorites first, then
+// recently watched. Bounded: the probe queue is polite, but thirty small manifest GETs is already
+// a lot of provider attention at launch; the grid probes the rest as rows scroll in.
+const WATCHLIST_HEALTH_CAP = 30
 const MAX_CONCURRENT_SHORT_EPG_FETCHES = 4
 // A cached short-EPG entry is considered fresh for this long even if it still spans "now" —
 // providers update their guides (late additions, schedule changes) continuously, and this is
@@ -464,6 +468,9 @@ interface AppState {
   customCategoriesOpen: boolean
 
   favorites: FavoriteEntry[]
+  /** One connect()'s reachability answer (0.44.0): the authenticate round-trip's latency —
+   *  the cheapest honest probe there is, since connect authenticates anyway. Session-scoped. */
+  providerCheck: { ok: boolean; ms: number | null; checkedAt: number; error?: string } | null
   favoriteGroups: FavoriteGroup[]
   recentlyWatched: RecentlyWatchedEntry[]
   // True only while refreshRecentlyWatched's catalog fetch is in flight — lets the History
@@ -684,6 +691,9 @@ interface AppState {
   // the queued probe actually ran; a channel already judged this session, or already in flight,
   // resolves immediately.
   probeChannelHealth: (streamId: number, playlistId?: string | null) => Promise<void>
+  /** Background-refreshes feed health for the watchlist (favorites + recently watched, live
+   *  only, capped) so the grid's badges are fresh before the viewer clicks (0.44.0). */
+  refreshWatchlistHealth: () => Promise<void>
   setShowNotLiveChannels: (show: boolean) => void
   /** Records a live channel's transcode outcome into the unified memory
    *  (settings.transcodeMemory — see lib/transcodeMemory.ts). kind 'audio' carries the remux
@@ -892,6 +902,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   customCategoriesOpen: false,
 
   favorites: [],
+  providerCheck: null,
   favoriteGroups: [],
   recentlyWatched: [],
   refreshingRecentlyWatched: false,
@@ -1111,7 +1122,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         await window.api.proxy.setTarget(profile.server ?? '', profile.backupServer)
       }
       const client = makePlaylistClient(profile, proxyBase, false)
+      // The launch self-test (0.44.0) is free: connect authenticates anyway, and the
+      // authenticate round-trip IS the reachability answer — timed here, recorded either way.
+      const authStartedAt = Date.now()
       const auth = await client.authenticate()
+      set({ providerCheck: { ok: true, ms: Date.now() - authStartedAt, checkedAt: Date.now() } })
+      // Fire-and-forget by design (0.44.0): the watchlist refresh is background courtesy, not
+      // a step of connecting — its failures are the probe queue's own per-channel cooldowns.
+      void get().refreshWatchlistHealth()
 
       // Additional playlists: whatever else is enabled, in the user's saved order (the profile
       // being connected goes first, so it is the primary). One failing account must not take the
@@ -1202,6 +1220,48 @@ export const useAppStore = create<AppState>((set, get) => ({
       // for next time the user clicks Activate, not a standing instruction to auto-elevate.
     } catch (err) {
       set({ status: 'error', error: err instanceof Error ? err.message : 'Failed to connect' })
+      // The self-test's honest half (0.44.0): the authenticate round-trip failed, and that IS
+      // the reachability answer — recorded, not thrown away.
+      set({
+        providerCheck: {
+          ok: false,
+          ms: null,
+          checkedAt: Date.now(),
+          error: err instanceof Error ? err.message : 'Failed to connect'
+        }
+      })
+    }
+  },
+
+  // Background health refresh (0.44.0): the grid's badges are probed lazily as rows scroll —
+  // which means a favorite pinned at the top of the sidebar is fresh but last week's
+  // recently-watched is not, and the first click on any of them can pay the full
+  // attach → stall → verdict cycle on a channel the probe would have flagged. This walks the
+  // watchlist (favorites, then recently watched; live only; deduped; capped) through the
+  // EXISTING probeChannelHealth queue — its dedupe, cooldowns and refusal rules all apply
+  // unchanged. Fire-and-forget from connect success.
+  refreshWatchlistHealth: async () => {
+    const { favorites, probeChannelHealth, primaryPlaylistId } = get()
+    const targets: Array<{ streamId: number; playlistId: string | null }> = []
+    const seen = new Set<string>()
+    // Favorites only, deliberately: a LiveStream carries its playlistId (so multi-playlist
+    // users probe the right account), while recently-watched entries carry no provenance at
+    // all — probing one of those by bare stream id against the primary playlist could flag a
+    // channel that belongs to a different account. Extending there first needs the identity
+    // threaded through save, which is a separate change.
+    for (const f of favorites) {
+      if (f.kind !== 'live') continue
+      const key = channelKey(f.stream.playlistId ?? null, f.stream.stream_id, primaryPlaylistId)
+      if (seen.has(key)) continue
+      seen.add(key)
+      targets.push({ streamId: f.stream.stream_id, playlistId: f.stream.playlistId ?? null })
+      if (targets.length >= WATCHLIST_HEALTH_CAP) break
+    }
+    // Sequential on purpose: the probe queue dedupes and cools down internally, and a burst
+    // of parallel manifest fetches would fight the very connection cap this whole round
+    // respects.
+    for (const t of targets) {
+      await probeChannelHealth(t.streamId, t.playlistId ?? undefined)
     }
   },
 

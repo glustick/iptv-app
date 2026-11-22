@@ -3087,3 +3087,72 @@ describe('recordings', () => {
     delete (globalThis as unknown as { window?: unknown }).window
   })
 })
+
+describe('refreshWatchlistHealth (0.44.0)', () => {
+  it('walks live favorites through the probe queue, deduped, capped, other kinds skipped', async () => {
+    const probes: Array<{ streamId: number; playlistId?: string | null }> = []
+    const live = (id: number, playlistId?: string): LiveStream =>
+      ({
+        num: id,
+        name: `Ch ${id}`,
+        stream_type: 'live',
+        stream_id: id,
+        stream_icon: '',
+        epg_channel_id: null,
+        added: '0',
+        category_id: '10',
+        custom_sid: null,
+        tv_archive: 0,
+        direct_source: '',
+        tv_archive_duration: 0,
+        ...(playlistId ? { playlistId } : {})
+      }) as LiveStream
+    useAppStore.setState({
+      favorites: [
+        { kind: 'live', stream: live(1) },
+        { kind: 'live', stream: live(2, 'mock-test-2') },
+        { kind: 'live', stream: live(1) }, // duplicate of the first — deduped
+        { kind: 'movie', stream: { stream_id: 99 } as unknown as VodStream } // not live — skipped
+      ],
+      probeChannelHealth: async (streamId, playlistId) => {
+        probes.push({ streamId, playlistId })
+      }
+    })
+
+    await useAppStore.getState().refreshWatchlistHealth()
+
+    expect(probes).toEqual([
+      { streamId: 1, playlistId: undefined },
+      { streamId: 2, playlistId: 'mock-test-2' }
+    ])
+  })
+
+  it('stops at the cap', async () => {
+    const probes: number[] = []
+    const live = (id: number): LiveStream =>
+      ({
+        num: id,
+        name: `Ch ${id}`,
+        stream_type: 'live',
+        stream_id: id,
+        stream_icon: '',
+        epg_channel_id: null,
+        added: '0',
+        category_id: '10',
+        custom_sid: null,
+        tv_archive: 0,
+        direct_source: '',
+        tv_archive_duration: 0
+      }) as LiveStream
+    useAppStore.setState({
+      favorites: Array.from({ length: 40 }, (_, i) => ({ kind: 'live' as const, stream: live(i + 1) })),
+      probeChannelHealth: async (streamId) => {
+        probes.push(streamId)
+      }
+    })
+
+    await useAppStore.getState().refreshWatchlistHealth()
+
+    expect(probes).toHaveLength(30)
+  })
+})
