@@ -19,7 +19,7 @@ import { useTranscodeFallback } from '../lib/useTranscodeFallback'
 import { canDecodeAudioCodec } from '../lib/audioCodecSupport'
 import { liveAudioFactKey, rememberLiveAudioFact, rememberedLiveAudioFact } from '../lib/liveAudioFacts'
 import { loadQualityMaxHeight, saveQualityMaxHeight } from '../lib/qualityPref'
-import { createPlaylistStallTracker } from '../lib/playlistStall'
+import { createPlaylistStallTracker, offAirProbeDelayMs } from '../lib/playlistStall'
 import { useNumericChannelEntry } from '../lib/useNumericChannelEntry'
 import { useToolbarOverflow } from '../lib/useToolbarOverflow'
 import { useHoverAutoHide } from '../lib/useHoverAutoHide'
@@ -57,10 +57,6 @@ const MAX_STALL_ERROR_RECOVERIES = 3
 // the far more responsive recovery hls.js already does on its own.
 const STALL_RECOVERY_AFTER_MS = 10000
 const STALL_CHECK_INTERVAL_MS = 2000
-// How often the off-air re-probe re-fetches the media playlist after a not-broadcasting verdict
-// (0.31.0). 30s rather than 60: the probe is one small GET through the local proxy, and half a
-// minute of dead air is already long enough for a viewer to give up and change channel.
-const OFF_AIR_REPROBE_MS = 30000
 // The fragment-TTFB rolling window (0.39.0): twenty recent fragments is enough median signal
 // to describe the CURRENT delivery without one slow fragment behind a seek coloring it.
 const FRAG_TTFB_SAMPLE_LIMIT = 20
@@ -791,7 +787,13 @@ export function Player(): JSX.Element | null {
     let progressInterval: ReturnType<typeof setInterval> | null = null
     let silentAudioCheckTimer: ReturnType<typeof setInterval> | null = null
     let watchdogTimer: ReturnType<typeof setInterval> | null = null
-    let offAirProbeTimer: ReturnType<typeof setInterval> | null = null
+    let offAirProbeTimer: ReturnType<typeof setTimeout> | null = null
+    // Set once the frozen-window handler has acted (0.42.0) — the tracker keeps answering true
+    // on every later LEVEL_UPDATED, and the handler must act exactly once per attach.
+    let offAirPaused = false
+    // Flipped by the effect's cleanup (see its clearTimeout below) so an in-flight probe's
+    // fetch chain does not reschedule past teardown.
+    let offAirStopped = false
 
     if (hlsRef.current) {
       hlsRef.current.destroy()
@@ -1241,9 +1243,15 @@ export function Player(): JSX.Element | null {
         samples.push(ttfb)
         if (samples.length > FRAG_TTFB_SAMPLE_LIMIT) samples.shift()
       })
-      // The not-broadcasting detector (see playlistStall above): only a frozen window whose
-      // playhead has drained to the buffer's end counts — a window sitting still while there
-      // is still buffer to play is just the live edge being quiet.
+      // The not-broadcasting detector (see playlistStall above), redesigned in 0.42.0 to act at
+      // declaration time rather than waiting for the playhead to drain. The tracker declares a
+      // frozen window after 4 identical reloads spanning 30s — and until now hls.js kept
+      // RELOADING that dead window every few seconds for as long as the buffer lasted (the
+      // reload-storm class that got this account throttled once), only stopping once the
+      // playhead drained into the verdict. Now: the declaration itself stops the polling
+      // (stopLoad — no provider reloads at all from here), arms the re-probe immediately, and
+      // the message is honest about which of the two states the viewer is in: buffer still
+      // playing = a notice and the picture plays out; playhead drained = the full verdict.
       hls.on(Hls.Events.LEVEL_UPDATED, (_event, data) => {
         const details = data.details
         if (!details || playbackErrorRef.current) return
@@ -1253,54 +1261,71 @@ export function Player(): JSX.Element | null {
           startSN: details.startSN,
           endSN: details.endSN
         })
-        if (!stalled) return
+        if (!stalled || offAirPaused) return
+        offAirPaused = true
         const el = videoRef.current
-        if (!el || el.paused) return
-        const bufferedEnd = el.buffered.length > 0 ? el.buffered.end(el.buffered.length - 1) : 0
-        if (el.currentTime < bufferedEnd - 0.5) return
+        const bufferedEnd = el && el.buffered.length > 0 ? el.buffered.end(el.buffered.length - 1) : 0
+        const drained = el === null || el.paused || el.currentTime >= bufferedEnd - 0.5
         console.warn(
-          `[player] playlist window frozen at ${details.startSN}-${details.endSN} — declaring the channel not broadcasting`
+          `[player] playlist window frozen at ${details.startSN}-${details.endSN} — pausing polling (${drained ? 'playhead drained' : 'buffer still playing'})`
         )
         logRecoveryEvent('off-air-verdict', `window frozen at ${details.startSN}-${details.endSN}`)
         if (hasFallbackActive) resetTranscodeFallback()
-        hls.destroy()
-        el.pause()
-        setPlaybackError(
-          'This channel does not appear to be broadcasting right now — its playlist has not advanced for 30 seconds. ' +
-            'Checking every 30 seconds and resuming by itself the moment it comes back.'
-        )
-        // The off-air re-probe (0.31.0): instead of a dead stop that needs a human, re-fetch the
-        // media playlist on a slow cadence (one small GET through the local proxy — the provider
-        // connection the verdict exists to spare stays untouched) and rejoin automatically the
-        // moment the window moves again. "Moved" means the (media sequence, segment count) pair
-        // differs from the frozen one, or the playlist turned finished (#EXT-X-ENDLIST — a
-        // placeholder loop; the reload's own loop-restart machinery takes it from there).
+        hls.stopLoad()
+        if (drained) el?.pause()
+        if (drained) {
+          setPlaybackError(
+            'This channel does not appear to be broadcasting right now — its playlist has not advanced for 30 seconds. ' +
+              'Checking periodically — less often as the outage goes on — and resuming by itself the moment it comes back.'
+          )
+        } else {
+          setStatusNotice(
+            'This feed went quiet — polling paused to spare the provider connection. The picture will play out, ' +
+              'and it rejoins by itself the moment the feed returns.'
+          )
+        }
+        // The off-air re-probe (0.31.0, pacing 0.42.0): re-fetch the media playlist on the
+        // schedule offAirProbeDelayMs lays out — 30s while the outage is young, backing off to
+        // a ten-minute cap as it drags on. "Moved" means the (media sequence, segment count)
+        // pair differs from the frozen one, or the playlist turned finished (#EXT-X-ENDLIST —
+        // a placeholder loop; the reload's own loop-restart machinery takes it from there).
         const frozenStartSN = details.startSN
         const frozenSegments = details.endSN - details.startSN + 1
-        offAirProbeTimer = setInterval(() => {
-          void fetch(nowPlaying.url)
-            .then((response) => (response.ok ? response.text() : null))
-            .then((text) => {
-              if (!text) return
-              const analysis = analyzeMediaPlaylist(text)
-              if (!analysis || analysis.isMaster || analysis.mediaSequence === null) return
-              if (
-                analysis.mediaSequence !== frozenStartSN ||
-                analysis.segmentCount !== frozenSegments ||
-                analysis.hasEndList
-              ) {
-                if (offAirProbeTimer) clearInterval(offAirProbeTimer)
-                offAirProbeTimer = null
-                logRecoveryEvent('off-air-resume', 'playlist window advancing again')
-                setPlaybackError(null)
-                setStatusNotice('The channel is back — rejoining…')
-                setReloadTick((t) => t + 1)
-              }
-            })
-            .catch(() => {
-              /* the feed is off air; the next probe tries again */
-            })
-        }, OFF_AIR_REPROBE_MS)
+        let probeCount = 0
+        const runProbe = (): void => {
+          offAirProbeTimer = setTimeout(() => {
+            probeCount += 1
+            void fetch(nowPlaying.url)
+              .then((response) => (response.ok ? response.text() : null))
+              .then((text) => {
+                if (!text) return scheduleNext()
+                const analysis = analyzeMediaPlaylist(text)
+                if (!analysis || analysis.isMaster || analysis.mediaSequence === null) return scheduleNext()
+                if (
+                  analysis.mediaSequence !== frozenStartSN ||
+                  analysis.segmentCount !== frozenSegments ||
+                  analysis.hasEndList
+                ) {
+                  offAirProbeTimer = null
+                  logRecoveryEvent('off-air-resume', 'playlist window advancing again')
+                  setPlaybackError(null)
+                  setStatusNotice('The channel is back — rejoining…')
+                  setReloadTick((t) => t + 1)
+                  return
+                }
+                scheduleNext()
+              })
+              .catch(() => scheduleNext())
+          }, offAirProbeDelayMs(probeCount))
+        }
+        // The probe must not outlive its own effect: the cleanup below flips this flag AND
+        // clears the pending timer, but a fetch already in flight settles later — its then/catch
+        // chains must not reschedule past teardown.
+        const scheduleNext = (): void => {
+          if (offAirStopped) return
+          runProbe()
+        }
+        runProbe()
       })
       // Quality levels: hls.js exposes its own variant list, and only reports a *switch* — the
       // set itself has to be read from the instance once the manifest is parsed. Auto is hls.js's
@@ -1711,7 +1736,8 @@ export function Player(): JSX.Element | null {
       video.removeEventListener('canplay', handleCanPlay)
       video.removeEventListener('ended', handleEnded)
       if (watchdogTimer) clearInterval(watchdogTimer)
-      if (offAirProbeTimer) clearInterval(offAirProbeTimer)
+      offAirStopped = true
+      if (offAirProbeTimer) clearTimeout(offAirProbeTimer)
       if (errorResetTimer) clearTimeout(errorResetTimer)
       if (networkRetryTimer) clearTimeout(networkRetryTimer)
       if (progressInterval) clearInterval(progressInterval)

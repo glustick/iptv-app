@@ -231,6 +231,30 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.42.0** the reload storm ends — provider courtesy pacing. The last place the app still
+  hammered a failing provider was the frozen-window path: the not-broadcasting tracker
+  declared after 30s, but the ACT only happened once the playhead drained into the verdict —
+  until then hls.js kept reloading the dead window every few seconds while the buffer lasted,
+  which is exactly the reload-storm class that got this account throttled once before
+  (measured 2026-09-21, the placeholder-loop finding). Now the declaration itself acts:
+  **`hls.stopLoad()` at declaration** — no provider reloads at all from that moment — and the
+  0.31.0 re-probe arms immediately, with the message honest about which of the two states the
+  viewer is in: buffer still playing = a status notice and the picture plays out to its end;
+  playhead drained = the full verdict. The instance is no longer destroyed (it is stopped —
+  the rejoin reload reuses it), and the probe chain gained two correctness teeth: an
+  in-flight fetch can no longer reschedule past teardown (the cleanup flips a stop flag the
+  chain checks before re-arming — the old interval version leaked one fetch per reload), and
+  the probe **paces itself down as the outage drags on** (`offAirProbeDelayMs`, pure +
+  tested): 30s for the first ten minutes — a short outage is caught within half a minute of
+  returning — then doubling every further ten minutes, capped at ten minutes between probes.
+  The verdict text says so ("Checking periodically — less often as the outage goes on").
+  957 tests (+2 pacing). Typecheck and lint clean. **GUI smoke 147/147** — the off-air arc
+  runs end-to-end through the new stopLoad path (verdict text updated in the check, the
+  auto-resume within ~60s unchanged). **Not verified interactively:** the pacing against a
+  real multi-hour outage (the schedule is reasoned; nothing on the real provider has died
+  that long on camera yet), and whether providers in the wild behave differently when the
+  reload storm stops — that one only time can answer.
+
 - **0.41.0** the crash-resilient resume banner. The player can now survive stalls, dead
   feeds, VPN drops and provider outages — but a renderer crash or a hard quit still lost the
   viewing context entirely: relaunch landed on the Live TV tab with nothing acknowledging what

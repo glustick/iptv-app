@@ -1599,7 +1599,7 @@ async function main() {
   // 30s after that; the feed resumes at t+70s, so the rejoin lands on the t+70–100s probe.
   await check(
     'the not-broadcasting verdict appears with its checking message',
-    `document.body.innerText.includes("Checking every 30 seconds")`,
+    `document.body.innerText.includes("Checking periodically")`,
     60000
   )
   const offAirVerdictAt = Date.now()

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { createPlaylistStallTracker, STALL_LOADS, STALL_WINDOW_MS } from './playlistStall'
+import { createPlaylistStallTracker, offAirProbeDelayMs, STALL_LOADS, STALL_WINDOW_MS } from './playlistStall'
 
 // The provider's placeholder shape: a live playlist whose window never changes across reloads,
 // answering 200 every time. The tracker's job is to say "stalled" once, after enough identical
@@ -84,5 +84,20 @@ describe('createPlaylistStallTracker', () => {
       if (t.sample({ ...LOAD, at: 1_000 + i * 12_000 })) fires += 1
     }
     expect(fires).toBe(1)
+  })
+})
+
+describe('offAirProbeDelayMs (0.42.0)', () => {
+  it('holds the 30s cadence for the first ten minutes of an outage', () => {
+    expect(offAirProbeDelayMs(0)).toBe(30_000)
+    expect(offAirProbeDelayMs(19)).toBe(30_000)
+  })
+
+  it('doubles every further ten minutes, capped at ten minutes between probes', () => {
+    expect(offAirProbeDelayMs(20)).toBe(60_000)
+    expect(offAirProbeDelayMs(39)).toBe(60_000)
+    expect(offAirProbeDelayMs(40)).toBe(120_000)
+    // Far into an outage: the cap, not an unbounded doubling.
+    expect(offAirProbeDelayMs(500)).toBe(600_000)
   })
 })

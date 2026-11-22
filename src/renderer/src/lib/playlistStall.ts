@@ -78,3 +78,20 @@ export function createPlaylistStallTracker(options?: {
     }
   }
 }
+
+// ---- the off-air re-probe's pacing (0.42.0) ----------------------------------------------------
+// The re-probe exists to spare the provider connection during an outage — which argues for it
+// also slowing down as the outage drags on. The schedule is gentle and bounded: every probe
+// for the first ten minutes runs at 30s (a short outage — the common case — is caught within
+// half a minute of returning), then the delay doubles every further ten minutes of dead air,
+// capped at ten minutes between probes. Pure, injected count, so the schedule is unit-tested
+// without a player.
+export const OFF_AIR_PROBE_BASE_MS = 30_000
+export const OFF_AIR_PROBE_ESCALATE_AFTER = 20
+export const OFF_AIR_PROBE_MAX_MS = 600_000
+
+export function offAirProbeDelayMs(probeCount: number): number {
+  if (probeCount < OFF_AIR_PROBE_ESCALATE_AFTER) return OFF_AIR_PROBE_BASE_MS
+  const escalated = OFF_AIR_PROBE_BASE_MS * Math.pow(2, Math.floor(probeCount / OFF_AIR_PROBE_ESCALATE_AFTER))
+  return Math.min(escalated, OFF_AIR_PROBE_MAX_MS)
+}
