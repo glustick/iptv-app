@@ -23,7 +23,7 @@ import { createPlaylistStallTracker } from '../lib/playlistStall'
 import { useNumericChannelEntry } from '../lib/useNumericChannelEntry'
 import { useToolbarOverflow } from '../lib/useToolbarOverflow'
 import { useHoverAutoHide } from '../lib/useHoverAutoHide'
-import { clampRestorePosition, isBufferStallError, nextStallAction, playbackSignature, stallRecoveryDelayMs } from '../lib/playbackWatchdog'
+import { clampRestorePosition, fragmentTtfbMs, isBufferStallError, medianTtfb, networkFlavor, nextStallAction, playbackSignature, stallRecoveryDelayMs } from '../lib/playbackWatchdog'
 import { adaptBufferProfile } from '../lib/bufferProfileAuto'
 import { nextReconnectDelayMs, shouldResetReconnectAttempts } from '../lib/reconnectBackoff'
 import { isTunneledNowPlaying, playingProviderHosts } from '../lib/vpnPlayback'
@@ -60,6 +60,9 @@ const STALL_CHECK_INTERVAL_MS = 2000
 // (0.31.0). 30s rather than 60: the probe is one small GET through the local proxy, and half a
 // minute of dead air is already long enough for a viewer to give up and change channel.
 const OFF_AIR_REPROBE_MS = 30000
+// The fragment-TTFB rolling window (0.39.0): twenty recent fragments is enough median signal
+// to describe the CURRENT delivery without one slow fragment behind a seek coloring it.
+const FRAG_TTFB_SAMPLE_LIMIT = 20
 // A live channel whose playlist turns out to be *finished* (see the ended handler) is
 // restarted rather than left stopped. If a restart ends again almost immediately the "loop" is
 // a broken/empty stream rather than a repeating feed, so it stops being attempted.
@@ -438,6 +441,9 @@ export function Player(): JSX.Element | null {
   const recoveryEventsRef = useRef<number[]>([])
   const adaptiveProfileRef = useRef<'smooth' | 'resilient'>('smooth')
   const lastProfileSwitchRef = useRef<number | null>(null)
+  // Fragment TTFB samples (0.39.0) — the rolling window the stall triage and the stats
+  // overlay read. Ref, not state: the watchdog polls it, nothing renders reactively off it.
+  const fragTtfbSamplesRef = useRef<number[]>([])
   // Reconnect backoff (0.30.0) — the offline→online effect's attempt schedule, kept in refs
   // because it must survive the reloads it itself triggers (a state counter re-created per
   // attach would reset every cycle, exactly the reload-resets-the-ladder bug stallLadderRef
@@ -962,7 +968,12 @@ export function Player(): JSX.Element | null {
       const bufferAhead = Math.max(0, bufferedEndOf(video) - video.currentTime)
       const recoveryDelayMs = stallRecoveryDelayMs(bufferAhead, stalledEventSeen, STALL_RECOVERY_AFTER_MS)
       if (now - ladder.lastProgressAt < recoveryDelayMs) return
-      const action = nextStallAction(ladder.recoveries, 2, nowPlaying.kind === 'live')
+      // Measured network flavor (0.39.0): the recent median fragment TTFB tells a starved
+      // buffer (slow — reload, the nudge cannot help) from a render-side wedge (fast — the
+      // nudge is exactly the right tool). Null with too few samples: the ladder keeps its
+      // 0.30.0 shape.
+      const flavor = networkFlavor(medianTtfb(fragTtfbSamplesRef.current))
+      const action = nextStallAction(ladder.recoveries, 2, nowPlaying.kind === 'live', flavor)
       ladder.recoveries += 1
       // A recovery action is exactly the evidence the auto buffer-profile reasons over
       // (0.37.0) — feed it, and let the decision (possibly a reload) follow immediately.
@@ -1205,6 +1216,18 @@ export function Player(): JSX.Element | null {
         // Fragments are flowing — whatever transient notice was up (a dead session being
         // replaced) has resolved.
         setStatusNotice(null)
+      })
+      // Fragment telemetry (0.39.0): a rolling window of recent time-to-first-byte samples,
+      // read by the watchdog's stall triage (slow network skips the nudge rung — see
+      // nextStallAction) and by the stats overlay's Frag TTFB row. Cleared on attach, so the
+      // window always describes THIS source's delivery.
+      fragTtfbSamplesRef.current = []
+      hls.on(Hls.Events.FRAG_LOADED, (_event, data) => {
+        const ttfb = fragmentTtfbMs(data.frag?.stats)
+        if (ttfb === null) return
+        const samples = fragTtfbSamplesRef.current
+        samples.push(ttfb)
+        if (samples.length > FRAG_TTFB_SAMPLE_LIMIT) samples.shift()
       })
       // The not-broadcasting detector (see playlistStall above): only a frozen window whose
       // playhead has drained to the buffer's end counts — a window sitting still while there
@@ -3099,6 +3122,10 @@ export function Player(): JSX.Element | null {
             isLive={nowPlaying.kind === 'live'}
             // Read per tick — auto mode (0.37.0) can switch the profile mid-session.
             getBufferProfile={() => (bufferProfileAuto ? adaptiveProfileRef.current : bufferProfile)}
+            getFragTtfb={() => {
+              const samples = fragTtfbSamplesRef.current
+              return { medianMs: medianTtfb(samples), samples: samples.length }
+            }}
           />
         )}
       </div>

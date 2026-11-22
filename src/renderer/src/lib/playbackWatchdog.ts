@@ -60,7 +60,7 @@ export type StallAction = 'liveEdge' | 'nudge' | 'reload' | 'giveUp'
  *   1..maxReloads → reload (re-attach the source from scratch — a second of black screen)
  *   beyond that → giveUp  (a genuinely dead stream; stop pretending anything is coming)
  */
-export function nextStallAction(completedRecoveries: number, maxReloads = 2, isLive = false): StallAction {
+export function nextStallAction(completedRecoveries: number, maxReloads = 2, isLive = false, flavor: NetworkFlavor = null): StallAction {
   // Live content gets one extra, cheapest-first rung (0.30.0): a live channel that stops
   // progressing is most often simply parked behind the live edge (a finished placeholder
   // playlist, a DVR window that slid, a brief feed gap the player never chased) — and jumping
@@ -70,9 +70,48 @@ export function nextStallAction(completedRecoveries: number, maxReloads = 2, isL
   // no live edge to rejoin, and the first rung stays the nudge).
   if (isLive && completedRecoveries <= 0) return 'liveEdge'
   const vodRung = completedRecoveries - (isLive ? 1 : 0)
-  if (vodRung <= 0) return 'nudge'
+  // Measured network flavor (0.39.0): a stall with fragments SLOW to arrive is a starved
+  // buffer — the nudge's +0.1s and startLoad cannot conjure data, so skip straight to the
+  // reload. Fast-or-unknown keeps the original shape (nudge first — the render-side wedge the
+  // nudge exists to fix is most likely exactly when data is arriving fine).
+  if (vodRung <= 0) return flavor === 'slow' ? 'reload' : 'nudge'
   if (vodRung <= maxReloads) return 'reload'
   return 'giveUp'
+}
+
+// ---- fragment telemetry (0.39.0) --------------------------------------------------------------
+// hls.js reports per-fragment load timings on FRAG_LOADED (frag.stats.loading: start/first/end,
+// performance.now()-based). The watchdog's stall triage wants one number out of that stream:
+// the recent median time-to-first-byte. Median, not mean — one slow fragment behind a big seek
+// must not color the whole window.
+
+export type NetworkFlavor = 'slow' | 'fast' | null
+
+/** TTFB for one loaded fragment, or null when the timing record is not usable. */
+export function fragmentTtfbMs(stats: { loading: { start: number; first: number; end?: number } } | undefined | null): number | null {
+  if (!stats || !stats.loading) return null
+  const { start, first } = stats.loading
+  if (!Number.isFinite(start) || !Number.isFinite(first) || first < start) return null
+  return first - start
+}
+
+/** Median of the recent samples, or null with too few to mean anything. */
+export function medianTtfb(samples: number[]): number | null {
+  if (samples.length < 3) return null
+  const sorted = [...samples].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+}
+
+/** Slow vs fast, with the threshold reasoned once: healthy delivery on this app's own
+ *  transcode path and CDN-fronted live origins lands well under 500ms to first byte; a
+ *  starved/origin-throttled feed routinely measures in the seconds. 2s sits far enough above
+ *  the healthy band that only genuinely starved delivery reads as slow. */
+export const SLOW_TTFB_THRESHOLD_MS = 2000
+
+export function networkFlavor(medianMs: number | null, slowThresholdMs = SLOW_TTFB_THRESHOLD_MS): NetworkFlavor {
+  if (medianMs === null) return null
+  return medianMs >= slowThresholdMs ? 'slow' : 'fast'
 }
 
 /**

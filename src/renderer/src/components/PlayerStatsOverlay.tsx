@@ -54,7 +54,8 @@ export function PlayerStatsOverlay({
   videoRef,
   hlsRef,
   isLive = false,
-  getBufferProfile
+  getBufferProfile,
+  getFragTtfb
 }: {
   videoRef: RefObject<HTMLVideoElement | null>
   hlsRef: RefObject<Hls | null>
@@ -64,6 +65,8 @@ export function PlayerStatsOverlay({
   // Read fresh on every tick (0.37.0): the effective buffer profile can change mid-session
   // (auto mode switches it via a reload), so a snapshot prop would go stale silently.
   getBufferProfile?: () => string
+  // Recent fragment TTFB (0.39.0) — null median with too few samples renders honestly as "—".
+  getFragTtfb?: () => { medianMs: number | null; samples: number }
 }): JSX.Element | null {
   const [stats, setStats] = useState<Stats | null>(null)
   // Fetched once per open: this describes the GPU/Chromium state, which changes far less often
@@ -168,6 +171,17 @@ export function PlayerStatsOverlay({
         <div className="player-stats-row">
           <span>Buffer profile</span>
           <span>{getBufferProfile()}</span>
+        </div>
+      )}
+      {getFragTtfb && (
+        <div className="player-stats-row">
+          <span>Frag TTFB</span>
+          <span>
+            {(() => {
+              const { medianMs, samples } = getFragTtfb()
+              return medianMs === null ? '—' : `${medianMs}ms (${samples})`
+            })()}
+          </span>
         </div>
       )}
       <div className="player-stats-row">

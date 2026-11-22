@@ -1,10 +1,14 @@
 import { describe, it, expect } from 'vitest'
 import {
   clampRestorePosition,
+  fragmentTtfbMs,
   isBufferStallError,
+  medianTtfb,
+  networkFlavor,
   playbackSignature,
   nextStallAction,
-  stallRecoveryDelayMs
+  stallRecoveryDelayMs,
+  SLOW_TTFB_THRESHOLD_MS
 } from './playbackWatchdog'
 
 describe('isBufferStallError', () => {
@@ -106,5 +110,47 @@ describe('clampRestorePosition (0.30.0)', () => {
     expect(clampRestorePosition(Number.NaN, 0, 100)).toBeNull()
     expect(clampRestorePosition(50, 0, 0)).toBeNull()
     expect(clampRestorePosition(50, Number.NaN, 100)).toBeNull()
+  })
+})
+
+describe('fragment telemetry triage (0.39.0)', () => {
+  it("reads one fragment's TTFB honestly, and refuses unusable records", () => {
+    expect(fragmentTtfbMs({ loading: { start: 100, first: 350, end: 900 } })).toBe(250)
+    expect(fragmentTtfbMs(undefined)).toBeNull()
+    expect(fragmentTtfbMs(null)).toBeNull()
+    expect(fragmentTtfbMs({ loading: { start: 100, first: 50, end: 900 } })).toBeNull() // first < start
+  })
+
+  it('medians a window, needs three samples to mean anything, and handles even counts', () => {
+    expect(medianTtfb([10, 20])).toBeNull()
+    expect(medianTtfb([30, 10, 20])).toBe(20)
+    expect(medianTtfb([10, 20, 30, 40])).toBe(25)
+    // One huge outlier must not drag the median up the way a mean would.
+    expect(medianTtfb([5, 6, 7, 9000])).toBe(6.5)
+  })
+
+  it('classifies flavor with the reasoned threshold', () => {
+    // Pinned so a threshold change is a decision, not an accident.
+    expect(SLOW_TTFB_THRESHOLD_MS).toBe(2000)
+    expect(networkFlavor(null)).toBeNull()
+    expect(networkFlavor(1999)).toBe('fast')
+    expect(networkFlavor(2000)).toBe('slow')
+    expect(networkFlavor(150)).toBe('fast')
+  })
+
+  it('a SLOW network skips the nudge rung — the reload is what a starved buffer needs', () => {
+    expect(nextStallAction(0, 2, false, 'slow')).toBe('reload')
+    expect(nextStallAction(1, 2, true, 'slow')).toBe('reload') // past the liveEdge rung
+  })
+
+  it('a FAST network keeps the nudge-first shape — the render wedge is the likelier cause', () => {
+    expect(nextStallAction(0, 2, false, 'fast')).toBe('nudge')
+    expect(nextStallAction(1, 2, true, 'fast')).toBe('nudge')
+  })
+
+  it('unknown flavor (too few samples) keeps the 0.30.0 ladder byte-identical', () => {
+    expect(nextStallAction(0, 2, false, null)).toBe('nudge')
+    expect(nextStallAction(0, 2, true, null)).toBe('liveEdge')
+    expect(nextStallAction(1, 2, true, null)).toBe('nudge')
   })
 })

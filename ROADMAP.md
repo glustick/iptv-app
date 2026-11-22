@@ -231,6 +231,28 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.39.0** the stall triage stops guessing and starts measuring. The watchdog knew two
+  things about a stall — that the playhead froze, and (0.30.0) whether data was buffered
+  ahead — but not WHY data wasn't moving: a starved network and a wedged decoder looked
+  identical, and the ladder's first rung (the nudge) only helps one of them. hls.js already
+  reports per-fragment load timings on FRAG_LOADED (`stats.loading.start/first`), so the
+  player now keeps a rolling window of the **last 20 fragments' time-to-first-byte** (median —
+  one slow fragment behind a seek must not color the window), and the ladder reads it:
+  **stall + slow median (≥2s, a threshold that sits far above the healthy sub-500ms band)**
+  skips the nudge — `startLoad` and +0.1s cannot conjure data into a starved buffer — and goes
+  straight to the reload; **stall + fast-or-unknown** keeps the 0.30.0 shape exactly (the
+  render-side wedge the nudge fixes is likeliest precisely when data is arriving fine). The
+  stats overlay gains a **Frag TTFB** row (median over n samples, honestly "—" under three
+  samples), cleared on every attach so the window always describes the current source's
+  delivery. Pure throughout (`fragmentTtfbMs`/`medianTtfb`/`networkFlavor`/the extended
+  `nextStallAction`), with +7 tests: honest TTFB extraction (including refusing a first-
+  before-start record), median behavior with odd/even counts and an outlier that must not
+  drag it, the threshold pinned, slow-skips-nudge for live (past the liveEdge rung) and VOD,
+  fast keeps nudge-first, and null flavor keeps the 0.30.0 ladder byte-identical. Typecheck
+  and lint clean. **GUI smoke 147/147.** **Not verified interactively:** the threshold against
+  a genuinely slow real origin — 2s is reasoned from this app's own measured healthy band,
+  not tuned against a real starved feed yet.
+
 - **0.38.0** the per-host circuit breaker — a dead origin stops costing ninety seconds per
   fragment. The gap: the per-request machinery (45s timeout → same-target retry → backup-
   portal failover) answers "is this request salvageable", but when a HOST is genuinely down
