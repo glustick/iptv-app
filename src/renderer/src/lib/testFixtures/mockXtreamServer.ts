@@ -170,6 +170,10 @@ function live(
   }
 }
 
+function episode(id: number, season: number, episodeNum: number, title: string) {
+  return { id, season, episode_num: episodeNum, title, container_extension: 'mp4' }
+}
+
 export interface MockXtreamServerOptions {
   /** Fixed port for running the fixture as a standalone dev server (tests use the default 0 =
    * ephemeral, so parallel test files can't collide). */
@@ -440,7 +444,32 @@ export async function startMockXtreamServer(options: MockXtreamServerOptions = {
         ])
         return
       case 'get_series_info':
-        json({ seasons: [], episodes: {}, info: {}, available_episodes: 0 })
+        // Two real seasons since 0.48.0 — before that, none, because nothing in the UI read
+        // them and the modal honestly said "No episode data returned by the provider". Season 2
+        // carries a provider-style name ("The Final Season") so the season tabs prove they label
+        // from seasons[] when one exists, and fall back to "Season N" when it does not. Ids are
+        // unique across seasons the way real providers number them, and the season blocks of the
+        // modal key episodes by the same strings the raw response uses.
+        json({
+          seasons: [
+            { id: 1, name: 'Season 1', season_number: 1, cover: '' },
+            { id: 2, name: 'The Final Season', season_number: 2, cover: '' }
+          ],
+          episodes: {
+            '1': [
+              episode(3011, 1, 1, 'Pilot'),
+              episode(3012, 1, 2, 'The Follow-Up'),
+              episode(3013, 1, 3, 'Season One Finale')
+            ],
+            '2': [
+              episode(3021, 2, 1, 'Fresh Start'),
+              episode(3022, 2, 2, 'The Middle'),
+              episode(3023, 2, 3, 'Last One')
+            ]
+          },
+          info: {},
+          available_episodes: 6
+        })
         return
       case 'get_short_epg': {
         const streamId = url.searchParams.get('stream_id')

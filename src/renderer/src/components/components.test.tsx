@@ -21,10 +21,12 @@ import { MultiViewChannelPicker } from './MultiViewChannelPicker'
 import { ContinueWatchingShelf, type ContinueWatchingItem } from './ContinueWatchingShelf'
 import { ListToolbar } from './ListToolbar'
 import { RecordingsView } from './RecordingsView'
+import { SeriesModal } from './SeriesModal'
 import { SubtitleStylePanel } from './SubtitleStylePanel'
 import { useAppStore, PROVIDER_GUIDE_LABEL } from '../store/useAppStore'
 import { DEFAULT_SETTINGS } from '../lib/types'
-import type { LiveStream } from '../lib/types'
+import { watchedKey } from '../lib/watched'
+import type { LiveStream, SeriesEpisode, SeriesInfo, SeriesItem } from '../lib/types'
 
 function stream(streamId: number, name: string): LiveStream {
   return {
@@ -783,5 +785,160 @@ describe('RecordingsView', () => {
     // And the scheduled rows precede the recording row in the DOM.
     const rowTexts = [...document.querySelectorAll('.recordings-row')].map((r) => r.textContent ?? '')
     expect(rowTexts.findIndex((t) => t.includes('Soon One'))).toBeLessThan(rowTexts.findIndex((t) => t.includes('recording')))
+  })
+})
+
+// --- the series modal's season tabs (0.48.0) ---------------------------------------------------
+// The modal stacked every season in one long scroll; now a multi-season series gets a segmented
+// tab row and the modal lands on the season holding the next unwatched episode. Each test uses
+// its own series id: the per-session tab memory is a module-level map keyed by series id, and it
+// outlives a single render on purpose (that is the feature under test).
+const show = (seriesId: number): SeriesItem => ({
+  num: 1,
+  name: 'Fixture Show',
+  series_id: seriesId,
+  cover: '',
+  plot: '',
+  cast: '',
+  director: '',
+  genre: '',
+  releaseDate: '',
+  rating: '',
+  category_id: '1'
+})
+
+const modalEpisode = (id: string, episodeNum: number, season: number, title: string): SeriesEpisode => ({
+  id,
+  episode_num: episodeNum,
+  title,
+  container_extension: 'mp4',
+  season
+})
+
+const twoSeasonInfo = (idBase: number): SeriesInfo => ({
+  seasons: [
+    { season_number: 1, name: 'Season 1', cover: '' },
+    { season_number: 2, name: 'The Final Season', cover: '' }
+  ],
+  episodes: {
+    '1': [modalEpisode(`${idBase}1`, 1, 1, 'Pilot'), modalEpisode(`${idBase}2`, 2, 1, 'Second')],
+    '2': [modalEpisode(`${idBase + 10}1`, 1, 2, 'Fresh Start'), modalEpisode(`${idBase + 10}2`, 2, 2, 'Last One')]
+  }
+})
+
+function seasonBlock(season: number): HTMLElement | null {
+  return document.querySelector(`.season-block[data-season="${season}"]`)
+}
+
+describe('SeriesModal season tabs (0.48.0)', () => {
+  it('keeps the single-season layout exactly: no tabs, one visible block', () => {
+    useAppStore.setState({
+      openSeries: show(500),
+      seriesInfo: {
+        seasons: [{ season_number: 1, name: 'Season 1', cover: '' }],
+        episodes: { '1': [modalEpisode('501', 1, 1, 'Pilot')] }
+      },
+      seriesInfoLoading: false,
+      episodeProgress: {},
+      watchedTitles: {}
+    })
+    render(<SeriesModal />)
+    expect(document.querySelectorAll('.season-tab')).toHaveLength(0)
+    expect(seasonBlock(1)?.hidden).toBe(false)
+    expect(screen.getByText(/Pilot/)).toBeTruthy()
+  })
+
+  it('labels one tab per season from seasons[] and lands on the season of the next unwatched episode', () => {
+    useAppStore.setState({
+      openSeries: show(502),
+      seriesInfo: twoSeasonInfo(502),
+      seriesInfoLoading: false,
+      episodeProgress: {},
+      watchedTitles: {}
+    })
+    render(<SeriesModal />)
+    const tabs = [...document.querySelectorAll('.season-tab')].map((t) => t.textContent?.trim())
+    expect(tabs).toEqual(['Season 1', 'The Final Season'])
+    // Fresh series: the next unwatched episode is the season 1 pilot, so season 1 shows and
+    // season 2 stays hidden (not unmounted — its rows keep their progress-bar state).
+    expect(seasonBlock(1)?.hidden).toBe(false)
+    expect(seasonBlock(2)?.hidden).toBe(true)
+    expect(document.querySelector('.season-tab.active')?.textContent?.trim()).toBe('Season 1')
+  })
+
+  it('lets the default follow progress: a finished season 1 opens on season 2', () => {
+    useAppStore.setState({
+      openSeries: show(503),
+      seriesInfo: twoSeasonInfo(503),
+      seriesInfoLoading: false,
+      episodeProgress: {
+        '5031': { positionSeconds: 60, durationSeconds: 60, updatedAt: 1 },
+        '5032': { positionSeconds: 60, durationSeconds: 60, updatedAt: 1 }
+      },
+      watchedTitles: {}
+    })
+    render(<SeriesModal />)
+    expect(seasonBlock(1)?.hidden).toBe(true)
+    expect(seasonBlock(2)?.hidden).toBe(false)
+  })
+
+  it('lets the default follow explicit marks, not just progress', () => {
+    useAppStore.setState({
+      openSeries: show(504),
+      seriesInfo: twoSeasonInfo(504),
+      seriesInfoLoading: false,
+      episodeProgress: {},
+      watchedTitles: {
+        [watchedKey('series', '5041')]: { watchedAt: 1 },
+        [watchedKey('series', '5042')]: { watchedAt: 1 }
+      }
+    })
+    render(<SeriesModal />)
+    expect(seasonBlock(1)?.hidden).toBe(true)
+    expect(seasonBlock(2)?.hidden).toBe(false)
+  })
+
+  it('shows only the clicked season and marks its tab selected', () => {
+    useAppStore.setState({
+      openSeries: show(505),
+      seriesInfo: twoSeasonInfo(505),
+      seriesInfoLoading: false,
+      episodeProgress: {},
+      watchedTitles: {}
+    })
+    render(<SeriesModal />)
+    fireEvent.click(screen.getByRole('tab', { name: 'The Final Season' }))
+    expect(seasonBlock(1)?.hidden).toBe(true)
+    expect(seasonBlock(2)?.hidden).toBe(false)
+    expect(seasonBlock(2)?.textContent).toContain('Fresh Start')
+    expect(seasonBlock(2)?.textContent).not.toContain('Pilot')
+    const activeTab = document.querySelector('.season-tab.active')
+    expect(activeTab?.textContent?.trim()).toBe('The Final Season')
+    expect(activeTab?.getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('remembers the picked tab per series for the session, beating the default on reopen', () => {
+    useAppStore.setState({
+      openSeries: show(506),
+      seriesInfo: twoSeasonInfo(506),
+      seriesInfoLoading: false,
+      episodeProgress: {},
+      watchedTitles: {}
+    })
+    const { unmount } = render(<SeriesModal />)
+    fireEvent.click(screen.getByRole('tab', { name: 'The Final Season' }))
+    unmount()
+    // Reopen fresh: nothing watched, so the default rule would say season 1 — but the viewer
+    // picked season 2 in this session, and the pick outlives the modal being closed.
+    useAppStore.setState({
+      openSeries: show(506),
+      seriesInfo: twoSeasonInfo(506),
+      seriesInfoLoading: false,
+      episodeProgress: {},
+      watchedTitles: {}
+    })
+    render(<SeriesModal />)
+    expect(seasonBlock(1)?.hidden).toBe(true)
+    expect(seasonBlock(2)?.hidden).toBe(false)
   })
 })

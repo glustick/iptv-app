@@ -14,20 +14,54 @@ function numeric(value: unknown): number {
  * order (which puts "10" before "2"), and episodes sort by their own episode_num. An empty
  * season simply contributes nothing, which is what lets nextEpisode cross it.
  */
-export function orderedEpisodes(info: SeriesInfo | null | undefined): SeriesEpisode[] {
+/**
+ * The season keys of a series, in watch order — the numeric sort orderedEpisodes walks, exported
+ * so the series modal's tabs and its default-season rule read the very same ordering the Next
+ * button plays (0.48.0). Non-numeric keys are provider garbage and stay out, exactly as here.
+ */
+export function orderedSeasonKeys(info: SeriesInfo | null | undefined): string[] {
   if (!info || !info.episodes) return []
-  const seasons = Object.keys(info.episodes)
-    .map((key) => ({ key, season: numeric(key) }))
-    .filter((entry) => Number.isFinite(Number(entry.key)))
-    .sort((a, b) => a.season - b.season)
+  return Object.keys(info.episodes)
+    .filter((key) => Number.isFinite(Number(key)))
+    .sort((a, b) => numeric(a) - numeric(b))
+}
 
+function episodesOfSeason(info: SeriesInfo, key: string): SeriesEpisode[] {
+  const episodes = Array.isArray(info.episodes[key]) ? info.episodes[key].slice() : []
+  episodes.sort((a, b) => numeric(a.episode_num) - numeric(b.episode_num))
+  return episodes
+}
+
+export function orderedEpisodes(info: SeriesInfo | null | undefined): SeriesEpisode[] {
   const ordered: SeriesEpisode[] = []
-  for (const { key } of seasons) {
-    const episodes = Array.isArray(info.episodes[key]) ? info.episodes[key].slice() : []
-    episodes.sort((a, b) => numeric(a.episode_num) - numeric(b.episode_num))
-    ordered.push(...episodes)
+  for (const key of orderedSeasonKeys(info)) {
+    if (info) ordered.push(...episodesOfSeason(info, key))
   }
   return ordered
+}
+
+/**
+ * The season a returning viewer should land on when the series modal opens (0.48.0): the season
+ * holding the first still-unwatched episode in watch order — where they left off. Everything
+ * already watched answers the first season (rewatching starts at the pilot, which is where a
+ * fully-watched show's next unwatched episode would be if it had one). Fewer than two seasons —
+ * or no usable data at all — answers null: one season needs no tabs, and the modal keeps today's
+ * single-block layout.
+ *
+ * What counts as watched is the caller's business (the modal adds explicit marks to progress);
+ * this only owns the order, which is nextEpisode's own — the default tab and the Next button can
+ * never disagree about where a viewer is.
+ */
+export function defaultSeasonFor(
+  info: SeriesInfo | null | undefined,
+  watched: (episode: SeriesEpisode) => boolean
+): number | null {
+  const keys = orderedSeasonKeys(info)
+  if (!info || keys.length < 2) return null
+  for (const key of keys) {
+    if (episodesOfSeason(info, key).some((episode) => !watched(episode))) return numeric(key)
+  }
+  return numeric(keys[0])
 }
 
 /**

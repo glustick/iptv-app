@@ -1619,6 +1619,130 @@ async function main() {
   )
   await sleep(4000)
 
+  // --- the series modal's season tabs (0.48.0) -------------------------------------------------
+  // The fixture's series grew two real seasons for this (before 0.48.0 its get_series_info
+  // returned none — nothing in the UI read them). The modal is an overlay and this section never
+  // plays an episode, so the player stays unmounted for the playback sections below; the watched
+  // MARKS it sets are undone before it leaves, so the next run's fresh default still says
+  // Season 1. First, defensively, clear any marks a crashed earlier run may have left.
+  // The grid here is virtualised like the Movies one, so the window comes forward first and every
+  // state-dependent step polls for what it needs instead of sleeping blindly — a blind click
+  // against an unrendered grid silently opens nothing and every later check fails for that one
+  // reason (found live, run 3 of this section's own verification).
+  try {
+    execFileSync('osascript', ['-e', 'tell application "AllisonIPTV" to activate'], { stdio: 'ignore', timeout: 5000 })
+  } catch {
+    // best-effort; the polls below still decide
+  }
+  const seriesClick = `(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+    ;[...document.querySelectorAll('button.tab')].find((b) => b.textContent.trim() === 'Series')?.click()
+    for (let i = 0; i < 40; i++) {
+      await sleep(250)
+      const card = [...document.querySelectorAll('.channel-item--grid')].find((b) => b.textContent.includes('A Series'))
+      if (!card) continue
+      card.click()
+      for (let j = 0; j < 40; j++) {
+        await sleep(250)
+        if (document.querySelector('.modal-card .season-block')) return true
+      }
+      return false
+    }
+    return false
+  })()`
+  const seriesModalClosed = async () => {
+    await evaluate(cdp, `document.querySelector('.modal-card .modal-close')?.click() || true`)
+    for (let i = 0; i < 20; i++) {
+      if (!(await evaluate(cdp, `!!document.querySelector('.modal-card')`))) { await sleep(600); return }
+      await sleep(500)
+    }
+  }
+  const seasonBlock = (season) => `document.querySelector('.season-block[data-season="${season}"]')`
+  const toggleAllWatched = `(() => {
+    const block = document.querySelector('.season-block[data-season="1"]')
+    if (!block) return false
+    for (const t of block.querySelectorAll('.watched-toggle:not(.active)')) t.click()
+    return block.querySelectorAll('.watched-toggle').length
+  })()`
+  const undoAllWatched = `(() => { let n = 0; for (const t of document.querySelectorAll('.season-block .watched-toggle.active')) { t.click(); n++ } return n })()`
+
+  // Defensive pre-pass: whatever a crashed earlier run left behind, start the assertions from a
+  // modal with no watched marks. One reopen lets the default recomput from clean state.
+  if (await evaluate(cdp, seriesClick)) {
+    await evaluate(cdp, undoAllWatched)
+    await seriesModalClosed()
+    if (await evaluate(cdp, seriesClick)) {
+      await check(
+        'the series modal offers a tab per season, named from the provider data',
+        `(() => {
+          const tabs = [...document.querySelectorAll('.season-tab')].map((b) => b.textContent.trim())
+          return tabs.length === 2 && tabs[0] === 'Season 1' && tabs[1] === 'The Final Season'
+        })()`,
+        20000
+      )
+      await check(
+        'the modal opens on the season of the next unwatched episode',
+        `(() => {
+          const s1 = document.querySelector('.season-block[data-season="1"]')
+          const s2 = document.querySelector('.season-block[data-season="2"]')
+          return !!s1 && !!s2 && !s1.hidden && s2.hidden
+        })()`,
+        8000
+      )
+      // Marking Season 1 watched with the toggles on the ACTIVE tab — no tab click, so the
+      // session's per-series memory stays empty — recomputes the default: the next unwatched
+      // episode now lives in Season 2, and the modal should walk there on its own, exactly where
+      // the Next button would take the viewer.
+      if (await evaluate(cdp, toggleAllWatched)) {
+        await check(
+          'the default follows watched marks to the season holding the next unwatched episode',
+          `(() => {
+            const s1 = document.querySelector('.season-block[data-season="1"]')
+            const s2 = document.querySelector('.season-block[data-season="2"]')
+            return !!s1 && !!s2 && s1.hidden && !s2.hidden
+          })()`,
+          8000
+        )
+        await check(
+          'the visible season shows only its own episodes',
+          `(() => {
+            const s1 = document.querySelector('.season-block[data-season="1"]')
+            const s2 = document.querySelector('.season-block[data-season="2"]')
+            if (!s1 || !s2 || !s2.querySelector('.episode-list button')) return false
+            return s1.hidden && s2.textContent.includes('Fresh Start') && !s2.textContent.includes('Pilot')
+          })()`,
+          8000
+        )
+      }
+      await evaluate(cdp, `[...document.querySelectorAll('.season-tab')].find((b) => b.textContent.trim() === 'Season 1')?.click() || true`)
+      await check('clicking a tab shows that season again', `!${seasonBlock(1)}.hidden && ${seasonBlock(2)}.hidden`, 8000)
+      await seriesModalClosed()
+      // The modal remembers the picked tab per series within the session (module-level memory,
+      // the lib/previousChannel pattern) — reopen and the pick, not the default, decides.
+      if (await evaluate(cdp, seriesClick)) {
+        await check(
+          'a picked tab survives closing and reopening the modal in the same session',
+          `(() => {
+            const s1 = document.querySelector('.season-block[data-season="1"]')
+            const s2 = document.querySelector('.season-block[data-season="2"]')
+            return !!s1 && !!s2 && !s1.hidden && s2.hidden
+          })()`,
+          8000
+        )
+      }
+    }
+  }
+  // Undo this section's marks (toggles fire on hidden blocks too) and leave the modal closed.
+  await evaluate(cdp, undoAllWatched)
+  await seriesModalClosed()
+  // ...and back to Live TV, which every check below assumes (the Playback LAST section clicks the
+  // preview's watch-now button, and the preview panel lives on the live grid).
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('button.tab')].find((b) => b.textContent.trim() === 'Live TV')?.click() || true`
+  )
+  await sleep(4000)
+
   // Playback LAST: starting a stream mounts the player over the UI, so it must not sit in the
   // middle of the overlay assertions above. This is the check that a Chromium/Electron upgrade can
   // break while everything else still passes — it requires real decoding, not just a loaded URL.

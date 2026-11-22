@@ -1661,6 +1661,35 @@ body.resizing-col {
   margin: 0 0 8px;
 }
 
+/* The season selector (0.48.0): one segmented row when a series has more than one season —
+ * the main view's .tab look, sized down for the modal. Single-season series never see it. */
+.season-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0 0 14px;
+}
+
+.season-tab {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.season-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.season-tab.active {
+  background: var(--accent);
+  color: white;
+}
+
 .episode-list {
   list-style: none;
   margin: 0;

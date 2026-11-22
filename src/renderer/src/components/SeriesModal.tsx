@@ -1,5 +1,18 @@
+import { useState } from 'react'
 import { watchedKey } from '../lib/watched'
+import { defaultSeasonFor, orderedSeasonKeys } from '../lib/nextEpisode'
 import { useAppStore } from '../store/useAppStore'
+import type { SeriesEpisode } from '../lib/types'
+
+/**
+ * The season the viewer last picked, per series, for this session — the lib/previousChannel
+ * pattern: a module-level map the renderer keeps for its lifetime. Deliberately NOT a persisted
+ * setting: a modal session is short-lived, a saved tab would go stale the moment the provider
+ * renumbers seasons, and the default-season rule (below) is the honest answer whenever the
+ * viewer has not picked one themselves. Until a tab is clicked, the modal follows
+ * defaultSeasonFor live — so marking a season watched walks the default forward on its own.
+ */
+const rememberedSeasons = new Map<string, string>()
 
 export function SeriesModal(): JSX.Element | null {
   const openSeries = useAppStore((s) => s.openSeries)
@@ -14,12 +27,45 @@ export function SeriesModal(): JSX.Element | null {
   const setWatched = useAppStore((s) => s.setWatched)
   const isFavorited = useAppStore((s) => s.isFavorited)
   const toggleFavorite = useAppStore((s) => s.toggleFavorite)
+  // The map above remembers between opens, but it cannot re-render anything — this state is the
+  // live pick that makes a tab click take effect immediately (and, keyed by series, leaves
+  // another series' remembered choice alone).
+  const [pickedSeason, setPickedSeason] = useState<{ seriesId: string; key: string } | null>(null)
 
   if (!openSeries) return null
 
   const seasons = seriesInfo?.seasons ?? []
   const episodesBySeason = seriesInfo?.episodes ?? {}
   const favorited = isFavorited('series', openSeries.series_id)
+
+  // Watch order puts the numeric seasons first (same ordering the Next button plays); any
+  // non-numeric keys a broken provider sent render after them, unchanged, instead of vanishing.
+  const numericSeasonKeys = orderedSeasonKeys(seriesInfo)
+  const extraSeasonKeys = Object.keys(episodesBySeason).filter((key) => !numericSeasonKeys.includes(key))
+  const seasonKeys = [...numericSeasonKeys, ...extraSeasonKeys]
+
+  const percentOf = (episode: SeriesEpisode): number => {
+    const progress = episodeProgress[episode.id]
+    return progress && progress.durationSeconds > 0
+      ? Math.min(100, (progress.positionSeconds / progress.durationSeconds) * 100)
+      : 0
+  }
+  const isEpisodeWatched = (episode: SeriesEpisode): boolean =>
+    Boolean(watchedTitles[watchedKey('series', episode.id)]) || percentOf(episode) >= 95
+
+  // Tabs only earn their row when there is more than one season to choose; a single-season series
+  // keeps the layout the modal has always had. Hiding (not unmounting) the other blocks keeps
+  // their rows mounted, so progress bars and marks never flicker away on a tab switch.
+  const multiSeason = seasonKeys.length > 1
+  const defaultSeason = multiSeason ? defaultSeasonFor(seriesInfo, isEpisodeWatched) : null
+  const remembered = rememberedSeasons.get(String(openSeries.series_id))
+  const activeSeasonKey = multiSeason
+    ? pickedSeason && pickedSeason.seriesId === String(openSeries.series_id) && seasonKeys.includes(pickedSeason.key)
+      ? pickedSeason.key
+      : remembered && seasonKeys.includes(remembered)
+        ? remembered
+        : (numericSeasonKeys.find((key) => Number(key) === defaultSeason) ?? numericSeasonKeys[0] ?? seasonKeys[0])
+    : null
 
   return (
     <div className="modal-overlay" onClick={closeSeriesDetail}>
@@ -48,21 +94,41 @@ export function SeriesModal(): JSX.Element | null {
           <p className="modal-loading">No episode data returned by the provider.</p>
         )}
 
-        {Object.entries(episodesBySeason).map(([seasonKey, episodes]) => {
-          const season = seasons.find((s) => String(s.season_number) === seasonKey)
+        {multiSeason && (
+          <div className="season-tabs" role="tablist">
+            {seasonKeys.map((key) => {
+              const season = seasons.find((s) => String(s.season_number) === key)
+              const active = key === activeSeasonKey
+              return (
+                <button
+                  key={key}
+                  role="tab"
+                  aria-selected={active}
+                  className={active ? 'season-tab active' : 'season-tab'}
+                  onClick={() => {
+                    rememberedSeasons.set(String(openSeries.series_id), key)
+                    setPickedSeason({ seriesId: String(openSeries.series_id), key })
+                  }}
+                >
+                  {season?.name ?? `Season ${key}`}
+                </button>
+              )
+            })}
+          </div>
+        )}
+
+        {seasonKeys.map((key) => {
+          const season = seasons.find((s) => String(s.season_number) === key)
+          const hidden = multiSeason && key !== activeSeasonKey
           return (
-            <div key={seasonKey} className="season-block">
-              <h3>{season?.name ?? `Season ${seasonKey}`}</h3>
+            <div key={key} className="season-block" data-season={key} hidden={hidden}>
+              <h3>{season?.name ?? `Season ${key}`}</h3>
               <ul className="episode-list">
-                {episodes
+                {(episodesBySeason[key] ?? [])
                   .slice()
                   .sort((a, b) => a.episode_num - b.episode_num)
                   .map((episode) => {
-                    const progress = episodeProgress[episode.id]
-                    const percent =
-                      progress && progress.durationSeconds > 0
-                        ? Math.min(100, (progress.positionSeconds / progress.durationSeconds) * 100)
-                        : 0
+                    const percent = percentOf(episode)
                     const marked = Boolean(watchedTitles[watchedKey('series', episode.id)])
                     const watched = marked || percent >= 95
                     return (

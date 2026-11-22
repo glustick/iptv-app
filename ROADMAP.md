@@ -231,6 +231,62 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.48.0** the season selector — the series modal no longer stacks every season of a show into
+  one long scroll. Until now the modal rendered one `.season-block` per season straight from the
+  provider's episode map, so a ten-season show meant a wall of every episode ever made, with the
+  watch-order machinery knowing exactly where the viewer was (lib/nextEpisode has sorted seasons
+  numerically and crossed boundaries since 0.18.0) but nothing in the UI offering to take you
+  there. A multi-season series now gets a segmented tab row above the episodes — one tab per
+  season, labelled from the provider's own `seasons[]` names when one exists ("The Final Season")
+  and "Season N" when it doesn't — and only the picked season's list shows, the other blocks kept
+  mounted but hidden so progress bars and marks never flicker away on a switch (chosen over
+  unmounting deliberately: the rows are cheap, the state is the point). Single-season series keep
+  today's layout exactly — no tab row, no hidden blocks, same markup. The default tab is the
+  season holding the next unwatched episode, by `defaultSeasonFor` in lib/nextEpisode.ts — pure,
+  and built on the same season ordering (`orderedSeasonKeys`, now exported) the Next button
+  walks, so the modal's landing spot and the player's Next episode can never disagree about where
+  a viewer is; the rule reads seriesInfo only, never the modal's UI state, so picking tabs
+  changes nothing nextEpisode would do. A returning viewer lands where they left off, a
+  fully-watched show opens on season 1 (rewatching starts at the pilot), and an empty or
+  one-season answer is null — the no-tabs case. What counts as watched stays the modal's business
+  (an explicit mark, or progress past the 95% line — the same two signals the list itself shows).
+  The picker's own choice is remembered per series for the session in a module-level map (the
+  lib/previousChannel pattern), deliberately NOT a persisted setting: a modal session is
+  short-lived, a saved tab would go stale the moment the provider renumbered seasons, and until a
+  tab is clicked the default follows the watched state live — marking a season watched walks the
+  modal forward on its own, which is also how the smoke proves the rule without playing anything.
+  The episode rows themselves are untouched code paths; the tab only scopes which block is
+  visible. The fixture's series finally has seasons for this — before 0.48.0 its get_series_info
+  returned none at all (nothing read them, and the modal honestly said so); now "A Series" carries
+  two seasons of three episodes each, with a provider-style name on season 2 to prove the
+  labelling comes from the data. 1022 tests (+13: the season-key ordering, the default rule's
+  next-unwatched / rewatch / empty answers, and six component renders of the modal — the
+  single-season layout, both label shapes, progress- and mark-driven defaults, tab switching, and
+  the per-session memory surviving a close and reopen). Typecheck and lint clean. **GUI smoke
+  181/183, with all six new checks passing** (the tabs render with provider names, the modal
+  opens on Season 1, marking Season 1 watched through the toggles on the ACTIVE tab — no tab
+  click, so the session memory stays empty — walks the default to Season 2 on its own, the
+  visible season shows only its own episodes, clicking a tab returns to that season, and the pick
+  survives closing and reopening the modal in the same session; the section undoes its own marks
+  on the way out and clears whatever a crashed earlier run left behind, so the fresh-run default
+  stays Season 1). The two failures are the stalled-feed watchdog's timing checks, and they are
+  not this release's: the frozen feed advanced 4.3s in the harness's 35s window (under the 5s
+  floor) because this machine was carrying ~4 load from unrelated foreground activity (WindowServer
+  ~70% CPU throughout), and a v0.47.0 build run BACK-TO-BACK against the same provider on the same
+  busy machine fails the same two checks the same way (175/177, 4.35s advanced) while every decode,
+  recovery and audio-fix check beside them passes on both builds. One harness lesson found live
+  shaped the new section: its opening click landed against the virtualised Series grid before it
+  rendered (the same occluded-window flakiness the Movies section already documents), which
+  silently opened nothing and failed every later check for that one reason — so the section brings
+  the window forward like the Movies one does and every state-dependent step polls for what it
+  needs instead of sleeping blindly, with the marks' undo making even a crashed run's leftovers
+  survivable. **Not verified
+  interactively:** the default rule against a REAL provider's seasons — the fixture's two seasons
+  are small and clean, while real episode maps carry gaps, empty seasons, and non-numeric keys
+  (the modal still renders those after the numeric ones, unchanged from before, but no tab
+  targets them); and the hidden-but-mounted blocks' DOM weight on a genuinely large
+  multi-season catalog — nothing here measured it, only that correctness survives the switch.
+
 - **0.47.0** the catch-up timeline — the seek bar now says what a rewound stream is showing, not
   just how far behind it is. Rewinding live TV has existed since the DVR bar landed (wheel-scrub,
   skip, click-to-seek over the video's own seekable range), and catch-up from the guide has played
