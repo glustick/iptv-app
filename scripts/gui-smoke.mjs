@@ -12,8 +12,8 @@
 // Prerequisites: the synthetic provider running (`node scripts/mock-provider.mjs 8123`) and a
 // profile pointing at it (see docs/STATE.md). Exits non-zero if any assertion fails.
 import { execFileSync, spawn } from 'child_process'
-import { existsSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'fs'
-import { dirname, join } from 'path'
+import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'fs'
+import { basename, dirname, join } from 'path'
 import { homedir, tmpdir } from 'os'
 import { fileURLToPath } from 'url'
 
@@ -245,59 +245,128 @@ function resetGuideCache() {
  * cancelled schedule lingers as a 'failed' row (harmless) and a crashed run's schedule lingers as
  * 'scheduled' with a stale air time (not harmless — the section asserts on exactly those rows).
  *
- * The index is SET ASIDE and restored afterwards, never deleted (0.49.0). This used to be an
- * unconditional `rmSync` of recordings.json — which is the operator's REAL index, in the same
- * userData the installed app uses, so the first run after a real recording would have taken that
- * recording off the Recordings tab for good, and every run left its folder behind as an orphan
- * (40 of them had piled up before this was noticed). Same shape as pinSyntheticProfile below:
- * aside at start, back on exit and on every signal the harness already handles.
+ * The operator's REAL index is SET ASIDE for the run and restored afterwards, and the run's own
+ * recordings are removed — recordings.json is never simply deleted (0.49.0). It used to be an
+ * unconditional `rmSync`, in the same userData the installed app uses: the first run after a real
+ * recording would have taken that recording off the Recordings tab for good, and every run left
+ * its folder behind as an orphan (40 had piled up before this was noticed). Same shape as
+ * pinSyntheticProfile below: aside at start, back on exit and on every signal the harness handles.
+ *
+ * Three facts make this safe to reason about:
+ *  - A backup file exists for the WHOLE of every run: the real index when there was one, otherwise
+ *    an explicit "there was none" placeholder. So a backup found at the start of a run always means
+ *    an interrupted run, never a guess.
+ *  - During a run the harness's own instance holds the app's single-instance lock, so anything in
+ *    the index at the END of that run was recorded DURING it and is this run's to delete.
+ *  - After an INTERRUPTED run that proof is gone — the operator may have opened their app and
+ *    recorded in the meantime — so what is found then is moved aside, never deleted.
+ * Only folders directly inside the default recordings directory are ever touched; one kept
+ * elsewhere (a recordingsDir override, say) is left alone rather than guessed at.
  */
 const recordingsDir = () => join(dirname(CFG_PATH), 'recordings')
 const recordingsIndexPath = () => join(recordingsDir(), 'recordings.json')
 const recordingsIndexBackupPath = () => `${recordingsIndexPath()}.smoke-backup`
+// Where the recordings of an interrupted run are moved. A dot-folder the app never reads: the
+// Recordings tab lists exactly what recordings.json says.
+const recordingsQuarantineDir = () => join(recordingsDir(), '.smoke-interrupted-run')
+// Stood in for "the operator had no recordings index" for the duration of a run.
+const NO_RECORDINGS_INDEX = JSON.stringify({ version: 1, entries: [] })
+// True from resetRecordingsIndex until the first restore finishes. It is what makes a second
+// restore (the signal handler, then the 'exit' handler) a no-op: by then the index path holds the
+// operator's REAL index again, which must never be taken for this run's residue.
+let recordingsRunActive = false
 
-/**
- * Puts the real index back and removes the folders of the recordings made DURING the run. A
- * no-op when nothing was set aside. The index as the run left it lists exactly those recordings —
- * synthetic by construction, since the harness quits any real instance before it starts — and
- * only folders directly inside the default recordings directory are ever removed, so a recording
- * kept anywhere else (a recordingsDir override, say) is left untouched rather than guessed at.
- */
-function restoreRecordingsIndex() {
-  const index = recordingsIndexPath()
+/** The entries listed by an index file, or null when it cannot be read. */
+function readRecordingsIndex(file) {
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8'))
+    return Array.isArray(parsed?.entries) ? parsed.entries : []
+  } catch {
+    return null
+  }
+}
+
+/** Of an index's entries, the recording folders that sit directly inside the default directory. */
+function defaultRecordingFolders(entries) {
+  return (entries ?? [])
+    .map((entry) => entry.dir)
+    .filter((dir) => typeof dir === 'string' && dirname(dir) === recordingsDir())
+}
+
+/** Puts the operator's index back: the placeholder is simply removed, anything else moved home. */
+function putRealRecordingsIndexBack() {
   const backup = recordingsIndexBackupPath()
   if (!existsSync(backup)) return
+  if (readFileSync(backup, 'utf8') === NO_RECORDINGS_INDEX) rmSync(backup)
+  else renameSync(backup, recordingsIndexPath())
+}
+
+function restoreRecordingsIndex() {
+  if (!recordingsRunActive) return
   try {
+    const index = recordingsIndexPath()
     if (existsSync(index)) {
-      const run = JSON.parse(readFileSync(index, 'utf8'))
-      for (const entry of run?.entries ?? []) {
-        if (typeof entry.dir === 'string' && dirname(entry.dir) === recordingsDir()) {
-          rmSync(entry.dir, { recursive: true, force: true })
-        }
+      for (const dir of defaultRecordingFolders(readRecordingsIndex(index))) {
+        rmSync(dir, { recursive: true, force: true })
       }
       rmSync(index)
     }
-    renameSync(backup, index)
-    console.log('restored the persisted recordings index')
+    // The index path is now empty of this run's work, so nothing from here on can take the real
+    // index for residue: the flag comes down BEFORE the real index is put back.
+    recordingsRunActive = false
+    putRealRecordingsIndexBack()
   } catch (err) {
-    // Leaving the backup in place is the safe half-failure: the next run finds it and retries.
+    // This run's own recordings may be left behind. The real index, if there was one, is still
+    // safe in its backup and the next run recovers it. Never a reason to keep the harness from
+    // exiting.
     console.log('could not restore the recordings index:', err instanceof Error ? err.message : String(err))
   }
 }
 
+/**
+ * Throws when the index cannot be isolated, on purpose: a run that went ahead would record into
+ * the operator's real index. main() has not pinned the profile or launched anything at this point.
+ */
 function resetRecordingsIndex() {
-  // A backup already on disk means an earlier run died before it could restore (SIGKILL, power
-  // loss): the REAL index is the backup, and whatever sits at the index path is that run's
-  // residue. Put the real one back before setting it aside again.
-  restoreRecordingsIndex()
   const index = recordingsIndexPath()
-  if (!existsSync(index)) return
-  try {
-    renameSync(index, recordingsIndexBackupPath())
-    console.log('set the persisted recordings index aside for this run')
-  } catch (err) {
-    console.log('could not set the recordings index aside:', err instanceof Error ? err.message : String(err))
+  const backup = recordingsIndexBackupPath()
+  // A backup on disk means an earlier run was interrupted (SIGKILL, power loss) before it could
+  // restore: the REAL index — or the placeholder — is the backup, and the index path holds
+  // whatever was recorded since. That cannot be told apart from the operator's own work, so it is
+  // moved aside rather than deleted, and the run stops if that fails — setting it aside over the
+  // backup would be the one way here to lose the real index.
+  if (existsSync(backup)) {
+    try {
+      if (existsSync(index)) {
+        const quarantine = join(recordingsQuarantineDir(), String(Date.now()))
+        mkdirSync(quarantine, { recursive: true })
+        for (const dir of defaultRecordingFolders(readRecordingsIndex(index))) {
+          // A retry after a half-finished move finds some already gone; that is not a failure.
+          if (existsSync(dir)) renameSync(dir, join(quarantine, basename(dir)))
+        }
+        renameSync(index, join(quarantine, 'recordings.json'))
+        console.log(`moved the recordings found after an interrupted run to ${quarantine}`)
+      }
+      putRealRecordingsIndexBack()
+      console.log('recovered the recordings index after an interrupted run')
+    } catch (err) {
+      throw new Error(
+        `could not recover the recordings index after an interrupted run: ${err instanceof Error ? err.message : String(err)}`
+      )
+    }
   }
+  try {
+    mkdirSync(recordingsDir(), { recursive: true })
+    if (existsSync(index)) {
+      renameSync(index, backup)
+      console.log('set the persisted recordings index aside for this run')
+    } else {
+      writeFileSync(backup, NO_RECORDINGS_INDEX)
+    }
+  } catch (err) {
+    throw new Error(`could not set the recordings index aside: ${err instanceof Error ? err.message : String(err)}`)
+  }
+  recordingsRunActive = true
 }
 
 /**
