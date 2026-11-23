@@ -56,6 +56,7 @@ import type {
 import { MAX_GUIDE_XML_CHARS } from '../lib/xmltvSections'
 import { isGuideCacheFresh, readCachedGuide, writeCachedGuide } from '../lib/guideCache'
 import { channelEntryFor, channelKey, channelKeyCandidates } from '../lib/channelIdentity'
+import { categoryVisibilityKey } from '../lib/categoryVisibility'
 import { pruneTranscodeMemory } from '../lib/transcodeMemory'
 import { pruneUndecodableVideo } from '../lib/undecodableVideo'
 import {
@@ -571,6 +572,9 @@ interface AppState {
   // Whether a channel is hidden — resolved through lib/channelIdentity so the same id on two
   // playlists is two different channels.
   isChannelHidden: (playlistId: string | null | undefined, streamId: number) => boolean
+  /** Provider-category hide (0.49.0): sidebar navigation only — see lib/categoryVisibility. */
+  toggleCategoryHidden: (playlistId: string | null, categoryId: string) => void
+  isCategoryHidden: (playlistId: string | null, categoryId: string) => boolean
   requestCategory: (categoryId: string | null, playlistId?: string | null) => void
   selectCategory: (categoryId: string | null, playlistId?: string | null) => Promise<void>
   // "My Categories" (see CustomCategory): user-made Live TV groupings shown above the provider's
@@ -1424,10 +1428,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     const catalog = get().numericChannelCatalog ?? []
     // With more than one playlist the same channel number can exist on each of them — prefer the
     // one being browsed (then the primary), rather than whichever account happened to load first.
-    const { selectedPlaylistId, primaryPlaylistId } = get()
+    const { selectedPlaylistId, primaryPlaylistId, settings } = get()
     const scope = selectedPlaylistId ?? primaryPlaylistId
     const inScope = (c: LiveStream): boolean => (c.playlistId ?? null) === (scope ?? null)
-    return catalog.find((c) => c.num === num && inScope(c)) ?? catalog.find((c) => c.num === num) ?? null
+    // A channel in a hidden category is not dialable (0.49.0): hiding a category means "don't
+    // surface it anywhere navigational". The mapping editor keeps its full-catalogue access —
+    // this filter lives HERE, not in the catalogue build.
+    const dialable = (c: LiveStream): boolean =>
+      !settings.hiddenCategoryIds.includes(categoryVisibilityKey(c.playlistId ?? null, c.category_id))
+    const pool = catalog.filter(dialable)
+    return pool.find((c) => c.num === num && inScope(c)) ?? pool.find((c) => c.num === num) ?? null
   },
 
   selectCategory: async (categoryId, playlistId) => {
@@ -2825,6 +2835,22 @@ export const useAppStore = create<AppState>((set, get) => ({
   isChannelHidden: (playlistId, streamId) => {
     const { settings, primaryPlaylistId } = get()
     return settings.hiddenChannelKeys.includes(channelKey(playlistId, streamId, primaryPlaylistId))
+  },
+
+  // Provider-category hide (0.49.0) — mirrors the channel toggle's read-modify-write through
+  // settings, keyed by categoryVisibilityKey (playlist-scoped like the channel keys).
+  toggleCategoryHidden: (playlistId, categoryId) => {
+    const { settings } = get()
+    const key = categoryVisibilityKey(playlistId, categoryId)
+    const hidden = settings.hiddenCategoryIds
+    get().updateSettings({
+      hiddenCategoryIds: hidden.includes(key) ? hidden.filter((entry) => entry !== key) : [...hidden, key]
+    })
+  },
+
+  isCategoryHidden: (playlistId, categoryId) => {
+    const { settings } = get()
+    return settings.hiddenCategoryIds.includes(categoryVisibilityKey(playlistId, categoryId))
   },
 
   setShowNotLiveChannels: (show) => set({ showNotLiveChannels: show }),

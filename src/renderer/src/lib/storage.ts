@@ -194,6 +194,10 @@ export async function loadSettings(): Promise<AppSettings> {
       result.hiddenChannelKeys = []
     }
   }
+  if (!Array.isArray(result.hiddenCategoryIds)) {
+    console.warn('[settings] hiddenCategoryIds was not an array on disk — resetting it')
+    result.hiddenCategoryIds = []
+  }
   delete (result as { hiddenLiveStreamIds?: unknown }).hiddenLiveStreamIds
   // 0.17.0 unified the two transcode memories: liveAudioFixes entries (live channels' audio
   // fixes, keyed by the SAME channelKey rule transcodeMemory uses for live) move into

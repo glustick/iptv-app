@@ -321,6 +321,10 @@ export interface AppSettings {
   // different channels. A channel on the primary playlist keys as its plain id — which is what
   // everything stored before multi-playlist means — and other playlists' channels are qualified.
   hiddenChannelKeys: string[]
+  // Provider categories hidden from the sidebar (0.49.0), keyed by categoryVisibilityKey —
+  // playlist-scoped like hiddenChannelKeys. Sidebar-navigation only: the mapping editor, My
+  // Categories and the bulk apply keep full catalogue access; numeric entry honours it.
+  hiddenCategoryIds: string[]
   // The remembered transcoding outcome for ALL content — live channels (audio fixes, raw-TS
   // remuxes, direct plays) and movies/series episodes alike — keyed by lib/transcodeMemory.ts's
   // playlist-aware rule (a fix remembered for one provider's channel 42 must not be applied to
@@ -412,6 +416,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   videoScaleMode: 'contain',
   multiViewLayout: 2,
   hiddenChannelKeys: [],
+  hiddenCategoryIds: [],
   transcodeMemory: {},
   undecodableVideoChannels: {},
   customEpgUrls: [],

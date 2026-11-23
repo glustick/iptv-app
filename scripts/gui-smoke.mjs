@@ -105,6 +105,9 @@ function resetTestMappings() {
     // The launch resume banner (0.41.0) persists whatever the last run was watching — cleared
     // here so every run starts on the plain Live TV surface its assertions expect.
     settings.lastPlayback = null
+    // The category-hide affordance (0.49.0) persists across runs the same way — cleared here
+    // so every run starts with the full provider category list its assertions expect.
+    settings.hiddenCategoryIds = []
     const hiddenBefore = Array.isArray(settings.hiddenEpgSourceUrls) ? settings.hiddenEpgSourceUrls.length : 0
     settings.hiddenEpgSourceUrls = (settings.hiddenEpgSourceUrls ?? []).filter(
       (url) => !String(url).includes('127.0.0.1:8123')
@@ -498,7 +501,6 @@ async function main() {
       restorePinnedProfile()
       restoreSecondSyntheticProfile()
       restoreRecordingsIndex()
-    restoreRecordingsIndex()
       process.exit(130)
     })
   }
@@ -911,6 +913,32 @@ async function main() {
   await check('channel matched through the relaxed tier is listed', has('101 Two HD'))
   await check('the channel the guide misses is listed', has('Unmatched Channel'))
   await check('the residue channel (close to a guide name, but not a match) is listed', has('Channel One News Extra'))
+
+  // --- provider category hide (0.49.0) -----------------------------------------------------------
+  // USA | NFL is the one fixture category nothing else in this run depends on. Hide it from the
+  // sidebar, restore it through the reveal section, and leave the sidebar exactly as the later
+  // sections expect (the preamble also resets this between runs).
+  await evaluate(
+    cdp,
+    `(() => { const rows = [...document.querySelectorAll('button.category')].filter((b) => b.textContent.includes('USA | NFL')); rows[0]?.querySelector('.category-hide')?.click(); return rows.length > 0 })()`
+  )
+  await check('hiding a category removes it from the sidebar', `!document.body.innerText.includes('USA | NFL')`, 8000)
+  await check('the reveal section counts the hidden category', has('Show hidden categories (1)'), 8000)
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('button.category')].find((b) => b.textContent.includes('Show hidden categories'))?.click() || true`
+  )
+  await check('the restore row lists the hidden category', has('NFL'), 8000)
+  await evaluate(
+    cdp,
+    `[...document.querySelectorAll('button.category-hidden-row')].find((b) => b.textContent.includes('USA | NFL'))?.click() || true`
+  )
+  await check('restoring puts the category back in the sidebar', has('USA | NFL'), 8000)
+  await check(
+    'the reveal section is gone once nothing is hidden',
+    `!document.body.innerText.includes('Show hidden categories')`,
+    8000
+  )
 
   // The provider's own per-channel listing wins its slot…
   await check("the id-matched channel shows the provider's own listing", has('Short EPG Title'))

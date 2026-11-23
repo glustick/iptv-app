@@ -231,6 +231,45 @@ What's below is a fresh list, reflecting where things stand after 0.7.111.
 
 ## Current release
 
+- **0.49.0** provider categories can be hidden from the sidebar. The provider's category list is
+  often hundreds of entries, most of them never watched, and until now the only way past them was
+  scrolling — "My Categories" (0.7.74) groups channels, but hides nothing. Each provider category
+  row now carries a **⊖ on hover**; hiding is immediate and confirm-free, because restoring is one
+  click away: a collapsed **"Show hidden categories (N)"** row at the end of the list expands to
+  the hidden ones, and clicking one puts it back (restore only — it does not also select).
+  **Scope, deliberately narrow:** this is sidebar navigation and nothing else. Hidden categories
+  keep their channels out of numeric entry (`findChannelByNumber` filters them — you cannot dial
+  into a category you hid), and the EPG mapping editor, My Categories and the bulk apply keep full
+  catalogue access by design; the Multi-View picker's category dropdown still lists them, which is
+  a known gap rather than an oversight. No reordering or pinning in this release. Keys are
+  composite (`lib/categoryVisibility.ts`, `playlist:category`, bare for the primary — the same
+  rule as the per-channel hidden keys, because `category_id` is not unique across providers), so
+  the same id on a second playlist is a different category. 1026 tests (+4: key scoping, the
+  visible/hidden split preserving order, an empty set). Typecheck, full-repo lint clean. **GUI
+  smoke 188/188** (+5: hide removes the row, the reveal row counts it, the restore row names it,
+  restoring puts it back, the reveal row disappears when nothing is hidden).
+  **Two harness repairs shipped alongside this release, in their own commits** (`2dba39b`,
+  `19cf8e8`), found while verifying it. First, the smoke preamble had been **deleting
+  `recordings.json` outright** since 0.34.0 — the operator's real index, in the same userData the
+  installed app uses, so the first run after a real recording would have taken that recording off
+  the Recordings tab, and every run left its recording folder behind as an orphan. The index is
+  now set aside for the run and restored afterwards; the run's own recordings are deleted (safe —
+  the harness's instance holds the app's single-instance lock, so nothing else can record during
+  it); and what is found after an *interrupted* run is moved to
+  `recordings/.smoke-interrupted-run/`, never deleted, because the operator may have recorded in
+  between. The harness now refuses to run if it cannot isolate the index. The first version of
+  that fix passed its own smoke (188/188) and still left two synthetic entries behind — it only
+  cleaned up when a real index existed to set aside, which is not the operator's situation; the
+  rewrite always leaves a marker and was checked by what a run *leaves behind*, not only by the
+  pass count. Second, a documented rig limit: **a smoke run is invalid if it outlives thirty
+  minutes of wall-clock time.** The fixture guide computes each programme relative to when it was
+  fetched, so a run suspended by a laptop sleeping (one took 6 h 08 min and failed 24 checks)
+  finds every programme-window assertion stale. Rerun awake, with `caffeinate -i`; a run that
+  stays under thirty minutes is fine.
+  **Not verified interactively:** hiding on a real multi-playlist setup (the fixture's second
+  profile is checked by unit tests only), and the hover affordance's appearance in a long
+  category list — reasoned, not screenshotted.
+
 - **0.48.0** the season selector — the series modal no longer stacks every season of a show into
   one long scroll. Until now the modal rendered one `.season-block` per season straight from the
   provider's episode map, so a ten-season show meant a wall of every episode ever made, with the

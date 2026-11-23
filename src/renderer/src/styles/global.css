@@ -1431,6 +1431,30 @@ body.resizing-col {
   background: rgba(255, 255, 255, 0.08);
 }
 
+/* Provider-category hide (0.49.0): the hover affordance on each category row, and the
+   reveal section's restore rows. The affordance is a span (nested buttons are invalid HTML),
+   shown on row hover only so the list stays clean. */
+.category-hide {
+  margin-left: auto;
+  padding: 0 2px;
+  opacity: 0;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.category:hover .category-hide {
+  opacity: 1;
+}
+
+.category-hide:hover {
+  color: var(--danger);
+}
+
+.category-hidden-row {
+  color: var(--text-dim);
+}
+
 /* Left-edge channel info panel: hovering the left 10% of the player (see Player.tsx's
    channelInfoVisible) reveals the currently playing channel's icon, name and current programme —
    a glanceable "what am I watching" panel, like the header/seek bar it's purely hover-driven and

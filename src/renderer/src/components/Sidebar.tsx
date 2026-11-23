@@ -4,6 +4,7 @@ import { kindOf } from '../lib/customCategories'
 import type { CustomCategoryKind } from '../lib/types'
 import { useResizableWidth } from '../lib/useResizableWidth'
 import { channelKeyBelongsToPlaylist } from '../lib/channelIdentity'
+import { visibleCategories, hiddenCategories } from '../lib/categoryVisibility'
 
 export function Sidebar(): JSX.Element | null {
   const viewMode = useAppStore((s) => s.viewMode)
@@ -30,6 +31,44 @@ export function Sidebar(): JSX.Element | null {
   ).length
   const showHidden = useAppStore((s) => s.showHiddenLiveChannels)
   const setShowHidden = useAppStore((s) => s.setShowHiddenLiveChannels)
+  // Provider-category hide (0.49.0): the toggle action, the read, and the collapsed-by-default
+  // reveal section's own open state (session-local — the persisted state is the hidden set).
+  const toggleCategoryHidden = useAppStore((s) => s.toggleCategoryHidden)
+  const [showHiddenCategories, setShowHiddenCategories] = useState(false)
+  // One render helper for BOTH category paths (grouped and flat): filters out the hidden set,
+  // and every visible row carries the hide affordance — a span (not a nested button, which
+  // would be invalid HTML) whose click stops propagation so hiding never also selects.
+  function renderCategoryButtons(
+    cats: Array<{ category_id: string; category_name: string }>,
+    playlistId: string | null
+  ): Array<JSX.Element> {
+    return visibleCategories(cats, playlistId, settings.hiddenCategoryIds).map((cat) => (
+      <button
+        key={`${playlistId ?? 'primary'}:${cat.category_id}`}
+        className={
+          (playlists.length > 1
+            ? selectedPlaylistId === playlistId && selectedCategoryId === cat.category_id
+            : selectedCategoryId === cat.category_id)
+            ? 'category active'
+            : 'category'
+        }
+        onClick={() => requestCategory(cat.category_id, playlistId ?? undefined)}
+      >
+        {isLocked(cat.category_id) && <span className="category-lock">🔒</span>}
+        {cat.category_name}
+        <span
+          className="category-hide"
+          onClick={(e) => {
+            e.stopPropagation()
+            toggleCategoryHidden(playlistId, cat.category_id)
+          }}
+          title="Hide this category from the sidebar"
+        >
+          ⊖
+        </span>
+      </button>
+    ))
+  }
 
   const customCategories = useAppStore((s) => s.settings.customCategories)
   const selectedCustomCategoryId = useAppStore((s) => s.selectedCustomCategoryId)
@@ -185,20 +224,7 @@ export function Sidebar(): JSX.Element | null {
                 >
                   All
                 </button>
-                {playlist.categories.map((cat) => (
-                  <button
-                    key={`${playlist.profileId}:${cat.category_id}`}
-                    className={
-                      selectedPlaylistId === playlist.profileId && selectedCategoryId === cat.category_id
-                        ? 'category active'
-                        : 'category'
-                    }
-                    onClick={() => requestCategory(cat.category_id, playlist.profileId)}
-                  >
-                    {isLocked(cat.category_id) && <span className="category-lock">🔒</span>}
-                    {cat.category_name}
-                  </button>
-                ))}
+                {renderCategoryButtons(playlist.categories, playlist.profileId)}
                 {playlist.categories.length === 0 && (
                   <div className="category-group-empty">{playlist.error ? 'Not connected' : 'No categories'}</div>
                 )}
@@ -212,18 +238,47 @@ export function Sidebar(): JSX.Element | null {
                 >
                   All
                 </button>
-                {categories.map((cat) => (
-                  <button
-                    key={cat.category_id}
-                    className={selectedCategoryId === cat.category_id ? 'category active' : 'category'}
-                    onClick={() => requestCategory(cat.category_id)}
-                  >
-                    {isLocked(cat.category_id) && <span className="category-lock">🔒</span>}
-                    {cat.category_name}
-                  </button>
-                ))}
+                {renderCategoryButtons(categories, null)}
               </>
             )}
+        {(() => {
+          // The reveal section (0.49.0): one row per playlist group with hidden categories, or a
+          // single row on the flat path — collapsed by default, restore-only (un-hiding never
+          // selects; selecting a visible category is the normal path).
+          const groups: Array<{ profileId: string | null; name: string | null; cats: typeof categories }> =
+            playlists.length > 1
+              ? playlists.map((playlist) => ({
+                  profileId: playlist.profileId,
+                  name: playlist.name,
+                  cats: hiddenCategories(playlist.categories, playlist.profileId, settings.hiddenCategoryIds)
+                }))
+              : [{ profileId: null, name: null, cats: hiddenCategories(categories, null, settings.hiddenCategoryIds) }]
+          const total = groups.reduce((sum, g) => sum + g.cats.length, 0)
+          if (total === 0) return null
+          return (
+            <div className="hidden-categories">
+              <button
+                className="category hidden-categories-toggle"
+                onClick={() => setShowHiddenCategories(!showHiddenCategories)}
+              >
+                {showHiddenCategories ? 'Hide hidden categories' : `Show hidden categories (${total})`}
+              </button>
+              {showHiddenCategories &&
+                groups.map((group, gi) =>
+                  group.cats.map((cat) => (
+                    <button
+                      key={`hidden-${group.profileId ?? 'primary'}:${group.name ?? ''}:${cat.category_id}:${gi}`}
+                      className="category category-hidden-row"
+                      onClick={() => toggleCategoryHidden(group.profileId, cat.category_id)}
+                      title="Restore this category to the list"
+                    >
+                      ⊙ {cat.category_name}
+                    </button>
+                  ))
+                )}
+            </div>
+          )
+        })()}
       </nav>
       {/* Where a playlist is shown or hidden. Hiding is modelled as "not connected" (see
           AppSettings.enabledPlaylistIds): the point of hiding is to stop carrying a few thousand
