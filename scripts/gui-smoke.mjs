@@ -12,7 +12,7 @@
 // Prerequisites: the synthetic provider running (`node scripts/mock-provider.mjs 8123`) and a
 // profile pointing at it (see docs/STATE.md). Exits non-zero if any assertion fails.
 import { execFileSync, spawn } from 'child_process'
-import { existsSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { homedir, tmpdir } from 'os'
 import { fileURLToPath } from 'url'
@@ -241,18 +241,62 @@ function resetGuideCache() {
 }
 
 /**
- * Empties the recordings index the app persists between runs (0.34.0 smoke support). The 0.29.0
- * section records fresh each run anyway, but the scheduled-from-grid section below needs a clean
- * slate: a previous run's cancelled schedule lingers as a 'failed' row (harmless) and a crashed
- * run's schedule would linger as 'scheduled' with a stale air time (not harmless — the section
- * asserts on exactly those rows). The entry directories are left alone; the index is the only
- * thing the UI reads.
+ * Gives the scheduled-from-grid section its clean slate (0.34.0 smoke support): a previous run's
+ * cancelled schedule lingers as a 'failed' row (harmless) and a crashed run's schedule lingers as
+ * 'scheduled' with a stale air time (not harmless — the section asserts on exactly those rows).
+ *
+ * The index is SET ASIDE and restored afterwards, never deleted (0.49.0). This used to be an
+ * unconditional `rmSync` of recordings.json — which is the operator's REAL index, in the same
+ * userData the installed app uses, so the first run after a real recording would have taken that
+ * recording off the Recordings tab for good, and every run left its folder behind as an orphan
+ * (40 of them had piled up before this was noticed). Same shape as pinSyntheticProfile below:
+ * aside at start, back on exit and on every signal the harness already handles.
  */
+const recordingsDir = () => join(dirname(CFG_PATH), 'recordings')
+const recordingsIndexPath = () => join(recordingsDir(), 'recordings.json')
+const recordingsIndexBackupPath = () => `${recordingsIndexPath()}.smoke-backup`
+
+/**
+ * Puts the real index back and removes the folders of the recordings made DURING the run. A
+ * no-op when nothing was set aside. The index as the run left it lists exactly those recordings —
+ * synthetic by construction, since the harness quits any real instance before it starts — and
+ * only folders directly inside the default recordings directory are ever removed, so a recording
+ * kept anywhere else (a recordingsDir override, say) is left untouched rather than guessed at.
+ */
+function restoreRecordingsIndex() {
+  const index = recordingsIndexPath()
+  const backup = recordingsIndexBackupPath()
+  if (!existsSync(backup)) return
+  try {
+    if (existsSync(index)) {
+      const run = JSON.parse(readFileSync(index, 'utf8'))
+      for (const entry of run?.entries ?? []) {
+        if (typeof entry.dir === 'string' && dirname(entry.dir) === recordingsDir()) {
+          rmSync(entry.dir, { recursive: true, force: true })
+        }
+      }
+      rmSync(index)
+    }
+    renameSync(backup, index)
+    console.log('restored the persisted recordings index')
+  } catch (err) {
+    // Leaving the backup in place is the safe half-failure: the next run finds it and retries.
+    console.log('could not restore the recordings index:', err instanceof Error ? err.message : String(err))
+  }
+}
+
 function resetRecordingsIndex() {
-  const index = join(dirname(CFG_PATH), 'recordings', 'recordings.json')
-  if (existsSync(index)) {
-    rmSync(index)
-    console.log('cleared the persisted recordings index')
+  // A backup already on disk means an earlier run died before it could restore (SIGKILL, power
+  // loss): the REAL index is the backup, and whatever sits at the index path is that run's
+  // residue. Put the real one back before setting it aside again.
+  restoreRecordingsIndex()
+  const index = recordingsIndexPath()
+  if (!existsSync(index)) return
+  try {
+    renameSync(index, recordingsIndexBackupPath())
+    console.log('set the persisted recordings index aside for this run')
+  } catch (err) {
+    console.log('could not set the recordings index aside:', err instanceof Error ? err.message : String(err))
   }
 }
 
@@ -378,11 +422,14 @@ async function main() {
   process.on('exit', () => {
     restorePinnedProfile()
     restoreSecondSyntheticProfile()
+    restoreRecordingsIndex()
   })
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.on(signal, () => {
       restorePinnedProfile()
       restoreSecondSyntheticProfile()
+      restoreRecordingsIndex()
+    restoreRecordingsIndex()
       process.exit(130)
     })
   }
